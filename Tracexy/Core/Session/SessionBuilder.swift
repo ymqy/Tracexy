@@ -87,19 +87,48 @@ nonisolated enum SessionBuilder {
         return packet
     }
 
-    /// Fold one packet's DNS answers into the IP→hostname map. Applied in packet
-    /// order (last write wins), identical whether accumulated incrementally or in
-    /// a single batch pass.
+    /// Fold one packet's DNS answers and Fake-IP TLS/QUIC SNI into the IP→hostname
+    /// map. Applied in packet order (last write wins), identical whether accumulated
+    /// incrementally or in a single batch pass.
     static func learnResolved(from packet: DecodedPacket, into resolved: inout [String: String]) {
         // Multicast DNS answers are how Bonjour devices name themselves on the local
         // network, so they teach names exactly like unicast DNS answers.
-        guard [.dns, .mdns, .llmnr].contains(packet.appProtocol),
-              let name = packet.dnsQuery, !name.isEmpty else
+        if [.dns, .mdns, .llmnr].contains(packet.appProtocol),
+           let name = packet.dnsQuery, !name.isEmpty
         {
-            return
+            for answer in packet.dnsAnswers where !answer.hasPrefix("CNAME") {
+                resolved[answer] = name
+            }
         }
-        for answer in packet.dnsAnswers where !answer.hasPrefix("CNAME") {
-            resolved[answer] = name
+        // Transparent-proxy and TUN routers allocate virtual addresses from RFC 2544
+        // 198.18.0.0/15 or IPv6 ULA fc00::/7. Learning SNI against that Fake-IP lets
+        // sibling flows to the same virtual destination resolve their host in the same
+        // pass even when DNS happened before capture started.
+        if let sni = packet.sni, !sni.isEmpty {
+            if let dstIP = packet.destinationEndpoint?.ip, isFakeIPAddress(dstIP) {
+                resolved[dstIP] = sni
+            } else if let src = packet.sourceEndpoint, isFakeIPAddress(src.ip) {
+                let dstPort = packet.destinationEndpoint?.port ?? 0
+                let isClientDialingService = !SessionAccumulator.isLikelyServerPort(src.port)
+                    && SessionAccumulator.isLikelyServerPort(dstPort)
+                if !isClientDialingService {
+                    resolved[src.ip] = sni
+                }
+            }
+        }
+    }
+
+    /// Whether `ip` falls in a Fake-IP virtual address pool: RFC 2544 benchmarking
+    /// `198.18.0.0/15` (`198.18.0.0`–`198.19.255.255`) or IPv6 ULA `fc00::/7`.
+    static func isFakeIPAddress(_ ip: String) -> Bool {
+        guard let parsed = IPAddressValue(parsing: ip) else {
+            return false
+        }
+        switch parsed.family {
+        case .v4:
+            return parsed.bytes[0] == 198 && (parsed.bytes[1] & 0xFE) == 18
+        case .v6:
+            return (parsed.bytes[0] & 0xFE) == 0xFC
         }
     }
 

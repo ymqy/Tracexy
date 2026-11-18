@@ -794,7 +794,12 @@ final class MainContentCoordinator {
 
     /// All sessions decoded from the current capture's real frames.
     var sessions: [SessionSummary] = [] {
-        didSet { rebuildActivities() }
+        didSet {
+            rebuildActivities()
+            if !isHistoryDemoMode, !sessions.isEmpty {
+                addressNames.learn(from: sessions)
+            }
+        }
     }
 
     var activeWorkspace: WorkspaceState {

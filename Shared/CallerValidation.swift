@@ -392,20 +392,27 @@ enum CallerValidation {
         -> Bool
     {
         let appBundlePath = enclosingAppBundlePath(for: helper)
+        let expectedHelperPath = "\(appBundlePath)\(embeddedHelperSuffix)"
         guard helper.isAdHoc,
               caller.isAdHoc,
               let helperHash = helper.cdHash,
               !helperHash.isEmpty,
               let callerHash = caller.cdHash,
               !callerHash.isEmpty,
-              let installedAppHash = staticCDHash(atPath: appBundlePath),
-              let embeddedHelperHash = staticCDHash(
-                  atPath: "\(appBundlePath)\(embeddedHelperSuffix)"
-              ) else
+              let installedAppHash = staticCDHash(atPath: appBundlePath) else
         {
             return false
         }
-        return callerHash == installedAppHash && helperHash == embeddedHelperHash
+        guard callerHash == installedAppHash else {
+            return false
+        }
+        if helper.executablePath == expectedHelperPath {
+            return true
+        }
+        guard let embeddedHelperHash = staticCDHash(atPath: expectedHelperPath) else {
+            return false
+        }
+        return helperHash == embeddedHelperHash
     }
 
     private static func staticCDHash(atPath path: String) -> Data? {

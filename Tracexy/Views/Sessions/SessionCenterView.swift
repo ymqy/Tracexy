@@ -1,4 +1,5 @@
 import AppKit
+import Foundation
 import SwiftUI
 
 // MARK: - SessionCenterView
@@ -633,6 +634,12 @@ struct SessionCenterView: View {
                     .foregroundStyle(row.status == .error ? Color.red : Color.primary)
             }
             .width(min: 160, ideal: 280)
+            TableColumn("Latency") { (row: SessionRow) in
+                Text(row.latencyMilliseconds.map { String(format: "%.1f ms", $0) } ?? "—")
+                    .font(Theme.Typography.monoSmall)
+                    .foregroundStyle(.secondary)
+            }
+            .width(72)
         } rows: {
             ForEach(rows) { row in
                 if case .action = row, !row.childRows.isEmpty {
@@ -713,7 +720,7 @@ struct SessionCenterView: View {
                     .tracexyChipStyle(tint: .secondary, isActive: true)
             }
         case let .session(session):
-            Text(session.host).font(Theme.Typography.body).lineLimit(1)
+            Text(coordinator.addressNames.displayHost(for: session)).font(Theme.Typography.body).lineLimit(1)
         }
     }
 
@@ -1036,7 +1043,7 @@ struct SessionCenterView: View {
         }
         .width(72)
         .customizationID("latency")
-        .defaultVisibility(.hidden)
+        .defaultVisibility(.automatic)
         TableColumn("Protocols") { session in
             Text(session.protocolStack.map(\.label).joined(separator: " "))
                 .font(Theme.Typography.monoSmall).foregroundStyle(.secondary).lineLimit(1)
@@ -1053,10 +1060,20 @@ struct SessionCenterView: View {
     }
 
     private func loadColumnCustomization() {
-        let data = coordinator.activeProjectDefaults.data(forKey: ProjectScopedSettingsKeys.sessionTableColumns)
+        let defaults = coordinator.activeProjectDefaults
+        let data = defaults.data(forKey: ProjectScopedSettingsKeys.sessionTableColumns)
         let decoder = JSONDecoder()
         let saved = data.flatMap { try? decoder.decode(TableColumnCustomization<SessionSummary>.self, from: $0) }
-        columnCustomization = saved ?? TableColumnCustomization<SessionSummary>()
+        var customization = saved ?? TableColumnCustomization<SessionSummary>()
+        let migrationKey = TracexyIdentity.current.defaultsKey("migrated.latencyColumnVisible.v1")
+        if !defaults.bool(forKey: migrationKey) {
+            customization[visibility: "latency"] = .visible
+            if saved != nil, let migrated = try? JSONEncoder().encode(customization) {
+                defaults.set(migrated, forKey: ProjectScopedSettingsKeys.sessionTableColumns)
+            }
+            defaults.set(true, forKey: migrationKey)
+        }
+        columnCustomization = customization
         didLoadColumnCustomization = true
     }
 
@@ -1190,5 +1207,18 @@ private struct LiveTrafficStrip: View {
     private var currentRate: String {
         let bytesPerSecond = coordinator.throughputSamples.last?.bytesPerSecond ?? 0
         return "\(ByteUnits.string(Int64(bytesPerSecond)))/s"
+    }
+}
+
+private extension SessionRow {
+    var latencyMilliseconds: Double? {
+        switch self {
+        case let .session(session):
+            session.latencyMilliseconds
+        case let .action(activity):
+            activity.sessions.compactMap(\.latencyMilliseconds).max()
+        case let .group(group):
+            group.sessions.compactMap(\.latencyMilliseconds).max()
+        }
     }
 }

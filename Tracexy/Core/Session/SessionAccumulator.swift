@@ -56,6 +56,10 @@ nonisolated struct SessionAccumulator {
         order.count
     }
 
+    static func isLikelyServerPort(_ port: UInt16) -> Bool {
+        port != 0 && (port < 1_024 || likelyServerPorts.contains(port))
+    }
+
     /// A session-only fold of one already-decoded packet's per-frame metadata. It
     /// performs **no** cross-frame TCP reassembly — that is owned by the connection
     /// table and reaches session state only through ``add(_:context:)``. This
@@ -73,7 +77,13 @@ nonisolated struct SessionAccumulator {
     ///   it are unchanged.
     @discardableResult
     mutating func add(_ packet: DecodedPacket) -> UUID? {
-        foldSession(packet, hasReassembledApplication: false, ordinal: nil, interfaceID: nil)
+        foldSession(
+            packet,
+            hasReassembledApplication: false,
+            reassembledTLSRecords: [],
+            ordinal: nil,
+            interfaceID: nil
+        )
     }
 
     /// The common production fold shared by batch, live and saved paths. Assigns
@@ -135,9 +145,11 @@ nonisolated struct SessionAccumulator {
         let priorClient: IPEndpoint? = enriched.fiveTuple.flatMap { key in
             states[key]?.orientedEndpoints(proto: key.proto).client
         }
+        let reassembledTLSRecords = outcome.application?.tlsRecords ?? []
         let selection = foldSession(
             enriched,
             hasReassembledApplication: hasReassembledApplication,
+            reassembledTLSRecords: reassembledTLSRecords,
             ordinal: provenance.ordinal,
             interfaceID: context.interfaceID
         )
@@ -199,10 +211,10 @@ nonisolated struct SessionAccumulator {
     /// datagram evidence table and the TLS evidence table, and restarts the capture
     /// ordinal at 1. Called at capture boundaries so table state and the ordinal reset
     /// together; each table is rebuilt from its preserved configuration.
-    mutating func reset() {
+    mutating func reset(initialResolved: [String: String] = [:]) {
         order.removeAll(keepingCapacity: false)
         states.removeAll(keepingCapacity: false)
-        resolved.removeAll(keepingCapacity: false)
+        resolved = initialResolved
         connections = ConnectionTable(configuration: connectionConfiguration)
         datagrams = DatagramEvidenceTable(configuration: datagramConfiguration)
         tlsEvidence = TLSEvidenceTable(configuration: tlsConfiguration)
@@ -214,11 +226,21 @@ nonisolated struct SessionAccumulator {
 
     // MARK: Private
 
+    /// IANA system ports plus the registered service ports a client on this
+    /// Mac commonly dials. A session whose *first captured* frame came from one
+    /// of these while the other end used an ephemeral port was almost certainly
+    /// captured mid-stream from the server side; the same likely-server-port
+    /// rule Zeek uses to orient a connection (concept only).
+    private static let likelyServerPorts: Set<UInt16> = [
+        1_080, 1_194, 1_433, 1_521, 3_128, 3_306, 3_389, 5_060, 5_061, 5_222, 5_223, 5_228,
+        5_432, 5_900, 6_379, 8_000, 8_080, 8_443, 8_883, 27_017,
+    ]
+
     /// Five-tuples in first-seen order, so summaries emit oldest→newest and rows
     /// stay put as a live capture grows.
     private var order: [FiveTuple] = []
     private var states: [FiveTuple: State] = [:]
-    /// IP → hostname learned from DNS responses, accumulated across the capture.
+    /// IP → hostname learned from DNS responses and Fake-IP SNI across the capture.
     private var resolved: [String: String] = [:]
 
     /// The single owned connection table folded in lock-step with the session
@@ -297,6 +319,7 @@ nonisolated struct SessionAccumulator {
     private mutating func foldSession(
         _ packet: DecodedPacket,
         hasReassembledApplication: Bool,
+        reassembledTLSRecords: [TLSRecordFact],
         ordinal: FrameOrdinal?,
         interfaceID: Int?
     )
@@ -308,12 +331,20 @@ nonisolated struct SessionAccumulator {
         }
         let becameRepresentative: Bool
         if var state = states[key] {
-            becameRepresentative = state.merge(packet, hasReassembledApplication: hasReassembledApplication)
+            becameRepresentative = state.merge(
+                packet,
+                hasReassembledApplication: hasReassembledApplication,
+                reassembledTLSRecords: reassembledTLSRecords
+            )
             state.noteInterface(interfaceID)
             states[key] = state
         } else {
             order.append(key)
-            var state = State(first: packet, ordinal: ordinal)
+            var state = State(
+                first: packet,
+                reassembledTLSRecords: reassembledTLSRecords,
+                ordinal: ordinal
+            )
             state.noteInterface(interfaceID)
             states[key] = state
             becameRepresentative = true
@@ -333,14 +364,18 @@ private extension SessionAccumulator {
         /// The packet is already enriched (or not) before it reaches session state:
         /// the connection table's first-record probe applies any reassembled
         /// application metadata upstream, so this fold never reassembles.
-        init(first packet: DecodedPacket, ordinal: FrameOrdinal?) {
+        init(
+            first packet: DecodedPacket,
+            reassembledTLSRecords: [TLSRecordFact],
+            ordinal: FrameOrdinal?
+        ) {
             earliest = packet
             firstSource = packet.sourceEndpoint
             firstDestination = packet.destinationEndpoint
             latestTime = packet.timestamp
             rich = packet
             firstOrdinal = ordinal
-            fold(packet)
+            fold(packet, reassembledTLSRecords: reassembledTLSRecords)
         }
 
         // MARK: Internal
@@ -368,7 +403,13 @@ private extension SessionAccumulator {
         ///   (by layer count, or by reassembly-driven application richness), so a
         ///   caller can map the session id to this packet's frame reference.
         @discardableResult
-        mutating func merge(_ packet: DecodedPacket, hasReassembledApplication: Bool) -> Bool {
+        mutating func merge(
+            _ packet: DecodedPacket,
+            hasReassembledApplication: Bool,
+            reassembledTLSRecords: [TLSRecordFact]
+        )
+            -> Bool
+        {
             // Earliest packet: a strictly-smaller timestamp wins, so equal
             // timestamps keep the first-seen packet — matching `sorted.first`.
             // Untimed packets never participate in this comparison. A mixed
@@ -391,7 +432,7 @@ private extension SessionAccumulator {
                 rich = packet
                 becameRepresentative = true
             }
-            fold(packet)
+            fold(packet, reassembledTLSRecords: reassembledTLSRecords)
             return becameRepresentative
         }
 
@@ -483,19 +524,26 @@ private extension SessionAccumulator {
 
         // MARK: Private
 
+        private enum PayloadRole {
+            case none
+            case clientPayload
+            case serverPayload
+        }
+
+        private enum FirstDataTrackingState {
+            case idle
+            case tracking
+            case completed
+            case invalidated
+        }
+
         /// Largest number of unique DNS answers a session publishes, in first-seen
         /// order. Beyond this, further unique answers are counted, not stored.
         private static let dnsAnswerPublicationCap = 64
 
-        /// IANA system ports plus the registered service ports a client on this
-        /// Mac commonly dials. A session whose *first captured* frame came from one
-        /// of these while the other end used an ephemeral port was almost certainly
-        /// captured mid-stream from the server side; the same likely-server-port
-        /// rule Zeek uses to orient a connection (concept only).
-        private static let likelyServerPorts: Set<UInt16> = [
-            1_080, 1_194, 1_433, 1_521, 3_128, 3_306, 3_389, 5_060, 5_061, 5_222, 5_223, 5_228,
-            5_432, 5_900, 6_379, 8_000, 8_080, 8_443, 8_883, 27_017,
-        ]
+        /// Upper bound on cumulative-ACK advance (64 MiB) accepted for the
+        /// unidirectional TCP Data→ACK fallback, rejecting bogus wraparound values.
+        private static let maxPlausibleAckAdvance: Int32 = 67_108_864
 
         /// Earliest packet by timestamp (first-seen tie-break), used for fully
         /// timed session direction/start. Mixed sessions use the first endpoint
@@ -551,10 +599,32 @@ private extension SessionAccumulator {
         /// list fills, which would require unbounded state.
         private var dnsAnswersOmittedCount = 0
 
-        /// Earliest DNS query (no answers) / response (with answers) instants, for
-        /// the DNS handshake latency. Min timestamp, first-seen tie-break.
+        /// 1) Earliest DNS / mDNS / LLMNR query and response instants.
         private var dnsQueryTime: Date?
         private var dnsResponseTime: Date?
+
+        /// 2) TLS / QUIC ClientHello → ServerHello (or HelloRetryRequest) instants.
+        private var tlsClientHelloTime: Date?
+        private var tlsServerHelloTime: Date?
+        private var tlsClientEndpoint: IPEndpoint?
+
+        /// 3) First client-side payload → first subsequent server-side payload instants.
+        private var firstOutboundPayloadTime: Date?
+        private var firstInboundPayloadAfterOutboundTime: Date?
+        private var outboundPayloadEndpoint: IPEndpoint?
+
+        /// 4) Karn-safe TCP SYN → SYN+ACK handshake instants.
+        private var lastSynBeforeSynAckTime: Date?
+        private var firstSynAckTime: Date?
+        private var synEndpoint: IPEndpoint?
+
+        /// 5) Unidirectional TCP client Data → server ACK fallback state.
+        private var firstDataTime: Date?
+        private var firstDataAckTime: Date?
+        private var firstDataEndpoint: IPEndpoint?
+        private var firstDataSeqStart: UInt32 = 0
+        private var firstDataSeqEnd: UInt32 = 0
+        private var firstDataState: FirstDataTrackingState = .idle
 
         private var anyTCPRST = false
         private var anySCTPAbort = false
@@ -571,18 +641,33 @@ private extension SessionAccumulator {
             anyTCPRST || anySCTPAbort ? .error : .ok
         }
 
-        /// The DNS handshake latency, and only when every contributing frame was
-        /// timed: an interval measured across a session with a missing instant
-        /// would be an inference from an input we do not have.
+        /// End-to-end session latency in milliseconds, published only when every
+        /// contributing frame carried a capture time. Ordered so application and
+        /// payload round-trips (which traverse transparent-proxy / Fake-IP routers to
+        /// the real upstream server) outrank local transport handshakes and ACKs.
         private var latency: Double? {
-            guard untimedFrameCount == 0,
-                  let query = dnsQueryTime,
-                  let response = dnsResponseTime,
-                  response > query else
-            {
+            guard untimedFrameCount == 0 else {
                 return nil
             }
-            return response.timeIntervalSince(query) * 1_000
+            if let query = dnsQueryTime, let response = dnsResponseTime, response > query {
+                return response.timeIntervalSince(query) * 1_000
+            }
+            if let ch = tlsClientHelloTime, let sh = tlsServerHelloTime, sh > ch {
+                return sh.timeIntervalSince(ch) * 1_000
+            }
+            if let req = firstOutboundPayloadTime,
+               let reply = firstInboundPayloadAfterOutboundTime,
+               reply > req
+            {
+                return reply.timeIntervalSince(req) * 1_000
+            }
+            if let syn = lastSynBeforeSynAckTime, let synAck = firstSynAckTime, synAck > syn {
+                return synAck.timeIntervalSince(syn) * 1_000
+            }
+            if let data = firstDataTime, let ack = firstDataAckTime, ack > data {
+                return ack.timeIntervalSince(data) * 1_000
+            }
+            return nil
         }
 
         /// A reset is decided from the typed control bits, never a rendered "Flags"
@@ -592,7 +677,7 @@ private extension SessionAccumulator {
         }
 
         private static func isLikelyServerPort(_ port: UInt16) -> Bool {
-            port != 0 && (port < 1_024 || likelyServerPorts.contains(port))
+            SessionAccumulator.isLikelyServerPort(port)
         }
 
         /// Decide which observed endpoint is the client. A captured opener — a pure
@@ -660,7 +745,10 @@ private extension SessionAccumulator {
         /// Fold the parts of a packet that accumulate the same way for the first
         /// and every subsequent packet: byte tallies, the "firsts", DNS answers
         /// and timing, and the status inputs.
-        private mutating func fold(_ packet: DecodedPacket) {
+        private mutating func fold(
+            _ packet: DecodedPacket,
+            reassembledTLSRecords: [TLSRecordFact]
+        ) {
             bytesBySource[packet.sourceEndpoint, default: 0] += packet.originalLength
             totalBytes += packet.originalLength
             packetsBySource[packet.sourceEndpoint, default: 0] += 1
@@ -701,19 +789,6 @@ private extension SessionAccumulator {
             }
             dnsAnswersOmittedCount += packet.dnsAnswersOmittedCount
 
-            // Only a timed DNS frame can contribute a handshake instant. The
-            // header's QR bit decides query versus response; an answerless reply
-            // (NXDOMAIN, NODATA, a refused query) is still the response that ends
-            // the exchange, so it must not be mistaken for a second query.
-            if packet.appProtocol == .dns, let instant = packet.timestamp {
-                let isResponse = packet.dnsFacts?.isResponse ?? !packet.dnsAnswers.isEmpty
-                if isResponse {
-                    dnsResponseTime = earlier(dnsResponseTime, instant)
-                } else {
-                    dnsQueryTime = earlier(dnsQueryTime, instant)
-                }
-            }
-
             if !anyTCPRST, Self.hasTCPRST(packet) {
                 anyTCPRST = true
             }
@@ -730,6 +805,221 @@ private extension SessionAccumulator {
             {
                 synSource = packet.sourceEndpoint
             }
+
+            foldLatency(packet, reassembledTLSRecords: reassembledTLSRecords)
+        }
+
+        private mutating func foldLatency(
+            _ packet: DecodedPacket,
+            reassembledTLSRecords: [TLSRecordFact]
+        ) {
+            guard let instant = packet.timestamp else {
+                return
+            }
+
+            // 1) DNS / mDNS / LLMNR query → response exchange. The header's QR bit
+            // decides query versus response; an answerless reply (NXDOMAIN, NODATA,
+            // refused) still ends the exchange.
+            if let app = packet.appProtocol,
+               app == .dns || app == .mdns || app == .llmnr
+            {
+                let isResponse = packet.dnsFacts?.isResponse ?? !packet.dnsAnswers.isEmpty
+                if isResponse {
+                    dnsResponseTime = earlier(dnsResponseTime, instant)
+                } else {
+                    dnsQueryTime = earlier(dnsQueryTime, instant)
+                }
+            }
+
+            // 2) TLS / QUIC ClientHello → ServerHello (or HelloRetryRequest) exchange.
+            let tlsRecords = packet.tlsRecords.isEmpty ? reassembledTLSRecords : packet.tlsRecords
+            for record in tlsRecords {
+                switch record.handshake {
+                case .clientHello:
+                    if tlsClientHelloTime == nil {
+                        tlsClientHelloTime = instant
+                        tlsClientEndpoint = packet.sourceEndpoint
+                    }
+                case .serverHello:
+                    if tlsServerHelloTime == nil,
+                       let ch = tlsClientHelloTime,
+                       let clientEndpoint = tlsClientEndpoint,
+                       packet.sourceEndpoint != clientEndpoint,
+                       instant > ch
+                    {
+                        tlsServerHelloTime = instant
+                    }
+                case nil:
+                    break
+                }
+            }
+
+            // 3) First outbound payload → first subsequent inbound payload exchange.
+            switch payloadRole(for: packet) {
+            case .clientPayload:
+                if firstOutboundPayloadTime == nil {
+                    firstOutboundPayloadTime = instant
+                    outboundPayloadEndpoint = packet.sourceEndpoint
+                }
+            case .serverPayload:
+                if firstInboundPayloadAfterOutboundTime == nil,
+                   let req = firstOutboundPayloadTime,
+                   instant > req
+                {
+                    let isOppositeOrLoopbackICMP = packet.sourceEndpoint != outboundPayloadEndpoint
+                        || (packet.icmpFacts != nil && packet.sourceEndpoint == packet.destinationEndpoint)
+                    if isOppositeOrLoopbackICMP {
+                        firstInboundPayloadAfterOutboundTime = instant
+                    }
+                }
+            case .none:
+                break
+            }
+
+            // 4) TCP SYN → SYN+ACK handshake RTT and 5) unidirectional Data → ACK.
+            if let facts = packet.tcpFacts {
+                foldTCPLatency(packet, facts: facts, instant: instant)
+            }
+        }
+
+        private mutating func foldTCPLatency(
+            _ packet: DecodedPacket,
+            facts: TCPSegmentFacts,
+            instant: Date
+        ) {
+            let flags = facts.flags
+            if firstSynAckTime == nil {
+                if flags.contains(.syn), !flags.contains(.ack), !flags.contains(.rst) {
+                    lastSynBeforeSynAckTime = instant
+                    synEndpoint = packet.sourceEndpoint
+                } else if flags.contains(.syn),
+                          flags.contains(.ack),
+                          !flags.contains(.rst),
+                          let syn = lastSynBeforeSynAckTime,
+                          let synEndpoint,
+                          packet.sourceEndpoint != synEndpoint,
+                          instant > syn
+                {
+                    firstSynAckTime = instant
+                }
+            }
+
+            if facts.payloadLength > 0 {
+                switch firstDataState {
+                case .idle:
+                    if isClientEndpoint(packet) {
+                        firstDataTime = instant
+                        firstDataEndpoint = packet.sourceEndpoint
+                        firstDataSeqStart = facts.payloadSequence
+                        firstDataSeqEnd = facts.payloadSequence &+ UInt32(facts.payloadLength)
+                        firstDataState = .tracking
+                    }
+                case .tracking:
+                    if packet.sourceEndpoint == firstDataEndpoint {
+                        let segStart = facts.payloadSequence
+                        let segEnd = segStart &+ UInt32(facts.payloadLength)
+                        let overlaps = Int32(bitPattern: firstDataSeqStart &- segEnd) < 0
+                            && Int32(bitPattern: segStart &- firstDataSeqEnd) < 0
+                        if overlaps {
+                            firstDataState = .invalidated
+                            firstDataTime = nil
+                        }
+                    }
+                case .completed,
+                     .invalidated:
+                    break
+                }
+            }
+
+            if firstDataState == .tracking,
+               flags.contains(.ack),
+               !flags.contains(.rst),
+               let dataEndpoint = firstDataEndpoint,
+               packet.sourceEndpoint != dataEndpoint,
+               let dataTime = firstDataTime,
+               instant > dataTime
+            {
+                let ackAdvance = Int32(bitPattern: facts.acknowledgementNumber &- firstDataSeqEnd)
+                if ackAdvance >= 0, ackAdvance <= Self.maxPlausibleAckAdvance {
+                    firstDataAckTime = instant
+                    firstDataState = .completed
+                }
+            }
+        }
+
+        private func payloadRole(for packet: DecodedPacket) -> PayloadRole {
+            switch packet.transport {
+            case .icmp,
+                 .icmpv6:
+                if let icmp = packet.icmpFacts {
+                    switch (icmp.family, icmp.type) {
+                    case (.ipv4, 8),
+                         (.ipv6, 128),
+                         (.ipv6, 133),
+                         (.ipv6, 135):
+                        return .clientPayload
+                    case (.ipv4, 0),
+                         (.ipv6, 129),
+                         (.ipv6, 134),
+                         (.ipv6, 136):
+                        return .serverPayload
+                    default:
+                        return .none
+                    }
+                }
+                guard packet.originalLength > 0 else {
+                    return .none
+                }
+                if let outEndpoint = outboundPayloadEndpoint {
+                    return packet.sourceEndpoint == outEndpoint ? .clientPayload : .serverPayload
+                }
+                return isClientEndpoint(packet) ? .clientPayload : .serverPayload
+            case .tcp:
+                guard (packet.tcpFacts?.payloadLength ?? 0) > 0 else {
+                    return .none
+                }
+                if let outEndpoint = outboundPayloadEndpoint {
+                    return packet.sourceEndpoint == outEndpoint ? .clientPayload : .serverPayload
+                }
+                return isClientEndpoint(packet) ? .clientPayload : .serverPayload
+            case .udp:
+                guard packet.appProtocol != .dns,
+                      packet.appProtocol != .mdns,
+                      packet.appProtocol != .llmnr,
+                      packet.originalLength > 0 else
+                {
+                    return .none
+                }
+                if let outEndpoint = outboundPayloadEndpoint {
+                    return packet.sourceEndpoint == outEndpoint ? .clientPayload : .serverPayload
+                }
+                return isClientEndpoint(packet) ? .clientPayload : .serverPayload
+            default:
+                return .none
+            }
+        }
+
+        private func isClientEndpoint(_ packet: DecodedPacket) -> Bool {
+            guard let src = packet.sourceEndpoint else {
+                return false
+            }
+            if let synSource {
+                return src == synSource
+            }
+            if let initSource {
+                return src == initSource
+            }
+            if let tlsClientEndpoint {
+                return src == tlsClientEndpoint
+            }
+            if let dst = packet.destinationEndpoint, src.port != dst.port {
+                let srcIsServer = Self.isLikelyServerPort(src.port)
+                let dstIsServer = Self.isLikelyServerPort(dst.port)
+                if srcIsServer != dstIsServer {
+                    return dstIsServer
+                }
+            }
+            return src == firstSource
         }
 
         /// Keep the earlier of a stored instant and a candidate, preferring the

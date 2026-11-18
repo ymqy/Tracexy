@@ -6,8 +6,11 @@ extension MainContentCoordinator {
     /// address, beside the names given in this Project.
     var resolvedAddressRows: [ResolvedAddressRow] {
         ResolvedAddresses.rows(
-            sessions: presentedSessions, namedAddresses: addressNames.names, namedSubnets: addressNames.subnetNames,
-            captureFileRecords: isViewingSavedCapture ? savedCaptureNameResolutionRecords : []
+            sessions: presentedSessions,
+            namedAddresses: addressNames.names,
+            namedSubnets: addressNames.subnetNames,
+            captureFileRecords: isViewingSavedCapture ? savedCaptureNameResolutionRecords : [],
+            cachedDNSNames: addressNames.learnedNames
         )
     }
 

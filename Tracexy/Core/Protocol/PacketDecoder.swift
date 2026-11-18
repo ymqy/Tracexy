@@ -475,13 +475,11 @@ nonisolated enum PacketDecoder {
         }
     }
 
-    /// Surfaces the clear-text QUIC long-header fields (RFC 9000 §17.2): packet
-    /// type, version, and the destination/source connection IDs. The caller's
-    /// `isQUIC` gate proved the long-header form bit; the fixed bit, packet-number
-    /// space, and everything after the source CID are encrypted and never guessed.
-    /// A version of 0 is Version Negotiation (§17.2.1). Any bounds failure — a
-    /// short header slipping the gate, a CID length over the 20-byte cap, or a
-    /// truncated header — falls back to honest identification only.
+    /// Surfaces the clear-text QUIC long-header fields (RFC 9000 §17.2) and, when the
+    /// datagram begins with an AEAD-authentic QUIC v1/v2 Initial packet (RFC 9001 §5.2,
+    /// RFC 9369 §3.3), passively unprotects its `CRYPTO` handshake to recover SNI,
+    /// ALPN, and neutral `TLSRecordFact` metadata. Version 0 is Version Negotiation
+    /// (§17.2.1). Any bounds failure or unauthenticated payload stays metadata-only.
     static func quic(_ buf: PacketBuffer, into packet: inout DecodedPacket) {
         packet.appProtocol = .quic
         guard let first = try? buf.u8(0),
@@ -498,22 +496,22 @@ nonisolated enum PacketDecoder {
         let isVersionNegotiation = version == 0
         let typeName = isVersionNegotiation ? "Version Negotiation" : quicLongPacketType(first, version: version)
         let versionText = isVersionNegotiation ? "Version Negotiation (0x00000000)" : String(format: "0x%08x", version)
-        let summary = isVersionNegotiation ? "Version Negotiation" : "\(typeName) · encrypted transport"
+        var summary = isVersionNegotiation ? "Version Negotiation" : "\(typeName) · encrypted transport"
+        var fields = [
+            ranged("Packet Type", typeName, in: buf, at: 0, 1),
+            ranged("Version", versionText, in: buf, at: 1, 4),
+            ranged("Destination CID", dcid.isEmpty ? "(zero-length)" : hexString(dcid), in: buf, at: 5, 1 + dcidLen),
+            ranged(
+                "Source CID", scid.isEmpty ? "(zero-length)" : hexString(scid),
+                in: buf, at: scidLenOffset, 1 + scidLen
+            ),
+        ]
+        if !isVersionNegotiation {
+            QUICInitialDecoder.enrich(buf, typeName: typeName, summary: &summary, fields: &fields, into: &packet)
+        }
         packet.layers.append(DecodedLayer(
             proto: .quic, title: "QUIC", summary: summary,
-            fields: [
-                ranged("Packet Type", typeName, in: buf, at: 0, 1),
-                ranged("Version", versionText, in: buf, at: 1, 4),
-                ranged(
-                    "Destination CID", dcid.isEmpty ? "(zero-length)" : hexString(dcid),
-                    in: buf, at: 5, 1 + dcidLen
-                ),
-                ranged(
-                    "Source CID", scid.isEmpty ? "(zero-length)" : hexString(scid),
-                    in: buf, at: scidLenOffset, 1 + scidLen
-                ),
-            ],
-            byteRange: span(buf, scidLenOffset + 1 + scidLen)
+            fields: fields, byteRange: span(buf, scidLenOffset + 1 + scidLen)
         ))
     }
 

@@ -57,9 +57,9 @@ actor LiveSessionEngine {
     /// Clears all accumulated state and adopts a new epoch. Called at every
     /// capture boundary (start / clear / open-saved) so a new capture starts from
     /// nothing and older in-flight work is invalidated.
-    func reset(epoch: Int) {
+    func reset(epoch: Int, initialResolved: [String: String] = [:]) {
         self.epoch = epoch
-        accumulator.reset()
+        accumulator.reset(initialResolved: initialResolved)
         sequential = SequentialFrameDecoder()
         nextOrdinal = 1
     }

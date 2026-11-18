@@ -22,7 +22,10 @@ extension MainContentCoordinator {
         let previous = ingestChain
         ingestChain = Task { @MainActor in
             await previous?.value
-            await engine.reset(epoch: token)
+            let seededResolved = (!self.isHistoryDemoMode && !TracexyIdentity.isRunningTests)
+                ? self.addressNames.learnedNames
+                : [:]
+            await engine.reset(epoch: token, initialResolved: seededResolved)
             do {
                 try await spool.reset(epoch: token, fileSet: fileSet)
             } catch {

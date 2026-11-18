@@ -120,6 +120,8 @@ enum ProjectScopedSettingsKeys {
     static let overviewTimeSeries = key("overview.timeSeries")
     /// Names the investigator gave to addresses (JSON `[address: name]`).
     static let addressNames = key("names.addresses")
+    /// Address-to-domain mappings passively learned in this Project (JSON).
+    static let learnedAddressNames = key("names.learnedAddresses.v1")
     /// Names the investigator gave to IPv4 blocks (JSON `[cidr: name]`).
     static let subnetNames = key("names.subnets")
     /// Where each capture file was left: selection and session expression (JSON).

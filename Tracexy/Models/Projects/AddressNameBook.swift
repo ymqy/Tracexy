@@ -1,12 +1,21 @@
 import Foundation
 import Observation
 
+// MARK: - LearnedAddressEntry
+
+private nonisolated struct LearnedAddressEntry: Codable, Equatable, Sendable {
+    let address: String
+    let name: String
+}
+
 // MARK: - AddressNameBook
 
-/// Names the investigator gave to addresses in this Project ("192.0.2.5 is the NAS").
-/// A name is shown where a session's host is only that bare address; it never replaces
-/// a name the capture itself supplied (DNS, SNI, HTTP Host), and it is never sent
-/// anywhere. Written through to the Project's own preference suite.
+/// Names the investigator gave to addresses in this Project ("192.0.2.5 is the NAS"),
+/// alongside passively learned IP-to-domain mappings reused across captures.
+/// Manual and subnet names keep their explicit label form; learned domain names are
+/// reused cleanly when a session's host is a bare IP, never replacing a name the
+/// capture itself supplied (DNS, SNI, HTTP Host), and never sent anywhere. Written
+/// through to the Project's own preference suite.
 @MainActor
 @Observable
 final class AddressNameBook {
@@ -14,10 +23,13 @@ final class AddressNameBook {
 
     nonisolated static let maximumEntries = 500
     nonisolated static let maximumNameCharacters = 60
+    nonisolated static let maximumLearnedEntries = 4_000
+    nonisolated static let maximumLearnedDomainCharacters = 253
 
     nonisolated static let maximumSubnets = 200
 
     private(set) var names: [String: String] = [:]
+    private(set) var learnedNames: [String: String] = [:]
     private(set) var canEditNames = true
     /// ``subnetNames`` as validated blocks.
     private(set) var subnets: [SubnetName] = []
@@ -50,12 +62,17 @@ final class AddressNameBook {
         names = Self.canonicalProjection(storedNames)
         let subnetData = defaults.data(forKey: ProjectScopedSettingsKeys.subnetNames) ?? Data()
         subnetNames = (try? JSONDecoder().decode([String: String].self, from: subnetData)) ?? [:]
+        loadLearnedNames(from: defaults)
+    }
+
+    func learnedName(for address: String) -> String? {
+        learnedNames[Self.canonical(address)]
     }
 
     /// The name to show for `address`: the one given to the address itself, else its
-    /// most specific named subnet's form (`office.5`).
+    /// most specific named subnet's form (`office.5`), else a learned domain name.
     func displayName(for address: String) -> String? {
-        name(for: address) ?? SubnetNames.lookup(address, in: subnets).map { SubnetNames.label(address, in: $0) }
+        manualOrSubnetName(for: address) ?? learnedName(for: address)
     }
 
     /// Set, replace or (blank) remove the name of an IPv4 block. Returns `false` for
@@ -168,19 +185,297 @@ final class AddressNameBook {
         return true
     }
 
-    /// The host a session list should show: the investigator's name for a bare
-    /// address host, or the host as the capture named it.
+    /// The host a session list should show: the investigator's name or named subnet
+    /// for a bare address host, a reused learned domain name, or the capture's own host.
     func displayHost(for session: SessionSummary) -> String {
-        guard IPAddressValue(parsing: session.host) != nil, let name = displayName(for: session.host) else {
+        guard IPAddressValue(parsing: session.host) != nil else {
             return session.host
         }
-        return "\(name) (\(session.host))"
+        if let manualOrSubnet = manualOrSubnetName(for: session.host) {
+            return "\(manualOrSubnet) (\(session.host))"
+        }
+        if let learned = learnedName(for: session.host) {
+            return learned
+        }
+        return session.host
+    }
+
+    /// Passively learn IP-to-domain mappings from DNS/mDNS answers and from TLS/QUIC
+    /// SNI observed on Fake-IP / CGNAT / IPv6 ULA ranges. Mutates observable state and
+    /// persists to defaults only when at least one mapping is added or updated.
+    func learn(from sessions: [SessionSummary]) {
+        guard !sessions.isEmpty else {
+            return
+        }
+        var workingNames = learnedNames
+        var didChange = false
+
+        func record(_ address: IPAddressValue, domain rawDomain: String) {
+            let domain = String(rawDomain.prefix(Self.maximumLearnedDomainCharacters))
+            guard !domain.isEmpty, IPAddressValue(parsing: domain) == nil else {
+                return
+            }
+            let key = address.compressedText.lowercased()
+            learnedSequence &+= 1
+            learnedTicks[key] = learnedSequence
+            if workingNames[key] != domain {
+                workingNames[key] = domain
+                didChange = true
+            }
+        }
+
+        for session in sessions {
+            if let query = session.dnsQuery?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !query.isEmpty,
+               IPAddressValue(parsing: query) == nil
+            {
+                for answer in session.dnsAnswers {
+                    if let parsed = IPAddressValue(parsing: answer) {
+                        record(parsed, domain: query)
+                    }
+                }
+            }
+
+            if let sni = session.sni?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !sni.isEmpty,
+               IPAddressValue(parsing: sni) == nil
+            {
+                let destination = Self.parsedEndpoint(
+                    session.destinationEndpointValue,
+                    fallback: session.destinationEndpoint
+                )
+                let source = Self.parsedEndpoint(
+                    session.sourceEndpointValue,
+                    fallback: session.sourceEndpoint
+                )
+                if let destination, Self.isFakeIP(destination.ip) {
+                    record(destination.ip, domain: sni)
+                } else if let source, Self.isFakeIP(source.ip),
+                          Self.canTreatSourceAsFakeIPResponder(source: source, destination: destination)
+                {
+                    record(source.ip, domain: sni)
+                }
+            }
+        }
+
+        guard didChange else {
+            return
+        }
+        trimLearnedCapacity(&workingNames)
+        learnedNames = workingNames
+        persistLearnedNames()
     }
 
     // MARK: Private
 
     @ObservationIgnored private var defaults: UserDefaults?
     @ObservationIgnored private var storedNames: [String: String] = [:]
+    @ObservationIgnored private var learnedTicks: [String: UInt64] = [:]
+    @ObservationIgnored private var learnedSequence: UInt64 = 0
+
+    private var canPersistLearnedToDefaults: Bool {
+        guard let defaults else {
+            return false
+        }
+        return !TracexyIdentity.isRunningTests || defaults !== UserDefaults.standard
+    }
+
+    private func manualOrSubnetName(for address: String) -> String? {
+        name(for: address) ?? SubnetNames.lookup(address, in: subnets).map { SubnetNames.label(address, in: $0) }
+    }
+
+    private func loadLearnedNames(from defaults: UserDefaults) {
+        learnedTicks = [:]
+        learnedSequence = 0
+        guard canPersistLearnedToDefaults,
+              let data = defaults.data(forKey: ProjectScopedSettingsKeys.learnedAddressNames) else
+        {
+            learnedNames = [:]
+            return
+        }
+
+        var workingNames: [String: String] = [:]
+        let decoder = JSONDecoder()
+        if let entries = try? decoder.decode([LearnedAddressEntry].self, from: data) {
+            for entry in entries {
+                insertLoadedLearnedEntry(address: entry.address, name: entry.name, into: &workingNames)
+            }
+        } else if let dictionary = try? decoder.decode([String: String].self, from: data) {
+            for key in dictionary.keys.sorted() {
+                if let name = dictionary[key] {
+                    insertLoadedLearnedEntry(address: key, name: name, into: &workingNames)
+                }
+            }
+        }
+        trimLearnedCapacity(&workingNames)
+        learnedNames = workingNames
+    }
+
+    private func insertLoadedLearnedEntry(
+        address: String,
+        name: String,
+        into workingNames: inout [String: String]
+    ) {
+        guard let parsed = IPAddressValue(parsing: address) else {
+            return
+        }
+        let trimmed = String(
+            name.trimmingCharacters(in: .whitespacesAndNewlines)
+                .prefix(Self.maximumLearnedDomainCharacters)
+        )
+        guard !trimmed.isEmpty, IPAddressValue(parsing: trimmed) == nil else {
+            return
+        }
+        let key = parsed.compressedText.lowercased()
+        learnedSequence &+= 1
+        learnedTicks[key] = learnedSequence
+        workingNames[key] = trimmed
+    }
+
+    private func trimLearnedCapacity(_ workingNames: inout [String: String]) {
+        let overflow = workingNames.count - Self.maximumLearnedEntries
+        guard overflow > 0 else {
+            return
+        }
+        let oldestKeys = workingNames.keys.sorted { lhs, rhs in
+            let leftTick = learnedTicks[lhs] ?? 0
+            let rightTick = learnedTicks[rhs] ?? 0
+            if leftTick != rightTick {
+                return leftTick < rightTick
+            }
+            return lhs < rhs
+        }.prefix(overflow)
+        for key in oldestKeys {
+            workingNames.removeValue(forKey: key)
+            learnedTicks.removeValue(forKey: key)
+        }
+    }
+
+    private func persistLearnedNames() {
+        guard canPersistLearnedToDefaults else {
+            return
+        }
+        let orderedKeys = learnedNames.keys.sorted { lhs, rhs in
+            let leftTick = learnedTicks[lhs] ?? 0
+            let rightTick = learnedTicks[rhs] ?? 0
+            if leftTick != rightTick {
+                return leftTick < rightTick
+            }
+            return lhs < rhs
+        }
+        let entries = orderedKeys.compactMap { key in
+            learnedNames[key].map { LearnedAddressEntry(address: key, name: $0) }
+        }
+        if let data = try? JSONEncoder().encode(entries) {
+            defaults?.set(data, forKey: ProjectScopedSettingsKeys.learnedAddressNames)
+        }
+    }
+
+    /// Router / TUN Fake-IP pools where each virtual address maps 1-to-1 to a domain:
+    /// IPv4 `198.18.0.0/15`, RFC 6598 `100.64.0.0/10`, and IPv6 ULA `fc00::/7`.
+    private static func isFakeIP(_ address: IPAddressValue) -> Bool {
+        switch address.family {
+        case .v4:
+            guard address.bytes.count == 4 else {
+                return false
+            }
+            let first = address.bytes[0]
+            let second = address.bytes[1]
+            let isBenchmarkFakeIP = first == 198 && (second & 0xFE) == 18
+            let isCGNATFakeIP = first == 100 && (second & 0xC0) == 64
+            return isBenchmarkFakeIP || isCGNATFakeIP
+        case .v6:
+            guard address.bytes.count == 16 else {
+                return false
+            }
+            return (address.bytes[0] & 0xFE) == 0xFC
+        }
+    }
+
+    /// Avoids labeling the local TUN/ULA client address (e.g. `198.18.0.1:54321 -> 1.1.1.1:443`)
+    /// with the remote server's SNI, while still catching mid-stream sessions whose first
+    /// captured frame came from the Fake-IP responder on a non-standard port.
+    private static func canTreatSourceAsFakeIPResponder(
+        source: (ip: IPAddressValue, port: UInt16?),
+        destination: (ip: IPAddressValue, port: UInt16?)?
+    )
+        -> Bool
+    {
+        guard let destination else {
+            return true
+        }
+        if let srcPort = source.port, let dstPort = destination.port, srcPort > 0, dstPort > 0 {
+            if srcPort <= dstPort {
+                return true
+            }
+            return isLocalClientAddress(destination.ip)
+        }
+        return isLocalClientAddress(destination.ip)
+    }
+
+    private static func isLocalClientAddress(_ address: IPAddressValue) -> Bool {
+        switch address.family {
+        case .v4:
+            guard address.bytes.count == 4 else {
+                return false
+            }
+            let b0 = address.bytes[0]
+            let b1 = address.bytes[1]
+            return b0 == 10
+                || b0 == 127
+                || (b0 == 172 && (b1 & 0xF0) == 16)
+                || (b0 == 192 && b1 == 168)
+                || (b0 == 169 && b1 == 254)
+                || (b0 == 100 && (b1 & 0xC0) == 64)
+        case .v6:
+            guard address.bytes.count == 16 else {
+                return false
+            }
+            let b0 = address.bytes[0]
+            let b1 = address.bytes[1]
+            let isLoopback = address.bytes.dropLast().allSatisfy { $0 == 0 } && address.bytes[15] == 1
+            let isLinkLocal = b0 == 0xFE && (b1 & 0xC0) == 0x80
+            let isULA = (b0 & 0xFE) == 0xFC
+            return isLoopback || isLinkLocal || isULA
+        }
+    }
+
+    private static func parsedEndpoint(
+        _ endpoint: IPEndpoint?,
+        fallback text: String
+    )
+        -> (ip: IPAddressValue, port: UInt16?)?
+    {
+        if let endpoint, let ip = IPAddressValue(parsing: endpoint.ip) {
+            return (ip, endpoint.port)
+        }
+        guard !text.isEmpty, text != "—" else {
+            return nil
+        }
+        if text.hasPrefix("["), let closeIndex = text.firstIndex(of: "]") {
+            let host = String(text[text.index(after: text.startIndex) ..< closeIndex])
+            let rest = text[text.index(after: closeIndex)...]
+            if let ip = IPAddressValue(parsing: host) {
+                if rest.isEmpty {
+                    return (ip, nil)
+                }
+                if rest.hasPrefix(":"), let port = UInt16(rest.dropFirst()) {
+                    return (ip, port)
+                }
+            }
+            return nil
+        }
+        if let colonIndex = text.lastIndex(of: ":"),
+           let port = UInt16(text[text.index(after: colonIndex)...]),
+           let ip = IPAddressValue(parsing: String(text[..<colonIndex]))
+        {
+            return (ip, port)
+        }
+        if let ip = IPAddressValue(parsing: text) {
+            return (ip, nil)
+        }
+        return nil
+    }
 
     /// One spelling per address, so `2001:DB8::1` and `2001:db8::1` share a name.
     private static func canonical(_ address: String) -> String {

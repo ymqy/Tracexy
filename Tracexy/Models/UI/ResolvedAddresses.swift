@@ -61,7 +61,8 @@ nonisolated enum ResolvedAddresses {
         sessions: [SessionSummary],
         namedAddresses: [String: String],
         namedSubnets: [String: String] = [:],
-        captureFileRecords: [CaptureNameResolutionRecord] = []
+        captureFileRecords: [CaptureNameResolutionRecord] = [],
+        cachedDNSNames: [String: String] = [:]
     )
         -> [ResolvedAddressRow]
     {
@@ -111,6 +112,33 @@ nonisolated enum ResolvedAddresses {
                 address: address, name: name, source: .named, sessionID: nil,
                 answerCount: 0, hasOtherNames: false
             ))
+        }
+        if !cachedDNSNames.isEmpty {
+            var coveredAddresses: Set<IPAddressValue> = []
+            for address in learned.keys {
+                if let parsed = IPAddressValue(parsing: address) {
+                    coveredAddresses.insert(parsed)
+                }
+            }
+            for address in namedAddresses.keys {
+                if let parsed = IPAddressValue(parsing: address) {
+                    coveredAddresses.insert(parsed)
+                }
+            }
+            for rawAddress in cachedDNSNames.keys.sorted() {
+                guard let parsed = IPAddressValue(parsing: rawAddress),
+                      !coveredAddresses.contains(parsed),
+                      let name = cachedDNSNames[rawAddress]?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !name.isEmpty else
+                {
+                    continue
+                }
+                coveredAddresses.insert(parsed)
+                rows.append(ResolvedAddressRow(
+                    address: parsed.compressedText, name: name, source: .dns, sessionID: nil,
+                    answerCount: 0, hasOtherNames: false
+                ))
+            }
         }
         for (block, name) in namedSubnets {
             rows.append(ResolvedAddressRow(
