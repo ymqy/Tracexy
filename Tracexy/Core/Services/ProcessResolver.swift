@@ -648,6 +648,11 @@ final class ProcessResolver {
 
     // MARK: - Live Lookup & Refresh
 
+    /// Normalized local interface IP addresses currently known for this Mac.
+    var currentLocalIPs: Set<String> {
+        localIPs
+    }
+
     /// The app owning a session, found by matching either endpoint's local `(ip, port)`
     /// (with wildcard `*.port` fallback only when the endpoint IP belongs to this Mac).
     func appName(forEndpoints source: String, _ destination: String) -> String? {

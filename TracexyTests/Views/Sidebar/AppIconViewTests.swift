@@ -137,6 +137,47 @@ struct AppIconViewTests {
         #expect(monogramMaxChroma >= 60)
     }
 
+    @Test("SourceIconView resolves distinct valid SF Symbols across CLI, daemon, LAN, and kernel sources")
+    @MainActor
+    func sourceIconViewResolvesDistinctValidSymbols() {
+        let cases: [(TrafficSourceCategory, String, String, String)] = [
+            (.cli, "curl", "curl", "arrow.up.arrow.down"),
+            (.cli, "ping", "ping", "waveform.path.ecg"),
+            (.cli, "git", "git", "arrow.triangle.branch"),
+            (.cli, "python3", "python3", "curlybraces"),
+            (.cli, "zsh", "zsh", "terminal"),
+            (.systemService, "mDNSResponder", "mDNSResponder", "bonjour"),
+            (.systemService, "apsd", "apsd", "bell"),
+            (.systemService, "usbmuxd", "usbmuxd", "iphone"),
+            (.systemService, "rapportd", "rapportd", "airplayaudio"),
+            (.systemService, "appleaccountd", "appleaccountd", "icloud"),
+            (.systemService, "trustd", "trustd", "checkmark.shield"),
+            (.systemService, "configd", "configd", "wifi"),
+            (.systemService, "com.apple.appkit.xpc.openAndSavePanelService", "com.apple.appkit.xpc.openAndSavePanelService", "macwindow"),
+            (.systemService, "unknownsysd", "unknownsysd", "gearshape"),
+            (.lanDiscovery, "lan:mdns", "Bonjour / mDNS", "bonjour"),
+            (.lanDiscovery, "lan:ssdp", "SSDP / UPnP", "tv"),
+            (.lanDiscovery, "lan:dhcp", "DHCP Lease Broadcast", "arrow.triangle.2.circlepath"),
+            (.lanDiscovery, "lan:arp", "Peer ARP Resolution", "point.3.connected.trianglepath.dotted"),
+            (.kernelAndLink, "kernel:arp", "ARP Resolution", "link"),
+            (.kernelAndLink, "kernel:ndp", "IPv6 Neighbor & Router Discovery", "network"),
+            (.kernelAndLink, "kernel:icmp", "ICMP Probe & Diagnostics", "waveform.path.ecg"),
+            (.kernelAndLink, "kernel:tcp-teardown", "Kernel TCP Teardown / Reset", "arrow.uturn.backward"),
+            (.kernelAndLink, "kernel:inbound", "Inbound Unanswered Port", "shield.lefthalf.filled"),
+            (.unattributed, "—", "Unattributed", "questionmark"),
+        ]
+
+        for (category, filterKey, title, expectedSymbol) in cases {
+            let resolved = SourceIconView.resolvedSymbolName(
+                category: category,
+                filterKey: filterKey,
+                title: title
+            )
+            #expect(resolved == expectedSymbol)
+            #expect(NSImage(systemSymbolName: resolved, accessibilityDescription: nil) != nil)
+        }
+    }
+
     // MARK: Private
 
     @MainActor

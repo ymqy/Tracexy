@@ -187,6 +187,8 @@ nonisolated struct DecodedPacket {
     var rawBytes: [UInt8] = []
     /// Originating process (from pktap), propagated to the session. nil = unknown.
     var processName: String?
+    /// Originating process provenance (from pktap / root socket fallback), propagated to the session.
+    var processProvenance: ProcessProvenance? = nil
     var layers: [DecodedLayer]
     /// Set when decoding stopped early; `nil` when every header read cleanly.
     var decodeStop: DecodeStop?

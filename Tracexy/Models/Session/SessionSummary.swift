@@ -47,6 +47,8 @@ nonisolated struct SessionSummary: Identifiable, Hashable, Sendable {
 
     /// Originating process, when known (pktap enrichment). Display only.
     var processName: String?
+    /// Rich process origin provenance, when known (pktap / ProcessResolver enrichment).
+    var processProvenance: ProcessProvenance? = nil
     /// Resolved display host (SNI / DNS name) or the responder IP.
     var host: String
     var sourceEndpoint: String

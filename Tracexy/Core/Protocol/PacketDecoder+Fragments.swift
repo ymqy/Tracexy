@@ -175,6 +175,7 @@ nonisolated extension PacketDecoder {
         result.layers = packet.layers + [reassembled] + extensionLayers + inner.layers.map(withoutByteRanges)
         result.rawBytes = packet.rawBytes
         result.processName = packet.processName
+        result.processProvenance = packet.processProvenance
         result.tunnelDepth = packet.tunnelDepth
         result.undecodedInnerIPHeader = packet.undecodedInnerIPHeader
         result.ipFragment = packet.ipFragment

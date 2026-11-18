@@ -84,6 +84,7 @@ nonisolated enum SessionBuilder {
         )
         packet.rawBytes = frame.bytes
         packet.processName = frame.processName
+        packet.processProvenance = frame.processProvenance
         return packet
     }
 

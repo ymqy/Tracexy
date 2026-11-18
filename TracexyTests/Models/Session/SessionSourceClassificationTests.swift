@@ -222,6 +222,49 @@ struct SessionSourceClassificationTests {
         )
         #expect(bareGit.category == .cli)
         #expect(bareGit.subtitle == String(localized: "Terminal CLI"))
+
+        // 6. System CLI commands under /sbin and /usr/sbin (e.g. ping, traceroute)
+        // must classify under .cli rather than .systemService, even without a TTY.
+        let sbinPing = SessionSourceClassifier.classify(
+            makeSession(processName: "ping", host: "1.1.1.1"),
+            context: SessionProcessContext(
+                executablePath: "/sbin/ping",
+                parentProcessName: "Antigravity",
+                hasControllingTTY: false
+            )
+        )
+        #expect(sbinPing.category == .cli)
+        let expectedPingSub = String(localized: "System CLI")
+            + " · "
+            + String(format: String(localized: "Launched by %@"), "Antigravity")
+        #expect(sbinPing.subtitle == expectedPingSub)
+
+        let usrSbinTraceroute = SessionSourceClassifier.classify(
+            makeSession(processName: "traceroute", host: "8.8.8.8"),
+            context: SessionProcessContext(
+                executablePath: "/usr/sbin/traceroute",
+                parentProcessName: "zsh",
+                hasControllingTTY: true
+            )
+        )
+        #expect(usrSbinTraceroute.category == .cli)
+        #expect(usrSbinTraceroute.subtitle == String(localized: "System CLI"))
+
+        // 7. CommandLineTools embedded Python.app carries com.apple.python3 bundle ID
+        // under /Library/Developer and must classify as .cli Developer Toolchain, not .systemService.
+        let cltPython = SessionSourceClassifier.classify(
+            makeSession(processName: "Python", host: "www.apple.com"),
+            context: SessionProcessContext(
+                executablePath: "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python",
+                bundleIdentifier: "com.apple.python3",
+                parentProcessName: "Antigravity"
+            )
+        )
+        #expect(cltPython.category == .cli)
+        let expectedCltPythonSub = String(localized: "Developer Toolchain")
+            + " · "
+            + String(format: String(localized: "Launched by %@"), "Antigravity")
+        #expect(cltPython.subtitle == expectedCltPythonSub)
     }
 
     // MARK: - 4. Third-Party Services (.thirdPartyService)

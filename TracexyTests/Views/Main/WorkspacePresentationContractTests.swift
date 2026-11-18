@@ -535,12 +535,12 @@ struct WorkspacePresentationContractTests {
         )
 
         #expect(sidebar.contains("sourceCategoryLabel("))
-        #expect(sidebar.contains("copyLabel: \"Copy App Names\""))
+        #expect(sidebar.contains("copyLabel: \"Copy Source Names\""))
         #expect(sidebar.contains("copyLabel: \"Copy Domains\""))
         #expect(sidebar.contains("copyLabel: \"Copy IP Addresses\""))
         #expect(sidebar.contains("Button(\"Show All Sessions\", systemImage: \"rectangle.stack\")"))
         #expect(sidebar.contains("Button(\"Remove from Sources\", systemImage: \"trash\", role: .destructive)"))
-        #expect(sidebar.contains("restoreLabel: \"Restore Hidden Apps\""))
+        #expect(sidebar.contains("restoreLabel: \"Restore Hidden Sources\""))
         #expect(sidebar.contains("restoreLabel: \"Restore Hidden Domains\""))
         #expect(sidebar.contains("restoreLabel: \"Restore Hidden IP Addresses\""))
         #expect(sidebar.contains(".frame(maxWidth: .infinity, alignment: .leading)"))
@@ -552,13 +552,15 @@ struct WorkspacePresentationContractTests {
         #expect(!visibility.contains("sessions.removeAll"))
     }
 
-    @Test("Capture data auto-expands Protocols, Apps, and Domains without following filters")
+    @Test("Capture data auto-expands Protocols, primary source categories, and Domains without following filters")
     func captureDataAutoExpandsSidebarGroups() throws {
         let sidebar = try readProjectFile("Tracexy/Views/Sidebar/SidebarView.swift")
 
         #expect(sidebar.contains(".onChange(of: coordinator.sessions.isEmpty, initial: true)"))
         #expect(sidebar.contains("protocolsExpanded = true"))
-        #expect(sidebar.contains("appsExpanded = true"))
+        #expect(sidebar.contains("category.opensOnCaptureStart"))
+        #expect(sidebar.contains("case .app: appsExpanded = true"))
+        #expect(sidebar.contains("case .cli: cliExpanded = true"))
         #expect(sidebar.contains("domainsExpanded = true"))
         #expect(!sidebar.contains("ipsExpanded = true"))
         #expect(!sidebar.contains(".onChange(of: coordinator.visibleSessions.count"))

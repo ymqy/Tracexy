@@ -285,6 +285,130 @@ struct StickyProcessAttributionTests {
         ])
     }
 
+    @Test("Provenance flows from CapturedFrame to SessionSummary, sticks across snapshots, and drives synthetic filters")
+    func provenancePlumbingAndSyntheticSourceFiltering() async throws {
+        let environment = ProjectIsolationEnvironment(name: "sticky-provenance")
+        defer { environment.tearDown() }
+        let coordinator = environment.makeCoordinator()
+        await coordinator.hydrateProjectsOnLaunch()
+
+        let safariProvenance = ProcessProvenance(
+            executablePath: "/Applications/Safari.app"
+                + "/Contents/XPCServices/com.apple.WebKit.Networking.xpc/Contents/MacOS/com.apple.WebKit.Networking",
+            bundleIdentifier: "com.apple.Safari",
+            viaProcessName: "Safari Networking"
+        )
+        let sampleFrames = SampleCapture.frames(now: Date(timeIntervalSince1970: 1_700_000_000))
+        var taggedFrame = try #require(sampleFrames.first)
+        taggedFrame.processName = "Safari"
+        taggedFrame.processProvenance = safariProvenance
+        let builtFromFrames = SessionBuilder.build(from: [taggedFrame], linkType: LinkType.ethernet)
+        let decodedSession = try #require(builtFromFrames.first)
+        #expect(decodedSession.processName == "Safari")
+        #expect(decodedSession.processProvenance == safariProvenance)
+
+        let mdnsID = UUID()
+        let ndpID = UUID()
+        let unattributedID = UUID()
+        let mdnsSession = SessionSummary(
+            id: mdnsID,
+            startTime: Date(timeIntervalSince1970: 1_700_000_001),
+            duration: 0.01,
+            processName: nil,
+            host: "224.0.0.251",
+            sourceEndpoint: "198.51.100.78:5353",
+            destinationEndpoint: "224.0.0.251:5353",
+            sourceEndpointValue: IPEndpoint(ip: "198.51.100.78", port: 5_353),
+            destinationEndpointValue: IPEndpoint(ip: "224.0.0.251", port: 5_353),
+            protocolStack: [.udp, .mdns],
+            status: .ok,
+            bytesUp: 120,
+            bytesDown: 0
+        )
+        let ndpSession = SessionSummary(
+            id: ndpID,
+            startTime: Date(timeIntervalSince1970: 1_700_000_002),
+            duration: 0,
+            processName: "kernel_task",
+            processProvenance: ProcessProvenance(isRootUser: true, isKernelTask: true),
+            host: "ff02::1",
+            sourceEndpoint: "[fe80::1]:0",
+            destinationEndpoint: "[ff02::1]:0",
+            sourceEndpointValue: IPEndpoint(ip: "fe80::1", port: 0),
+            destinationEndpointValue: IPEndpoint(ip: "ff02::1", port: 0),
+            protocolStack: [.icmpv6],
+            status: .ok,
+            bytesUp: 64,
+            bytesDown: 0
+        )
+        let unattributedSession = SessionSummary(
+            id: unattributedID,
+            startTime: Date(timeIntervalSince1970: 1_700_000_003),
+            duration: 0.25,
+            processName: nil,
+            host: "mystery.example",
+            sourceEndpoint: "127.0.0.1:59999",
+            destinationEndpoint: "203.0.113.20:443",
+            sourceEndpointValue: IPEndpoint(ip: "127.0.0.1", port: 59_999),
+            destinationEndpointValue: IPEndpoint(ip: "203.0.113.20", port: 443),
+            protocolStack: [.udp, .quic],
+            status: .ok,
+            bytesUp: 512,
+            bytesDown: 512,
+            packetsUp: 2,
+            packetsDown: 2
+        )
+
+        await coordinator.publishLiveDetailed(
+            Self.snapshot([decodedSession, mdnsSession, ndpSession, unattributedSession]),
+            expectedGeneration: coordinator.startGeneration,
+            isCapturing: false
+        ).value
+
+        #expect(coordinator.attributedProvenancesBySessionID[decodedSession.id] == safariProvenance)
+        let strippedSafari = SessionSummary(
+            id: decodedSession.id,
+            startTime: decodedSession.startTime,
+            duration: decodedSession.duration,
+            processName: nil,
+            processProvenance: nil,
+            host: decodedSession.host,
+            sourceEndpoint: decodedSession.sourceEndpoint,
+            destinationEndpoint: decodedSession.destinationEndpoint,
+            sourceEndpointValue: decodedSession.sourceEndpointValue,
+            destinationEndpointValue: decodedSession.destinationEndpointValue,
+            protocolStack: decodedSession.protocolStack,
+            status: decodedSession.status,
+            bytesUp: decodedSession.bytesUp,
+            bytesDown: decodedSession.bytesDown
+        )
+        await coordinator.publishLiveDetailed(
+            Self.snapshot([strippedSafari, mdnsSession, ndpSession, unattributedSession]),
+            expectedGeneration: coordinator.startGeneration,
+            isCapturing: false
+        ).value
+
+        let classifiedSafari = coordinator.classifiedSource(for: coordinator.sessions[0])
+        #expect(classifiedSafari.category == .app)
+        #expect(classifiedSafari.subtitle == String(format: String(localized: "via %@"), "Safari Networking"))
+
+        let categories = coordinator.sourceCategoryGroups.map(\.category)
+        #expect(categories == [.app, .lanDiscovery, .kernelAndLink, .unattributed])
+
+        coordinator.selectProcess("lan:mdns")
+        #expect(coordinator.visibleSessions.map(\.id) == [mdnsID])
+
+        coordinator.selectProcess("kernel:ndp")
+        #expect(coordinator.visibleSessions.map(\.id) == [ndpID])
+
+        coordinator.selectProcess("—")
+        #expect(coordinator.visibleSessions.map(\.id) == [unattributedID])
+
+        coordinator.clearSessions()
+        await coordinator.ingestChain?.value
+        #expect(coordinator.attributedProvenancesBySessionID.isEmpty)
+    }
+
     // MARK: Private
 
     private static func snapshot(_ sessions: [SessionSummary]) -> InvestigationSnapshot {

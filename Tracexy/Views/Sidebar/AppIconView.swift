@@ -11,29 +11,33 @@ struct AppIconView: View {
     var size: CGFloat = 16
 
     var body: some View {
+        let badgeSize = (size * 0.86).rounded()
+        let cornerRadius = (badgeSize * 0.26 * 2).rounded() / 2
         if Self.isUnattributedPlaceholder(name) {
-            RoundedRectangle(cornerRadius: 4)
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .fill(.quaternary)
-                .frame(width: size, height: size)
+                .frame(width: badgeSize, height: badgeSize)
                 .overlay {
-                    Image(systemName: "questionmark.app.dashed")
-                        .font(.system(size: max(8, size * 0.72), weight: .medium))
+                    Image(systemName: "questionmark")
+                        .font(.system(size: max(8, badgeSize * 0.62), weight: .semibold))
                         .foregroundStyle(.secondary)
                 }
+                .frame(width: size, height: size)
         } else if let icon = Self.resolvedIcon(for: name, size: size) {
             Image(nsImage: icon)
                 .resizable()
                 .interpolation(.high)
                 .frame(width: size, height: size)
         } else {
-            RoundedRectangle(cornerRadius: 4)
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .fill(gradient)
-                .frame(width: size, height: size)
+                .frame(width: badgeSize, height: badgeSize)
                 .overlay {
                     Text(letter)
-                        .font(.system(size: max(9, size * 0.6), weight: .bold, design: .rounded))
+                        .font(.system(size: max(9, badgeSize * 0.58), weight: .bold, design: .rounded))
                         .foregroundStyle(.white)
                 }
+                .frame(width: size, height: size)
         }
     }
 

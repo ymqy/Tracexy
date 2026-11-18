@@ -324,10 +324,28 @@ struct InspectorView: View {
                 .padding(.vertical, 3)
                 .tracexyChipStyle(tint: Theme.color(for: session.primaryProtocol), isActive: true)
 
-            if let process = session.processName {
-                Text(process)
-                    .font(Theme.Typography.bodyMedium)
-                    .lineLimit(1)
+            let src = coordinator.classifiedSource(for: session)
+            if src.category != .unattributed {
+                HStack(spacing: 5) {
+                    SourceIconView(
+                        category: src.category,
+                        filterKey: src.filterKey,
+                        title: src.title,
+                        subtitle: src.subtitle,
+                        fallbackSymbol: src.symbolName,
+                        size: 17
+                    )
+                    Text(src.title)
+                        .font(Theme.Typography.bodyMedium)
+                        .lineLimit(1)
+                    if let subtitle = src.subtitle, !subtitle.isEmpty {
+                        Text("(\(subtitle))")
+                            .font(Theme.Typography.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                .help(src.subtitle.map { "\(src.title) — \($0)" } ?? src.title)
                 Image(systemName: "arrow.right")
                     .font(.system(size: Theme.Icon.small))
                     .foregroundStyle(.secondary)

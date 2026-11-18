@@ -233,6 +233,13 @@ extension MainContentCoordinator {
         let investigationIDs = workspace.acceptedInvestigationDraft == nil
             ? nil
             : workspace.investigationMatchedSessionIDs
+        let processMatcher: ((SessionSummary, SessionProcessContext?) -> Bool)? = workspace.processFilter.map { filterKey in
+            SessionSourceClassifier.makeFilterMatcher(
+                for: filterKey,
+                localIPs: ProcessResolver.shared.currentLocalIPs,
+                isViewingSavedCapture: isViewingSavedCapture
+            )
+        }
 
         return presentedSessions.filter { session in
             if mutedHosts.contains(session.host)
@@ -253,8 +260,8 @@ extension MainContentCoordinator {
             if let host = workspace.hostFilter, session.host != host {
                 return false
             }
-            if let process = workspace.processFilter,
-               (session.processName ?? "—") != process
+            if let processMatcher,
+               !processMatcher(session, sessionProcessContext(for: session))
             {
                 return false
             }

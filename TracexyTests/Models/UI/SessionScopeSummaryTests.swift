@@ -166,6 +166,25 @@ struct SessionScopeSummaryTests {
         #expect(summary.emptyClassification == .noSessionsCaptured)
     }
 
+    @Test("Synthetic LAN, Kernel, and Unattributed filter keys render human-readable Client labels")
+    func syntheticProcessFilterKeysUseLocalizedTitles() throws {
+        let workspace = WorkspaceState(title: "Capture")
+
+        workspace.processFilter = "lan:mdns"
+        let mdnsLabel = try #require(label(for: workspace, kind: .process))
+        #expect(mdnsLabel.contains(SessionSourceClassifier.displayTitle(forFilterKey: "lan:mdns")))
+        #expect(!mdnsLabel.contains("lan:mdns"))
+
+        workspace.processFilter = "kernel:ndp"
+        let ndpLabel = try #require(label(for: workspace, kind: .process))
+        #expect(ndpLabel.contains(SessionSourceClassifier.displayTitle(forFilterKey: "kernel:ndp")))
+        #expect(!ndpLabel.contains("kernel:ndp"))
+
+        workspace.processFilter = "—"
+        let unattributedLabel = try #require(label(for: workspace, kind: .process))
+        #expect(unattributedLabel.contains(SessionSourceClassifier.displayTitle(forFilterKey: "—")))
+    }
+
     // MARK: Private
 
     private func kinds(for workspace: WorkspaceState) -> [SessionScopeDescriptor.Kind] {

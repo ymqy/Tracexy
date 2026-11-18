@@ -12,6 +12,7 @@ extension MainContentCoordinator {
     ) {
         if !preservingCaptureLocalTools {
             attributedProcessesBySessionID.removeAll()
+            attributedProvenancesBySessionID.removeAll()
             retireCaptureLocalTools()
         }
         let engine = sessionEngine

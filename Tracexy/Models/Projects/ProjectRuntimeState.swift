@@ -76,6 +76,7 @@ final class ProjectRuntimeState {
     var removedSessionIDs: Set<UUID> = []
     var pinnedSessionIDs: [UUID] = []
     var attributedProcessesBySessionID: [UUID: String] = [:]
+    var attributedProvenancesBySessionID: [UUID: ProcessProvenance] = [:]
 
     /// True when this Project's stopped live spool had already completed its exact
     /// final ingest boundary. The generation token itself is never carried across a

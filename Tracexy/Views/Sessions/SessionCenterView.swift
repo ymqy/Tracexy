@@ -506,7 +506,7 @@ struct SessionCenterView: View {
             TableColumn("Client", value: \.sortableProcessName) { session in
                 clientCell(session)
             }
-            .width(min: 90, ideal: 130)
+            .width(min: 100, ideal: 145)
             .customizationID("client")
             TableColumn("Protocol", value: \.primaryProtocolLabel) { session in
                 protocolPill(session.primaryProtocol)
@@ -604,9 +604,9 @@ struct SessionCenterView: View {
             }
             .width(min: 140, ideal: 220)
             TableColumn("Client") { (row: SessionRow) in
-                Text(row.processName ?? "—").font(Theme.Typography.body).lineLimit(1).foregroundStyle(.secondary)
+                groupedClientCell(row)
             }
-            .width(min: 90, ideal: 130)
+            .width(min: 100, ideal: 145)
             TableColumn("Protocol") { (row: SessionRow) in
                 if let proto = row.primaryProtocol {
                     protocolPill(proto)
@@ -874,13 +874,17 @@ struct SessionCenterView: View {
                 coordinator.selectHost(host)
             }
         }
-        if let process = validProcessName(session.processName) {
-            Button("Show Sessions for \(process)", systemImage: "app.badge") {
-                coordinator.selectProcess(process)
+        let classifiedSource = coordinator.classifiedSource(for: session)
+        if classifiedSource.category != .unattributed {
+            Button(
+                "Show Sessions for \(classifiedSource.title)",
+                systemImage: classifiedSource.symbolName ?? classifiedSource.category.systemImage
+            ) {
+                coordinator.selectProcess(classifiedSource.filterKey)
             }
         }
 
-        if hostValid || validProcessName(session.processName) != nil {
+        if hostValid || classifiedSource.category != .unattributed {
             Divider()
         }
 
@@ -956,19 +960,59 @@ struct SessionCenterView: View {
         }
     }
 
-    @ViewBuilder
     private func clientCell(_ session: SessionSummary) -> some View {
-        if let process = session.processName {
-            HStack(spacing: 5) {
-                AppIconView(name: process, size: 15)
-                Text(process).font(Theme.Typography.body).lineLimit(1)
-            }
+        let src = coordinator.classifiedSource(for: session)
+        let isProcessBacked = src.category == .app
+            || src.category == .cli
+            || src.category == .thirdPartyService
+            || src.category == .systemService
+        let labelStyle: HierarchicalShapeStyle = if src.category == .unattributed {
+            .tertiary
+        } else if isProcessBacked {
+            .primary
         } else {
-            HStack(spacing: 5) {
-                Image(systemName: "questionmark.app.dashed")
-                    .font(.system(size: Theme.Icon.medium)).foregroundStyle(.tertiary)
-                Text("—").font(Theme.Typography.body).foregroundStyle(.secondary)
-            }
+            .secondary
+        }
+        let tooltip = src.tableDetail.map { "\(src.title) — \($0)" } ?? src.title
+        return HStack(spacing: 6) {
+            SourceIconView(
+                category: src.category,
+                filterKey: src.filterKey,
+                title: src.title,
+                subtitle: src.subtitle,
+                fallbackSymbol: src.symbolName,
+                size: 17
+            )
+            Text(src.tableLabel)
+                .font(Theme.Typography.body)
+                .lineLimit(1)
+                .foregroundStyle(labelStyle)
+        }
+        .padding(.leading, 1)
+        .help(tooltip)
+    }
+
+    @ViewBuilder
+    private func groupedClientCell(_ row: SessionRow) -> some View {
+        switch row {
+        case let .session(session):
+            clientCell(session)
+        case let .action(activity):
+            let label = validProcessName(row.processName)
+                ?? activity.sessions.first.map { coordinator.classifiedSource(for: $0).tableLabel }
+                ?? "—"
+            Text(label)
+                .font(Theme.Typography.body)
+                .lineLimit(1)
+                .foregroundStyle(.secondary)
+        case let .group(group):
+            let label = validProcessName(row.processName)
+                ?? group.sessions.first.map { coordinator.classifiedSource(for: $0).tableLabel }
+                ?? "—"
+            Text(label)
+                .font(Theme.Typography.body)
+                .lineLimit(1)
+                .foregroundStyle(.secondary)
         }
     }
 

@@ -644,6 +644,8 @@ final class MainContentCoordinator {
     /// Sticky session → app attribution resolved during the current capture so
     /// closed sockets never revert to unattributed on subsequent live snapshots.
     var attributedProcessesBySessionID: [UUID: String] = [:]
+    /// Sticky session → process provenance resolved alongside ``attributedProcessesBySessionID``.
+    var attributedProvenancesBySessionID: [UUID: ProcessProvenance] = [:]
 
     /// The *active Project's* complete local raw-frame retention for save/export.
     /// Every Project keeps its own spool actor while parked, so starting, clearing
@@ -903,6 +905,41 @@ final class MainContentCoordinator {
             .sorted { $0.count > $1.count }
     }
 
+    /// Combined passively learned and manually named IP → hostname mappings for LAN peer annotations.
+    var mergedResolvedNames: [String: String] {
+        if addressNames.names.isEmpty {
+            return addressNames.learnedNames
+        }
+        return addressNames.learnedNames.merging(addressNames.names) { _, manual in manual }
+    }
+
+    /// Per-session process provenance converted to ``SessionProcessContext`` for 7-dimension classification.
+    func sessionProcessContext(for session: SessionSummary) -> SessionProcessContext? {
+        (session.processProvenance ?? attributedProvenancesBySessionID[session.id]).map(SessionProcessContext.init)
+    }
+
+    /// Classifies a single session into one of the 7 traffic source dimensions with role annotations.
+    func classifiedSource(for session: SessionSummary) -> ClassifiedSessionSource {
+        SessionSourceClassifier.classify(
+            session,
+            context: sessionProcessContext(for: session),
+            localIPs: ProcessResolver.shared.currentLocalIPs,
+            isViewingSavedCapture: isViewingSavedCapture,
+            resolvedNames: mergedResolvedNames
+        )
+    }
+
+    /// Presented sessions aggregated into the 7-dimension sidebar Sources hierarchy.
+    var sourceCategoryGroups: [SourceCategoryGroup] {
+        SessionSourceClassifier.group(
+            sessions: presentedSessions,
+            contextProvider: { sessionProcessContext(for: $0) },
+            localIPs: ProcessResolver.shared.currentLocalIPs,
+            isViewingSavedCapture: isViewingSavedCapture,
+            resolvedNames: mergedResolvedNames
+        )
+    }
+
     /// Coarse capture state for the toolbar status capsule.
     var captureDisplayState: CaptureDisplayState {
         if captureError != nil {
@@ -1139,6 +1176,7 @@ final class MainContentCoordinator {
         retainedFrames.reset()
         clearCaptureLocalSessionMarks()
         attributedProcessesBySessionID.removeAll()
+        attributedProvenancesBySessionID.removeAll()
         sessions = []
         // Clear connection + analysis publication at the boundary so a late
         // generation can never revive any of them alongside the cleared sessions.
@@ -1242,6 +1280,7 @@ final class MainContentCoordinator {
         )
         clearCaptureLocalSessionMarks()
         attributedProcessesBySessionID.removeAll()
+        attributedProvenancesBySessionID.removeAll()
         sessions = []
         // Clear stale connection + analysis publication at the start boundary
         // before any new capture work can publish over it.

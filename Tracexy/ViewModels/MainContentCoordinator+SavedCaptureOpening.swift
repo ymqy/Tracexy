@@ -706,6 +706,7 @@ extension MainContentCoordinator {
         if !request.preservesCaptureLocalState {
             clearCaptureLocalSessionMarks()
             attributedProcessesBySessionID.removeAll()
+            attributedProvenancesBySessionID.removeAll()
             clearAllInvestigationQueries()
         }
         sessions = result.sessions
@@ -908,15 +909,38 @@ extension MainContentCoordinator {
         var built = snapshot.sessions
         if !isHistoryDemoMode {
             for index in built.indices {
+                let sessionID = built[index].id
                 if let name = built[index].processName, !name.isEmpty {
-                    attributedProcessesBySessionID[built[index].id] = name
-                } else if let cached = attributedProcessesBySessionID[built[index].id] {
+                    if let previousName = attributedProcessesBySessionID[sessionID],
+                       previousName != name,
+                       built[index].processProvenance == nil
+                    {
+                        attributedProvenancesBySessionID.removeValue(forKey: sessionID)
+                    }
+                    attributedProcessesBySessionID[sessionID] = name
+                    if let provenance = built[index].processProvenance {
+                        attributedProvenancesBySessionID[sessionID] = provenance
+                    } else if let cachedProvenance = attributedProvenancesBySessionID[sessionID] {
+                        built[index].processProvenance = cachedProvenance
+                    }
+                } else if let cached = attributedProcessesBySessionID[sessionID] {
                     built[index].processName = cached
-                } else if let app = ProcessResolver.shared.appName(
+                    if let provenance = built[index].processProvenance {
+                        attributedProvenancesBySessionID[sessionID] = provenance
+                    } else if let cachedProvenance = attributedProvenancesBySessionID[sessionID] {
+                        built[index].processProvenance = cachedProvenance
+                    }
+                } else if let hit = ProcessResolver.shared.attribution(
                     forEndpoints: built[index].sourceEndpoint, built[index].destinationEndpoint
-                ), !app.isEmpty {
-                    built[index].processName = app
-                    attributedProcessesBySessionID[built[index].id] = app
+                ), !hit.appName.isEmpty {
+                    built[index].processName = hit.appName
+                    built[index].processProvenance = hit.provenance
+                    attributedProcessesBySessionID[sessionID] = hit.appName
+                    attributedProvenancesBySessionID[sessionID] = hit.provenance
+                } else if let provenance = built[index].processProvenance {
+                    attributedProvenancesBySessionID[sessionID] = provenance
+                } else if let cachedProvenance = attributedProvenancesBySessionID[sessionID] {
+                    built[index].processProvenance = cachedProvenance
                 }
             }
             if built.contains(where: { ($0.processName ?? "").isEmpty }) {

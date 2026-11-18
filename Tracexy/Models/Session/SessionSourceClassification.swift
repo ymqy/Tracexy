@@ -79,6 +79,18 @@ nonisolated struct SessionProcessContext: Equatable, Hashable, Sendable, Codable
         self.isKernelTask = isKernelTask
     }
 
+    init(_ provenance: ProcessProvenance) {
+        self.init(
+            executablePath: provenance.executablePath,
+            bundleIdentifier: provenance.bundleIdentifier,
+            viaProcessName: provenance.viaProcessName,
+            parentProcessName: provenance.parentProcessName,
+            hasControllingTTY: provenance.hasControllingTTY,
+            isRootUser: provenance.isRootUser,
+            isKernelTask: provenance.isKernelTask
+        )
+    }
+
     // MARK: Internal
 
     var executablePath: String?
@@ -567,6 +579,42 @@ nonisolated enum SessionSourceClassifier {
         return classified.filterKey == filterKey
     }
 
+    /// Pre-normalizes `localIPs` once outside a session-filtering loop so evaluating
+    /// `workspace.processFilter` across thousands of sessions is O(N) with zero per-session
+    /// IP-set allocations.
+    static func makeFilterMatcher(
+        for filterKey: String,
+        localIPs: Set<String> = [],
+        isViewingSavedCapture: Bool = false
+    )
+        -> (SessionSummary, SessionProcessContext?) -> Bool
+    {
+        if !isSyntheticFilterKey(filterKey) {
+            return { session, context in
+                let rawName = normalizedProcessName(session.processName)
+                return !isKernelTaskSession(rawName: rawName, context: context) && rawName == filterKey
+            }
+        }
+        let normalizedLocal = normalizeIPSet(localIPs)
+        return { session, context in
+            let rawName = normalizedProcessName(session.processName)
+            let isKernel = isKernelTaskSession(rawName: rawName, context: context)
+            if rawName != nil, !isKernel {
+                return false
+            }
+            let classified = classifyNormalized(
+                session,
+                context: context,
+                normalizedLocalIPs: normalizedLocal,
+                isViewingSavedCapture: isViewingSavedCapture,
+                normalizedResolvedNames: [:],
+                homeDirectoryPath: "",
+                appBundleExistsLookup: { _ in false }
+            )
+            return classified.filterKey == filterKey
+        }
+    }
+
     /// Default `.app` bundle existence lookup used when `executablePath` is unavailable.
     static func defaultAppBundleExists(_ rawName: String) -> Bool {
         if wellKnownAppNames.contains(rawName) {
@@ -607,9 +655,12 @@ nonisolated enum SessionSourceClassifier {
 
     private static let knownCLICommands: Set<String> = [
         "curl", "wget", "ssh", "git", "node", "python", "python3", "codex", "go", "ruby",
-        "java", "nc", "dig", "ping", "rsync", "scp", "brew", "npm", "pnpm", "bun", "deno",
-        "cargo", "rustc", "swift", "swiftc", "clang", "lldb", "openssl", "sftp", "gh",
-        "pip", "pip3", "uv",
+        "java", "nc", "dig", "ping", "ping6", "traceroute", "traceroute6", "tcpdump",
+        "netstat", "lsof", "arp", "ndp", "ifconfig", "route", "scutil", "networksetup",
+        "networkQuality", "dscacheutil", "dns-sd", "nslookup", "host", "whois", "telnet",
+        "ftp", "tftp", "rsync", "scp", "brew", "npm", "pnpm", "bun", "deno", "cargo",
+        "rustc", "swift", "swiftc", "clang", "lldb", "openssl", "sftp", "gh", "pip",
+        "pip3", "uv",
     ]
 
     private static let ignoredParentLauncherNames: Set<String> = [
@@ -693,6 +744,7 @@ nonisolated enum SessionSourceClassifier {
             rawName: rawName,
             executablePath: path,
             bundleIdentifier: bundleID,
+            context: context,
             appBundleExistsLookup: appBundleExistsLookup
         ) {
             let subtitle = systemServiceSubtitle(rawName: rawName, executablePath: path)
@@ -758,17 +810,24 @@ nonisolated enum SessionSourceClassifier {
         rawName: String,
         executablePath: String?,
         bundleIdentifier: String?,
+        context: SessionProcessContext?,
         appBundleExistsLookup: (String) -> Bool
     )
         -> Bool
     {
         if let path = executablePath {
+            if path.hasPrefix("/Library/Developer/") || path.contains(".xctoolchain/") {
+                return false
+            }
             if path.hasPrefix("/System/Library/")
                 || path.hasPrefix("/usr/libexec/")
-                || path.hasPrefix("/usr/sbin/")
-                || path.hasPrefix("/sbin/")
             {
                 return true
+            }
+            if path.hasPrefix("/usr/sbin/") || path.hasPrefix("/sbin/") {
+                let isInteractiveOrKnownCLI = !knownSystemDaemonNames.contains(rawName)
+                    && (knownCLICommands.contains(rawName) || context?.hasControllingTTY == true)
+                return !isInteractiveOrKnownCLI
             }
             if bundleIdentifier?.hasPrefix("com.apple.") == true {
                 let isSystemAppsApp = (path.hasPrefix("/System/Applications/")
@@ -823,6 +882,11 @@ nonisolated enum SessionSourceClassifier {
                 || path.hasPrefix("/Library/Developer/")
                 || path.hasPrefix("/usr/bin/")
                 || path.hasPrefix("/bin/")
+            {
+                return true
+            }
+            if (path.hasPrefix("/sbin/") || path.hasPrefix("/usr/sbin/"))
+                && knownCLICommands.contains(rawName)
             {
                 return true
             }
@@ -895,7 +959,11 @@ nonisolated enum SessionSourceClassifier {
         if let path = executablePath {
             if path.hasPrefix("/opt/homebrew/") || path.hasPrefix("/usr/local/") {
                 parts.append(String(localized: "Homebrew CLI"))
-            } else if path.hasPrefix("/usr/bin/") || path.hasPrefix("/bin/") {
+            } else if path.hasPrefix("/usr/bin/")
+                || path.hasPrefix("/bin/")
+                || path.hasPrefix("/sbin/")
+                || path.hasPrefix("/usr/sbin/")
+            {
                 parts.append(String(localized: "System CLI"))
             } else if path.hasPrefix("/Library/Developer/")
                 || cliToolchainPathFragments.contains(where: { path.contains($0) })

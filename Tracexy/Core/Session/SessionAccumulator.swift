@@ -477,6 +477,7 @@ private extension SessionAccumulator {
                 startTime: start,
                 duration: duration,
                 processName: processName,
+                processProvenance: processProvenance,
                 host: host,
                 sourceEndpoint: client?.display ?? "—",
                 destinationEndpoint: server?.display ?? "—",
@@ -591,6 +592,7 @@ private extension SessionAccumulator {
         private var messageTally = SessionMessageTally()
         private var dnsQuery: String?
         private var processName: String?
+        private var processProvenance: ProcessProvenance?
         /// Unique published answers in first-seen order, bounded by the publication
         /// cap. Dedup scans this bounded list, so no unbounded Set is retained.
         private var dnsAnswers: [String] = []
@@ -771,6 +773,9 @@ private extension SessionAccumulator {
             }
             if processName == nil, let name = packet.processName, !name.isEmpty {
                 processName = name
+            }
+            if processProvenance == nil, let provenance = packet.processProvenance {
+                processProvenance = provenance
             }
             // Publish unique answers in first-seen order, deduped against the
             // bounded published list (never an unbounded Set). A duplicate is

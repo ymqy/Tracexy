@@ -242,7 +242,10 @@ struct SessionScopeSummary: Equatable {
             descriptors.append(drillDown(kind: .host, title: String(localized: "Host"), value: host))
         }
         if let process = workspace.processFilter {
-            descriptors.append(drillDown(kind: .process, title: String(localized: "Client"), value: process))
+            let displayProcess = SessionSourceClassifier.isSyntheticFilterKey(process)
+                ? SessionSourceClassifier.displayTitle(forFilterKey: process)
+                : process
+            descriptors.append(drillDown(kind: .process, title: String(localized: "Client"), value: displayProcess))
         }
         if let ip = workspace.ipFilter {
             descriptors.append(drillDown(kind: .ip, title: "IP", value: ip))

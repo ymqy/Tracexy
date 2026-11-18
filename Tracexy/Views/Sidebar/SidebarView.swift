@@ -72,7 +72,15 @@ struct SidebarView: View {
     // Large, dynamic source lists start collapsed so the idle sidebar stays
     // scannable. The first decoded session opens the useful capture groups once;
     // after that, user disclosure choices and search remain authoritative.
+    // Separate @State Bools keep NSOutlineView's structural branch identity stable
+    // as sibling categories dynamically enter and leave during live capture.
     @State private var appsExpanded = false
+    @State private var cliExpanded = false
+    @State private var thirdPartyServicesExpanded = false
+    @State private var systemServicesExpanded = false
+    @State private var lanExpanded = false
+    @State private var kernelAndLinkExpanded = false
+    @State private var unattributedExpanded = false
     @State private var domainsExpanded = false
     @State private var ipsExpanded = false
 
@@ -102,31 +110,87 @@ struct SidebarView: View {
         return SidebarSection.protocols.items.filter { matches($0.title) }
     }
 
-    /// Apps whose name matches, or that contacted a matching host. A name match
-    /// keeps every child; otherwise only the matching hosts are shown.
-    private var visibleAppGroups: [AppGroup] {
-        coordinator.appGroups.compactMap { group in
-            guard !coordinator.isSourceAppHidden(group.app) else {
-                return nil
-            }
-            let hosts = group.hosts.filter { !coordinator.isSourceHostHidden($0) }
-            return AppGroup(app: group.app, hosts: hosts, count: group.count)
-        }
+    private struct SourceCategoryDisplay: Identifiable {
+        let category: TrafficSourceCategory
+        let visibleCount: Int
+        let filteredItems: [SourceItemGroup]
+
+        var id: TrafficSourceCategory { category }
     }
 
-    private var filteredAppGroups: [AppGroup] {
-        guard isSearching else {
-            return visibleAppGroups
-        }
-        if matches("Apps") || matches("Sources") {
-            return visibleAppGroups
-        }
-        return visibleAppGroups.compactMap { group in
-            if matches(group.app) {
-                return group
+    /// 7-dimension traffic sources filtered against hidden source/host/IP preferences.
+    private var visibleItemsBySourceCategory: [TrafficSourceCategory: [SourceItemGroup]] {
+        var result: [TrafficSourceCategory: [SourceItemGroup]] = [:]
+        for group in coordinator.sourceCategoryGroups {
+            let items: [SourceItemGroup] = group.items.compactMap { item in
+                guard !coordinator.isSourceAppHidden(item.filterKey) else {
+                    return nil
+                }
+                let children = item.children.filter { child in
+                    switch child.kind {
+                    case .host: !coordinator.isSourceHostHidden(child.value)
+                    case .peerIP: !coordinator.isSourceIPHidden(child.value)
+                    }
+                }
+                return SourceItemGroup(
+                    filterKey: item.filterKey,
+                    category: item.category,
+                    title: item.title,
+                    subtitle: item.subtitle,
+                    symbolName: item.symbolName,
+                    children: children,
+                    count: item.count
+                )
             }
-            let hosts = group.hosts.filter { matches($0) }
-            return hosts.isEmpty ? nil : AppGroup(app: group.app, hosts: hosts, count: group.count)
+            if !items.isEmpty {
+                result[group.category] = items
+            }
+        }
+        return result
+    }
+
+    private var displayedSourceCategories: [SourceCategoryDisplay] {
+        let byCategory = visibleItemsBySourceCategory
+        let matchesSectionHeader = isSearching
+            && (matches(String(localized: "Sources")) || matches("Sources"))
+        return TrafficSourceCategory.allCases.compactMap { category in
+            let visibleItems = byCategory[category] ?? []
+            let filteredItems: [SourceItemGroup]
+            if !isSearching || matchesSectionHeader || matches(category.title) {
+                filteredItems = visibleItems
+            } else {
+                filteredItems = visibleItems.compactMap { item in
+                    if matches(item.title) || (item.subtitle.map(matches) ?? false) {
+                        return item
+                    }
+                    let matchingChildren = item.children.filter {
+                        matches($0.label) || matches($0.value)
+                    }
+                    guard !matchingChildren.isEmpty else {
+                        return nil
+                    }
+                    return SourceItemGroup(
+                        filterKey: item.filterKey,
+                        category: item.category,
+                        title: item.title,
+                        subtitle: item.subtitle,
+                        symbolName: item.symbolName,
+                        children: matchingChildren,
+                        count: item.count
+                    )
+                }
+            }
+            let showsHiddenRestoreFallback = category == .app
+                && !isSearching
+                && !coordinator.hiddenSourceApps.isEmpty
+            guard !filteredItems.isEmpty || showsHiddenRestoreFallback else {
+                return nil
+            }
+            return SourceCategoryDisplay(
+                category: category,
+                visibleCount: visibleItems.count,
+                filteredItems: filteredItems
+            )
         }
     }
 
@@ -170,10 +234,6 @@ struct SidebarView: View {
         return visibleIPHosts.filter { matches($0.name) }
     }
 
-    private var showsAppsCategory: Bool {
-        !filteredAppGroups.isEmpty || (!isSearching && !coordinator.hiddenSourceApps.isEmpty)
-    }
-
     private var showsDomainsCategory: Bool {
         !filteredDomainGroups.isEmpty || (!isSearching && !coordinator.hiddenSourceDomains.isEmpty)
     }
@@ -215,7 +275,7 @@ struct SidebarView: View {
     private var browseHasResults: Bool {
         !filteredMonitorItems.isEmpty
             || !filteredProtocolItems.isEmpty
-            || !filteredAppGroups.isEmpty
+            || !displayedSourceCategories.isEmpty
             || !filteredDomainGroups.isEmpty
             || !filteredIPHosts.isEmpty
     }
@@ -428,28 +488,29 @@ struct SidebarView: View {
 
     // MARK: Sources (Browse)
 
-    /// Apps that originated traffic, each with its real icon, expandable to the
-    /// hosts/IPs that app contacted.
-    private var appsDisclosure: some View {
-        DisclosureGroup(isExpanded: searchExpansion($appsExpanded)) {
-            if filteredAppGroups.isEmpty {
-                Text("No visible apps")
+    /// One of the 7 semantic traffic source categories (`Apps`, `CLI Tools`,
+    /// `Third-Party Services`, `System Services`, `LAN & Discovery`, `Kernel & Link`,
+    /// `Unattributed`), expandable to its source rows and their hosts or peer IPs.
+    private func sourceCategoryDisclosure(_ display: SourceCategoryDisplay, expanded: Binding<Bool>) -> some View {
+        DisclosureGroup(isExpanded: searchExpansion(expanded)) {
+            if display.filteredItems.isEmpty {
+                Text("No visible sources")
                     .font(Theme.Typography.caption).foregroundStyle(.tertiary)
             } else {
-                ForEach(filteredAppGroups) { group in
-                    AppRow(group: group, coordinator: coordinator, forceExpanded: isSearching)
+                ForEach(display.filteredItems) { item in
+                    SourceItemRow(item: item, coordinator: coordinator, forceExpanded: isSearching)
                 }
             }
         } label: {
             sourceCategoryLabel(
-                title: "Apps",
-                systemImage: "app.badge",
-                count: visibleAppGroups.count,
-                expanded: $appsExpanded,
-                copyLabel: "Copy App Names",
-                values: filteredAppGroups.map(\.app).filter { $0 != "—" },
+                title: display.category.title,
+                systemImage: display.category.systemImage,
+                count: display.visibleCount,
+                expanded: expanded,
+                copyLabel: "Copy Source Names",
+                values: display.filteredItems.map(\.title),
                 hiddenCount: coordinator.hiddenSourceApps.count,
-                restoreLabel: "Restore Hidden Apps",
+                restoreLabel: "Restore Hidden Sources",
                 onRestore: coordinator.restoreHiddenSourceApps
             )
         }
@@ -468,7 +529,7 @@ struct SidebarView: View {
             }
         } label: {
             sourceCategoryLabel(
-                title: "Domains",
+                title: String(localized: "Domains"),
                 systemImage: "globe",
                 count: visibleDomainGroups.count,
                 expanded: $domainsExpanded,
@@ -517,7 +578,7 @@ struct SidebarView: View {
             }
         } label: {
             sourceCategoryLabel(
-                title: "IP Addresses",
+                title: String(localized: "IP Addresses"),
                 systemImage: "number",
                 count: visibleIPHosts.count,
                 expanded: $ipsExpanded,
@@ -715,12 +776,12 @@ struct SidebarView: View {
             Button("Show All Sessions", systemImage: "rectangle.stack") {
                 coordinator.selectSidebarItem(.sessions)
             }
-            Button(copyLabel, systemImage: "doc.on.doc") {
+            Button(LocalizedStringKey(copyLabel), systemImage: "doc.on.doc") {
                 copyToPasteboard(values.joined(separator: "\n"))
             }
             .disabled(values.isEmpty)
             if hiddenCount > 0 {
-                Button("\(restoreLabel) (\(hiddenCount))", systemImage: "arrow.uturn.backward") {
+                Button("\(NSLocalizedString(restoreLabel, comment: "")) (\(hiddenCount))", systemImage: "arrow.uturn.backward") {
                     onRestore()
                 }
             }
@@ -784,10 +845,31 @@ struct SidebarView: View {
                 }
             }
 
-            if showsAppsCategory || showsDomainsCategory || showsIPAddressesCategory {
-                Section("Sources") {
-                    if showsAppsCategory {
-                        appsDisclosure
+            if !displayedSourceCategories.isEmpty || showsDomainsCategory || showsIPAddressesCategory {
+                let displaysByCategory = Dictionary(
+                    uniqueKeysWithValues: displayedSourceCategories.map { ($0.category, $0) }
+                )
+                Section(String(localized: "Sources")) {
+                    if let display = displaysByCategory[.app] {
+                        sourceCategoryDisclosure(display, expanded: $appsExpanded)
+                    }
+                    if let display = displaysByCategory[.cli] {
+                        sourceCategoryDisclosure(display, expanded: $cliExpanded)
+                    }
+                    if let display = displaysByCategory[.thirdPartyService] {
+                        sourceCategoryDisclosure(display, expanded: $thirdPartyServicesExpanded)
+                    }
+                    if let display = displaysByCategory[.systemService] {
+                        sourceCategoryDisclosure(display, expanded: $systemServicesExpanded)
+                    }
+                    if let display = displaysByCategory[.lanDiscovery] {
+                        sourceCategoryDisclosure(display, expanded: $lanExpanded)
+                    }
+                    if let display = displaysByCategory[.kernelAndLink] {
+                        sourceCategoryDisclosure(display, expanded: $kernelAndLinkExpanded)
+                    }
+                    if let display = displaysByCategory[.unattributed] {
+                        sourceCategoryDisclosure(display, expanded: $unattributedExpanded)
                     }
                     if showsDomainsCategory {
                         domainsDisclosure
@@ -879,7 +961,17 @@ struct SidebarView: View {
             return
         }
         protocolsExpanded = true
-        appsExpanded = true
+        for category in TrafficSourceCategory.allCases where category.opensOnCaptureStart {
+            switch category {
+            case .app: appsExpanded = true
+            case .cli: cliExpanded = true
+            case .thirdPartyService: thirdPartyServicesExpanded = true
+            case .systemService: systemServicesExpanded = true
+            case .lanDiscovery: lanExpanded = true
+            case .kernelAndLink: kernelAndLinkExpanded = true
+            case .unattributed: unattributedExpanded = true
+            }
+        }
         domainsExpanded = true
     }
 
@@ -1115,7 +1207,7 @@ private struct SidebarSourceContextMenu: View {
         Button("Show Sessions", systemImage: "rectangle.stack") {
             onShowSessions()
         }
-        Button(copyLabel, systemImage: "doc.on.doc") {
+        Button(LocalizedStringKey(copyLabel), systemImage: "doc.on.doc") {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(value, forType: .string)
         }
@@ -1148,66 +1240,28 @@ struct PinHostButton: View {
     }
 }
 
-// MARK: - AppRow
+// MARK: - SourceItemRow
 
-/// An app in the sidebar that expands to the hosts/IPs it contacted.
-private struct AppRow: View {
+/// A classified traffic source in the sidebar (App, CLI Tool, Third-Party Service,
+/// System Service, LAN & Discovery, Kernel & Link, or Unattributed) with role/via
+/// subtitle and expandable remote hosts or LAN peer IPs.
+private struct SourceItemRow: View {
     // MARK: Internal
 
-    let group: AppGroup
+    let item: SourceItemGroup
     let coordinator: MainContentCoordinator
     var forceExpanded = false
 
     var body: some View {
-        DisclosureGroup(isExpanded: expansion) {
-            ForEach(group.hosts, id: \.self) { host in
-                Label(host, systemImage: "arrow.right")
-                    .labelStyle(.titleOnly)
-                    .foregroundStyle(isActiveHost(host) ? Color.accentColor : .secondary)
-                    .font(isActiveHost(host) ? Theme.Typography.navigationMedium : Theme.Typography.navigation)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-                    .onTapGesture { coordinator.selectHost(host) }
-                    .accessibilityAddTraits(.isButton)
-                    .accessibilityAddTraits(isActiveHost(host) ? .isSelected : [])
-                    .accessibilityAction { coordinator.selectHost(host) }
-                    .help("Show sessions for \(host)")
-                    .contextMenu {
-                        SidebarSourceContextMenu(
-                            value: host,
-                            copyLabel: "Copy Address",
-                            pinnedHost: host,
-                            coordinator: coordinator,
-                            onShowSessions: { coordinator.selectHost(host) },
-                            onRemove: { coordinator.hideSourceHost(host) }
-                        )
-                    }
-            }
-        } label: {
-            HStack(spacing: 6) {
-                AppIconView(name: group.app)
-                Text(group.app).lineLimit(1)
-                    .font(isActiveApp ? Theme.Typography.navigationMedium : Theme.Typography.navigation)
-                    .foregroundStyle(isActiveApp ? Color.accentColor : .primary)
-                Spacer(minLength: 0)
-            }
-            .badge(group.count)
-            .contentShape(Rectangle())
-            .onTapGesture { coordinator.selectProcess(group.app) }
-            .accessibilityAddTraits(.isButton)
-            .accessibilityAddTraits(isActiveApp ? .isSelected : [])
-            .accessibilityAction { coordinator.selectProcess(group.app) }
-            .help("Show sessions from \(group.app)")
-            .contextMenu {
-                SidebarSourceContextMenu(
-                    value: group.app,
-                    copyLabel: "Copy App Name",
-                    pinnedHost: nil,
-                    coordinator: coordinator,
-                    onShowSessions: { coordinator.selectProcess(group.app) },
-                    onRemove: { coordinator.hideSourceApp(group.app) }
-                )
+        if item.children.isEmpty {
+            sourceItemLabel
+        } else {
+            DisclosureGroup(isExpanded: expansion) {
+                ForEach(item.children) { child in
+                    sourceChildRow(child)
+                }
+            } label: {
+                sourceItemLabel
             }
         }
     }
@@ -1220,13 +1274,102 @@ private struct AppRow: View {
         Binding(get: { forceExpanded || expanded }, set: { expanded = $0 })
     }
 
-    private var isActiveApp: Bool {
+    private var isActiveSource: Bool {
         coordinator.activeWorkspace.sidebarSelection == .sessions
-            && coordinator.activeWorkspace.processFilter == group.app
+            && coordinator.activeWorkspace.processFilter == item.filterKey
     }
 
-    private func isActiveHost(_ host: String) -> Bool {
-        coordinator.activeWorkspace.sidebarSelection == .sessions
-            && coordinator.activeWorkspace.hostFilter == host
+    private var sourceItemLabel: some View {
+        let hasSubtitle = (item.subtitle?.isEmpty == false)
+        return HStack(alignment: hasSubtitle ? .top : .center, spacing: 7) {
+            SourceIconView(
+                category: item.category,
+                filterKey: item.filterKey,
+                title: item.title,
+                subtitle: item.subtitle,
+                fallbackSymbol: item.symbolName,
+                isActive: isActiveSource,
+                size: 18
+            )
+            VStack(alignment: .leading, spacing: 1.5) {
+                Text(item.title)
+                    .font(isActiveSource ? Theme.Typography.navigationMedium : Theme.Typography.navigation)
+                    .foregroundStyle(isActiveSource ? Color.accentColor : .primary)
+                    .lineLimit(1)
+                if let subtitle = item.subtitle, !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(Theme.Typography.micro)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, hasSubtitle ? 1.5 : 0.5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .badge(item.count)
+        .contentShape(Rectangle())
+        .onTapGesture { coordinator.selectProcess(item.filterKey) }
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAddTraits(isActiveSource ? .isSelected : [])
+        .accessibilityAction { coordinator.selectProcess(item.filterKey) }
+        .help(item.subtitle.map { "\(item.title) — \($0)" } ?? item.title)
+        .contextMenu {
+            SidebarSourceContextMenu(
+                value: item.title,
+                copyLabel: "Copy Source Name",
+                pinnedHost: nil,
+                coordinator: coordinator,
+                onShowSessions: { coordinator.selectProcess(item.filterKey) },
+                onRemove: { coordinator.hideSourceApp(item.filterKey) }
+            )
+        }
+    }
+
+    private func sourceChildRow(_ child: SourceChildTarget) -> some View {
+        let isActive = isActiveChild(child)
+        let selectAction: () -> Void = switch child.kind {
+        case .host: { coordinator.selectHost(child.value) }
+        case .peerIP: { coordinator.selectIP(child.value) }
+        }
+        let removeAction: () -> Void = switch child.kind {
+        case .host: { coordinator.hideSourceHost(child.value) }
+        case .peerIP: { coordinator.hideSourceIP(child.value) }
+        }
+        let copyLabel = child.kind == .host ? "Copy Address" : "Copy IP Address"
+        let childSymbol = child.kind == .host ? "globe" : "point.3.connected.trianglepath.dotted"
+        return Label(child.label, systemImage: childSymbol)
+            .font(isActive ? Theme.Typography.navigationMedium : Theme.Typography.navigation)
+            .foregroundStyle(isActive ? Color.accentColor : .secondary)
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture(perform: selectAction)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAddTraits(isActive ? .isSelected : [])
+            .accessibilityAction { selectAction() }
+            .help(child.label)
+            .contextMenu {
+                SidebarSourceContextMenu(
+                    value: child.value,
+                    copyLabel: copyLabel,
+                    pinnedHost: child.value,
+                    coordinator: coordinator,
+                    onShowSessions: selectAction,
+                    onRemove: removeAction
+                )
+            }
+    }
+
+    private func isActiveChild(_ child: SourceChildTarget) -> Bool {
+        guard coordinator.activeWorkspace.sidebarSelection == .sessions else {
+            return false
+        }
+        switch child.kind {
+        case .host:
+            return coordinator.activeWorkspace.hostFilter == child.value
+        case .peerIP:
+            return coordinator.activeWorkspace.ipFilter == child.value
+        }
     }
 }
