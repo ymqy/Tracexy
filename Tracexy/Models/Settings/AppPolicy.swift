@@ -33,35 +33,35 @@ protocol AppPolicy: Sendable {
 
 extension AppPolicy {
     var maxProjects: Int {
-        3
+        ProjectLimits.maximumProjects
     }
 
     var maxWorkspaceTabs: Int {
-        8
+        ProjectLimits.maximumWorkspacesPerProject
     }
 
     var maxFocusSets: Int {
-        5
+        1_000
     }
 
     var maxPinnedHosts: Int {
-        5
+        1_000
     }
 
     var maxSessionFilterRules: Int {
-        12
+        ProjectLimits.maximumFilterRules
     }
 
     var maxFilterButtons: Int {
-        10
+        ProjectLimits.maximumFilterButtons
     }
 
     var maxExpressionMacros: Int {
-        10
+        ProjectLimits.maximumExpressionMacros
     }
 
     var maxGeoIPDatabases: Int {
-        1
+        ProjectLimits.maximumGeoIPDatabases
     }
 }
 
@@ -71,12 +71,12 @@ extension AppPolicy {
 /// rather than inherited from the protocol extension so this file reads as the
 /// single answer to "what are the limits?".
 struct DefaultAppPolicy: AppPolicy {
-    let maxProjects = 3
-    let maxWorkspaceTabs = 8
-    let maxFocusSets = 5
-    let maxPinnedHosts = 5
-    let maxSessionFilterRules = 12
-    let maxFilterButtons = 10
-    let maxExpressionMacros = 10
-    let maxGeoIPDatabases = 1
+    let maxProjects = ProjectLimits.maximumProjects
+    let maxWorkspaceTabs = ProjectLimits.maximumWorkspacesPerProject
+    let maxFocusSets = 1_000
+    let maxPinnedHosts = 1_000
+    let maxSessionFilterRules = ProjectLimits.maximumFilterRules
+    let maxFilterButtons = ProjectLimits.maximumFilterButtons
+    let maxExpressionMacros = ProjectLimits.maximumExpressionMacros
+    let maxGeoIPDatabases = ProjectLimits.maximumGeoIPDatabases
 }
