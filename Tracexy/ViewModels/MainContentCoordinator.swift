@@ -516,6 +516,13 @@ final class MainContentCoordinator {
 
     /// Shared privileged-helper manager (install/version/update/uninstall).
     let helper = HelperClient.shared
+    /// Injectable helper XPC proxy seam so unit tests exercise `pollHelper()`,
+    /// watchdog timing, and `failActiveHelperCapture` without a privileged daemon.
+    @ObservationIgnored var helperProxyOverride: (() throws -> any TracexyHelperProtocol)?
+    /// Active-capture non-response threshold before `pollHelper()` fails the capture.
+    @ObservationIgnored var helperPollWatchdogNanoseconds: UInt64 = HelperPollReplyTracker.defaultWatchdogNanoseconds
+    /// Lock-protected off-`@MainActor` receipt state for in-flight `fetchFrames` calls.
+    @ObservationIgnored let helperPollReplyTracker = HelperPollReplyTracker()
 
     // MARK: Terminal history persistence
 
@@ -656,6 +663,12 @@ final class MainContentCoordinator {
     /// call hops onto the engine actor, and so a boundary reset is ordered ahead
     /// of the ingests that follow it.
     var ingestChain: Task<Void, Never>?
+    /// Number of off-main live-ingest worker tasks spawned since the last capture boundary.
+    @ObservationIgnored private(set) var liveIngestDrainTaskCount = 0
+    /// Most recent coalescing queue created for live `ingest` batches (for telemetry).
+    @ObservationIgnored private(set) var lastLiveIngestQueue: LiveIngestBatchQueue?
+    @ObservationIgnored private var activeLiveIngestQueue: LiveIngestBatchQueue?
+    @ObservationIgnored private var activeLiveIngestTask: Task<Void, Never>?
     /// Bounded FIFO window of raw frames kept for immediate UI state. Complete
     /// save/export reads the disk-backed spool instead.
     var retainedFrames = RetainedFrameBuffer(capacity: MainContentCoordinator.retainedFrameLimit)
@@ -1169,6 +1182,8 @@ final class MainContentCoordinator {
         // Supersede any in-flight engine work so a late snapshot can't repopulate
         // the list after a clear, and zero the accounting counters.
         startGeneration &+= 1
+        sealActiveLiveIngestQueue()
+        liveIngestDrainTaskCount = 0
         // A clear during a file-set capture starts a fresh set folder.
         resetSessionEngine(token: startGeneration, fileSet: isCapturing ? fileSetPolicyForNewCapture() : nil)
         captureStatistics = nil
@@ -1292,6 +1307,8 @@ final class MainContentCoordinator {
         // Capture boundary: clear engine state + all drop/eviction counters so a
         // new capture starts from a clean, zeroed accounting.
         lastFileSet = nil
+        sealActiveLiveIngestQueue()
+        liveIngestDrainTaskCount = 0
         resetSessionEngine(token: startGeneration, fileSet: fileSetPolicyForNewCapture())
         helperBufferDropCount = 0
         captureStatistics = nil
@@ -1389,6 +1406,7 @@ final class MainContentCoordinator {
         helperFetchGeneration &+= 1
         helperFetchInFlight = false
         helperStopRequested = false
+        helperPollReplyTracker.reset()
 
         let owed = owedFinalDrain
         // Normal idle helper maintenance: nothing is running and nothing is owed, so
@@ -1459,6 +1477,19 @@ final class MainContentCoordinator {
         return comps.dropLast().joined(separator: ":")
     }
 
+    private func sealActiveLiveIngestQueue() {
+        activeLiveIngestQueue?.sealForBoundary()
+        activeLiveIngestQueue = nil
+        activeLiveIngestTask = nil
+    }
+
+    private func currentHelperProxy() throws -> any TracexyHelperProtocol {
+        if let helperProxyOverride {
+            return try helperProxyOverride()
+        }
+        return try helper.proxy()
+    }
+
     /// Settle the current capture at its exact stopped boundary.
     ///
     /// `canAwaitHelperReply` is `false` only on the explicit destructive-reset path,
@@ -1480,8 +1511,9 @@ final class MainContentCoordinator {
         beginFinalCaptureDrain(stoppedToken: stoppedToken, captureToken: captureToken)
         helperFetchGeneration &+= 1
         helperFetchInFlight = false
+        helperPollReplyTracker.reset()
         var awaitsHelperStopReply = false
-        if canAwaitHelperReply, !usesInProcessCapture, let proxy = try? helper.proxy() {
+        if canAwaitHelperReply, !usesInProcessCapture, let proxy = try? currentHelperProxy() {
             awaitsHelperStopReply = true
             proxy.stopCapture { [weak self] batch in
                 // The helper worker has now finished its read loop, sampled final
@@ -1639,7 +1671,7 @@ extension MainContentCoordinator {
             return
         }
         do {
-            let proxy = try helper.proxy()
+            let proxy = try currentHelperProxy()
             proxy.startCapture(configuration: configuration) { [weak self] started, message in
                 Task { @MainActor in
                     guard let self, self.startGeneration == token else {
@@ -1681,6 +1713,7 @@ extension MainContentCoordinator {
         helperFetchGeneration &+= 1
         helperFetchInFlight = false
         helperStopRequested = false
+        helperPollReplyTracker.reset()
         pollTimer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { [weak self] _ in
             guard let coordinator = self else {
                 return
@@ -1689,11 +1722,11 @@ extension MainContentCoordinator {
         }
     }
 
-    private func pollHelper() {
+    func pollHelper() {
         guard isCapturing, !helperFetchInFlight else {
             return
         }
-        guard let proxy = try? helper.proxy() else {
+        guard let proxy = try? currentHelperProxy() else {
             failActiveHelperCapture("The capture helper connection could not be opened.")
             return
         }
@@ -1702,8 +1735,14 @@ extension MainContentCoordinator {
         helperFetchGeneration &+= 1
         let fetchToken = helperFetchGeneration
         let captureToken = startGeneration
+        let replyTracker = helperPollReplyTracker
+        replyTracker.beginFetch(captureToken: captureToken, fetchToken: fetchToken)
 
         proxy.fetchFrames { [weak self] batch in
+            // Record XPC reply arrival immediately on the delivery queue before
+            // hopping to `@MainActor`, so `@MainActor` UI/ingest contention never
+            // falsely trips the non-response watchdog.
+            replyTracker.recordReply(captureToken: captureToken, fetchToken: fetchToken)
             // Each frame carries its own libpcap timestamp, captured length,
             // original on-wire length, and link type — no shared batch `Date`,
             // no length inferred from `bytes.count`. Malformed metadata fails the
@@ -1749,12 +1788,15 @@ extension MainContentCoordinator {
             }
         }
 
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
-            guard self.isCapturing,
+        let watchdogNanoseconds = helperPollWatchdogNanoseconds
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: watchdogNanoseconds)
+            guard let self,
+                  self.isCapturing,
                   self.helperFetchInFlight,
                   self.startGeneration == captureToken,
-                  self.helperFetchGeneration == fetchToken else
+                  self.helperFetchGeneration == fetchToken,
+                  !self.helperPollReplyTracker.hasReplied(captureToken: captureToken, fetchToken: fetchToken) else
             {
                 return
             }
@@ -1770,6 +1812,7 @@ extension MainContentCoordinator {
                 self.captureError = detail
                 self.helper.recordRuntimeConnectionFailure(detail)
                 self.helperFetchInFlight = false
+                self.helperPollReplyTracker.reset()
                 self.performStopCapture()
                 return
             }
@@ -1777,17 +1820,45 @@ extension MainContentCoordinator {
         }
     }
 
-    private func failActiveHelperCapture(_ detail: String) {
+    func failActiveHelperCapture(_ detail: String) {
         // A failed drain/validation path must not leave the privileged helper
         // capturing unattended after the app has moved to an error state.
-        if let proxy = try? helper.proxy() {
+        if let proxy = try? currentHelperProxy() {
             proxy.stopCapture { _ in }
         }
+        pollTimer?.invalidate()
+        pollTimer = nil
         helperFetchGeneration &+= 1
         helperFetchInFlight = false
         helperStopRequested = false
+        helperPollReplyTracker.reset()
         helper.recordRuntimeConnectionFailure(detail)
-        handleCaptureError("\(detail) Recover it in Settings → Helper.")
+
+        let errorMessage = "\(detail) Recover it in Settings → Helper."
+        guard isCapturing else {
+            handleCaptureError(errorMessage)
+            return
+        }
+
+        // Settle the capture at a stopped-generation boundary so already-enqueued
+        // live batches finish spooling/folding and publish one final stopped snapshot
+        // rather than discarding the buffered tail when `isCapturing` turns false.
+        let captureToken = startGeneration
+        startGeneration &+= 1
+        let stoppedToken = startGeneration
+        beginFinalCaptureDrain(stoppedToken: stoppedToken, captureToken: captureToken)
+        freezeLiveHistoryLifetime(captureGeneration: captureToken, stoppedGeneration: stoppedToken)
+        live?.stop()
+        pipeCapture.stop()
+        isCapturing = false
+        isStarting = false
+        captureStartedAt = nil
+        captureError = errorMessage
+        publishStoppedSnapshotAfterCurrentIngest(
+            captureToken: captureToken,
+            stoppedToken: stoppedToken,
+            finalDrainConfirmed: false
+        )
     }
 
     private func startDirect() {
@@ -1863,44 +1934,122 @@ extension MainContentCoordinator {
         // the value folded into the connection provenance reflects the accounting
         // observed for this batch (never a later one, never UI-retention eviction).
         let loss = currentCaptureLoss
-
-        // Hand decode/group to the engine actor (off-main), chained so batches
-        // fold in arrival order. Snapshots are guarded by the capture generation
-        // so a late result from a superseded capture can never overwrite newer
-        // UI state.
         let token = startGeneration
+        let pendingBatch = PendingLiveIngestBatch(
+            frames: frames,
+            linkType: linkType,
+            epoch: token,
+            loss: loss,
+            shouldSnapshot: shouldSnapshot,
+            spool: liveCaptureSpool
+        )
+
+        // Coalesce onto the active off-main drain queue while it remains the tail
+        // of `ingestChain` so bursts of 350ms batches never build an unbounded chain
+        // of `@MainActor` `Task` closures.
+        if let queue = activeLiveIngestQueue,
+           let task = activeLiveIngestTask,
+           ingestChain == task,
+           queue.tryAppend(pendingBatch)
+        {
+            return
+        }
+
+        sealActiveLiveIngestQueue()
+        let queue = LiveIngestBatchQueue(firstBatch: pendingBatch)
         let previous = ingestChain
-        ingestChain = Task { @MainActor in
+        let engine = sessionEngine
+        let coordinatorRef = WeakCoordinatorRef(self)
+        liveIngestDrainTaskCount += 1
+        let drainTask = Self.makeLiveIngestDrainTask(
+            coordinatorRef: coordinatorRef,
+            previous: previous,
+            queue: queue,
+            engine: engine
+        )
+        lastLiveIngestQueue = queue
+        activeLiveIngestQueue = queue
+        activeLiveIngestTask = drainTask
+        ingestChain = drainTask
+    }
+
+    nonisolated private static func makeLiveIngestDrainTask(
+        coordinatorRef: WeakCoordinatorRef,
+        previous: Task<Void, Never>?,
+        queue: LiveIngestBatchQueue,
+        engine: LiveSessionEngine
+    )
+        -> Task<Void, Never>
+    {
+        Task.detached(priority: .userInitiated) {
             await previous?.value
-            // Append to the spool before engine ingest. Only a successful current
-            // append yields locators; a stale result or a failure offers the frames
-            // to the engine with nil locators so evidence failure never silently
-            // deletes session/connection observations.
-            var locators: [SessionEvidenceLocator]?
-            do {
-                if case let .appended(appended) = try await self.liveCaptureSpool.append(
-                    frames, defaultLinkType: linkType, epoch: token
-                ) {
-                    locators = appended
+            var snapshotEpoch: Int?
+            while let batch = queue.dequeueNextOrClose() {
+                // Append to the spool before engine ingest. Only a successful current
+                // append yields locators; a stale result or a failure offers the frames
+                // to the engine with nil locators so evidence failure never silently
+                // deletes session/connection observations.
+                var locators: [SessionEvidenceLocator]?
+                do {
+                    if case let .appended(appended) = try await batch.spool.append(
+                        batch.frames,
+                        defaultLinkType: batch.linkType,
+                        epoch: batch.epoch
+                    ) {
+                        locators = appended
+                    }
+                } catch {
+                    let errorDescription = error.localizedDescription
+                    await MainActor.run {
+                        guard let coordinator = coordinatorRef.coordinator else {
+                            return
+                        }
+                        let message = "Capture stopped: the local spool failed — \(errorDescription). "
+                            + "Frames written before the failure remain available to save."
+                        if coordinator.isCapturing || coordinator.captureError == nil {
+                            coordinator.captureError = message
+                        }
+                        if coordinator.isCapturing {
+                            coordinator.stopCapture()
+                        }
+                    }
                 }
-            } catch {
-                self.captureError = "Capture stopped: the local spool failed — \(error.localizedDescription). "
-                    + "Frames written before the failure remain available to save."
-                if self.isCapturing {
-                    self.stopCapture()
+                await engine.ingest(
+                    batch.frames,
+                    linkType: batch.linkType,
+                    epoch: batch.epoch,
+                    locators: locators,
+                    loss: batch.loss
+                )
+                if batch.shouldSnapshot {
+                    snapshotEpoch = batch.epoch
+                } else if let priorEpoch = snapshotEpoch, priorEpoch != batch.epoch {
+                    snapshotEpoch = nil
                 }
             }
-            await self.sessionEngine.ingest(
-                frames, linkType: linkType, epoch: token, locators: locators, loss: loss
-            )
-            guard shouldSnapshot,
-                  self.startGeneration == token,
-                  self.isCapturing,
-                  let snapshot = await self.sessionEngine.investigationSnapshot(epoch: token) else
+            guard let epoch = snapshotEpoch else {
+                return
+            }
+            let shouldBuildSnapshot = await MainActor.run {
+                guard let coordinator = coordinatorRef.coordinator else {
+                    return false
+                }
+                return coordinator.startGeneration == epoch && coordinator.isCapturing
+            }
+            guard shouldBuildSnapshot,
+                  let snapshot = await engine.investigationSnapshot(epoch: epoch) else
             {
                 return
             }
-            self.publishLiveDetailed(snapshot, expectedGeneration: token, isCapturing: true)
+            await MainActor.run {
+                guard let coordinator = coordinatorRef.coordinator,
+                      coordinator.startGeneration == epoch,
+                      coordinator.isCapturing else
+                {
+                    return
+                }
+                coordinator.publishLiveDetailed(snapshot, expectedGeneration: epoch, isCapturing: true)
+            }
         }
     }
 
@@ -1918,6 +2067,7 @@ extension MainContentCoordinator {
         appendRetainedFrames(frames)
         // Snapshot loss on the main actor before enqueueing, matching the live path.
         let loss = currentCaptureLoss
+        sealActiveLiveIngestQueue()
         let previous = ingestChain
         ingestChain = Task { @MainActor in
             await previous?.value
@@ -1978,6 +2128,7 @@ extension MainContentCoordinator {
         stoppedToken: Int,
         finalDrainConfirmed: Bool
     ) {
+        sealActiveLiveIngestQueue()
         let previous = ingestChain
         ingestChain = Task { @MainActor in
             await previous?.value
@@ -2041,6 +2192,8 @@ extension MainContentCoordinator {
         pollTimer = nil
         helperFetchGeneration &+= 1
         helperFetchInFlight = false
+        helperPollReplyTracker.reset()
+        sealActiveLiveIngestQueue()
         captureError = message
         isCapturing = false
         isStarting = false
@@ -2052,5 +2205,16 @@ extension MainContentCoordinator {
         // attempt never reached a stopped-generation boundary, so the owed drain is
         // aborted by identity rather than matched against a token it never minted.
         abortOwedFinalCaptureDrain()
+    }
+}
+
+// MARK: - WeakCoordinatorRef
+
+@MainActor
+private final class WeakCoordinatorRef {
+    weak var coordinator: MainContentCoordinator?
+
+    init(_ coordinator: MainContentCoordinator) {
+        self.coordinator = coordinator
     }
 }
