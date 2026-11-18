@@ -82,13 +82,13 @@ struct HelperSettingsView: View {
 
     private var statusAppearance: (String, Color, String) {
         switch helper.status {
-        case .installedCompatible: ("Installed & up to date", .green, "checkmark.seal.fill")
-        case .installedOutdated: ("Installed — update available", .orange, "arrow.up.circle.fill")
-        case .installedIncompatible: ("Installed — incompatible protocol", .red, "exclamationmark.triangle.fill")
-        case .requiresApproval: ("Awaiting approval in Login Items", .orange, "hourglass")
-        case .notInstalled: ("Not installed", .secondary, "xmark.seal")
-        case .unreachable: ("Registered but unreachable", .red, "bolt.horizontal.circle")
-        case .signingMismatch: ("Signing mismatch", .red, "xmark.shield.fill")
+        case .installedCompatible: (String(localized: "Installed & up to date"), .green, "checkmark.seal.fill")
+        case .installedOutdated: (String(localized: "Installed — update available"), .orange, "arrow.up.circle.fill")
+        case .installedIncompatible: (String(localized: "Installed — incompatible protocol"), .red, "exclamationmark.triangle.fill")
+        case .requiresApproval: (String(localized: "Awaiting approval in Login Items"), .orange, "hourglass")
+        case .notInstalled: (String(localized: "Not installed"), .secondary, "xmark.seal")
+        case .unreachable: (String(localized: "Registered but unreachable"), .red, "bolt.horizontal.circle")
+        case .signingMismatch: (String(localized: "Signing mismatch"), .red, "xmark.shield.fill")
         case let .failed(reason): (reason, .red, "exclamationmark.triangle.fill")
         }
     }

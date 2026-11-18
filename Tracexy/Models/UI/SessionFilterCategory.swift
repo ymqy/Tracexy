@@ -47,8 +47,8 @@ enum SessionFilterCategory: String, CaseIterable, Identifiable, Hashable {
         case .websocket: "WebSocket"
         case .stun: "STUN"
         // Keep the raw discriminator for persisted-workspace compatibility.
-        case .security: "Findings"
-        case .errors: "Errors"
+        case .security: String(localized: "Findings")
+        case .errors: String(localized: "Errors")
         }
     }
 

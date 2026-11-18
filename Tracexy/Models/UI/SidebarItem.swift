@@ -23,17 +23,17 @@ enum SidebarItem: String, CaseIterable, Identifiable, Hashable {
 
     nonisolated var title: String {
         switch self {
-        case .overview: "Overview"
-        case .sessions: "Sessions"
-        case .flow: "Flow Map"
-        case .history: "History"
+        case .overview: String(localized: "Overview")
+        case .sessions: String(localized: "Sessions")
+        case .flow: String(localized: "Flow Map")
+        case .history: String(localized: "History")
         case .dns: "DNS"
         case .tcp: "TCP"
         case .tls: "TLS"
         case .http: "HTTP"
         case .quic: "QUIC"
         case .stun: "STUN"
-        case .saved: "Saved"
+        case .saved: String(localized: "Saved")
         }
     }
 
@@ -85,8 +85,8 @@ enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
 
     nonisolated var title: String {
         switch self {
-        case .monitor: "Monitor"
-        case .protocols: "Protocols"
+        case .monitor: String(localized: "Monitor")
+        case .protocols: String(localized: "Protocols")
         }
     }
 
