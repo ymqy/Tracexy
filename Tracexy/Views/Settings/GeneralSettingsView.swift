@@ -13,6 +13,11 @@ struct GeneralSettingsView: View {
             SettingsKeys.appearance,
             store: applicationDefaults
         )
+        _language = AppStorage(
+            wrappedValue: AppLanguage.system.rawValue,
+            SettingsKeys.language,
+            store: applicationDefaults
+        )
         _byteUnits = AppStorage(
             wrappedValue: ByteUnits.binary.rawValue,
             SettingsKeys.byteUnits,
@@ -42,6 +47,31 @@ struct GeneralSettingsView: View {
                     .labelsHidden()
                     .frame(width: metrics.menuWidth(180))
                     .frame(minHeight: metrics.controlHeight)
+                }
+
+                SettingsDivider()
+
+                SettingsRow(label: "Language:") {
+                    HStack(spacing: 10) {
+                        Picker("Language", selection: $language) {
+                            ForEach(AppLanguage.allCases) { option in
+                                Text(option.title).tag(option.rawValue)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: metrics.menuWidth(180))
+                        .frame(minHeight: metrics.controlHeight)
+                        .onChange(of: language) { _, newValue in
+                            AppLanguage.applyToAppleLanguages(newValue)
+                        }
+
+                        if language != AppLanguage.launchRawValue {
+                            Button("Restart Now") {
+                                AppLanguage.relaunchApplication()
+                            }
+                            .controlSize(.small)
+                        }
+                    }
                 }
             }
 
@@ -80,6 +110,7 @@ struct GeneralSettingsView: View {
     /// the application, so they stay in the shared domain explicitly. "Default
     /// view" is a per-Project layout preference and follows the injected store.
     @AppStorage(SettingsKeys.appearance, store: .standard) private var appearance = AppAppearance.system.rawValue
+    @AppStorage(SettingsKeys.language, store: .standard) private var language = AppLanguage.system.rawValue
     @AppStorage(SettingsKeys.byteUnits, store: .standard) private var byteUnits = ByteUnits.binary.rawValue
     @AppStorage(SettingsKeys.confirmQuitWhileCapturing, store: .standard) private var confirmQuit = true
     @AppStorage(SettingsKeys.restoreWorkspace, store: .standard) private var restoreWorkspace = true

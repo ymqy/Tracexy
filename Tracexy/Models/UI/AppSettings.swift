@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 
@@ -11,6 +12,7 @@ enum SettingsKeys {
 
     static let selectedSettingsTab = key("settings.selectedTab")
     static let appearance = key("settings.appearance")
+    static let language = key("settings.language")
     static let defaultView = key("settings.defaultView")
     static let byteUnits = key("settings.byteUnits")
     static let confirmQuitWhileCapturing = key("settings.confirmQuitWhileCapturing")
@@ -242,6 +244,79 @@ enum AppAppearance: String, CaseIterable, Identifiable {
         case .system: nil
         case .light: .light
         case .dark: .dark
+        }
+    }
+}
+
+// MARK: - AppLanguage
+
+/// Application display language preference. Updates SwiftUI's `\.locale` live
+/// and writes `AppleLanguages` so AppKit menus and `String(localized:)` match on launch.
+enum AppLanguage: String, CaseIterable, Identifiable {
+    case system
+    case simplifiedChinese = "zh-Hans"
+    case english = "en"
+    case vietnamese = "vi"
+
+    // MARK: Internal
+
+    nonisolated static let launchRawValue: String = {
+        guard !TracexyIdentity.isRunningTests else {
+            return AppLanguage.system.rawValue
+        }
+        return UserDefaults.standard.string(forKey: SettingsKeys.language) ?? AppLanguage.system.rawValue
+    }()
+
+    var id: String {
+        rawValue
+    }
+
+    var title: String {
+        switch self {
+        case .system: String(localized: "System Default")
+        case .simplifiedChinese: "简体中文"
+        case .english: "English"
+        case .vietnamese: "Tiếng Việt"
+        }
+    }
+
+    var localeOverride: Locale? {
+        switch self {
+        case .system: nil
+        case .simplifiedChinese,
+             .english,
+             .vietnamese:
+            Locale(identifier: rawValue)
+        }
+    }
+
+    nonisolated static func applyToAppleLanguages(
+        _ rawValue: String,
+        defaults: UserDefaults = TracexyIdentity.applicationDefaults
+    ) {
+        let resolved = AppLanguage(rawValue: rawValue) ?? .system
+        switch resolved {
+        case .system:
+            defaults.removeObject(forKey: "AppleLanguages")
+        case .simplifiedChinese,
+             .english,
+             .vietnamese:
+            defaults.set([resolved.rawValue], forKey: "AppleLanguages")
+        }
+        defaults.synchronize()
+    }
+
+    @MainActor
+    static func relaunchApplication() {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, error in
+            guard error == nil else {
+                return
+            }
+            Task { @MainActor in
+                NSApplication.shared.terminate(nil)
+            }
         }
     }
 }

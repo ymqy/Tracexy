@@ -12,6 +12,7 @@ struct StatisticsWindowScenes: Scene {
 
     let coordinator: MainContentCoordinator
     let colorScheme: ColorScheme?
+    let localeOverride: Locale?
 
     var body: some Scene {
         findingsScene
@@ -42,6 +43,7 @@ struct StatisticsWindowScenes: Scene {
                 .id(coordinator.projectStore.activeProjectID)
                 .disabled(!coordinator.hasHydratedProjects || coordinator.projectTransitionStatus.isPending)
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(localeOverride)
         }
         .defaultSize(width: 860, height: 560)
         .windowResizability(.contentMinSize)
@@ -62,6 +64,7 @@ struct StatisticsWindowScenes: Scene {
                 .id(coordinator.projectStore.activeProjectID)
                 .disabled(!coordinator.hasHydratedProjects || coordinator.projectTransitionStatus.isPending)
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(localeOverride)
         }
         .defaultSize(width: 860, height: 480)
         .windowResizability(.contentMinSize)
@@ -81,6 +84,7 @@ struct StatisticsWindowScenes: Scene {
                 .id(coordinator.projectStore.activeProjectID)
                 .disabled(!coordinator.hasHydratedProjects || coordinator.projectTransitionStatus.isPending)
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(localeOverride)
         }
         .defaultSize(width: 1_080, height: 480)
         .windowResizability(.contentMinSize)
@@ -100,6 +104,7 @@ struct StatisticsWindowScenes: Scene {
                 .id(coordinator.projectStore.activeProjectID)
                 .disabled(!coordinator.hasHydratedProjects || coordinator.projectTransitionStatus.isPending)
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(localeOverride)
         }
         .defaultSize(width: 960, height: 480)
         .windowResizability(.contentMinSize)
@@ -119,6 +124,7 @@ struct StatisticsWindowScenes: Scene {
                 .id(coordinator.projectStore.activeProjectID)
                 .disabled(!coordinator.hasHydratedProjects || coordinator.projectTransitionStatus.isPending)
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(localeOverride)
         }
         .defaultSize(width: 640, height: 440)
         .windowResizability(.contentMinSize)
@@ -138,6 +144,7 @@ struct StatisticsWindowScenes: Scene {
                 .id(coordinator.projectStore.activeProjectID)
                 .disabled(!coordinator.hasHydratedProjects || coordinator.projectTransitionStatus.isPending)
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(localeOverride)
         }
         .defaultSize(width: 700, height: 560)
         .windowResizability(.contentMinSize)
@@ -157,6 +164,7 @@ struct StatisticsWindowScenes: Scene {
                 .id(coordinator.projectStore.activeProjectID)
                 .disabled(!coordinator.hasHydratedProjects || coordinator.projectTransitionStatus.isPending)
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(localeOverride)
         }
         .defaultSize(width: 1_000, height: 620)
         .windowResizability(.contentMinSize)
@@ -176,6 +184,7 @@ struct StatisticsWindowScenes: Scene {
                 .id(coordinator.projectStore.activeProjectID)
                 .disabled(!coordinator.hasHydratedProjects || coordinator.projectTransitionStatus.isPending)
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(localeOverride)
         }
         .defaultSize(width: 640, height: 460)
         .windowResizability(.contentMinSize)
@@ -195,6 +204,7 @@ struct StatisticsWindowScenes: Scene {
                 .id(coordinator.projectStore.activeProjectID)
                 .disabled(!coordinator.hasHydratedProjects || coordinator.projectTransitionStatus.isPending)
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(localeOverride)
         }
         .defaultSize(width: 820, height: 480)
         .windowResizability(.contentMinSize)
@@ -214,6 +224,7 @@ struct StatisticsWindowScenes: Scene {
                 .id(coordinator.projectStore.activeProjectID)
                 .disabled(!coordinator.hasHydratedProjects || coordinator.projectTransitionStatus.isPending)
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(localeOverride)
         }
         .defaultSize(width: 760, height: 560)
         .windowResizability(.contentMinSize)
@@ -233,6 +244,7 @@ struct StatisticsWindowScenes: Scene {
                 .id(coordinator.projectStore.activeProjectID)
                 .disabled(!coordinator.hasHydratedProjects || coordinator.projectTransitionStatus.isPending)
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(localeOverride)
         }
         .defaultSize(width: 760, height: 520)
         .windowResizability(.contentMinSize)
@@ -252,6 +264,7 @@ struct StatisticsWindowScenes: Scene {
                 .id(coordinator.projectStore.activeProjectID)
                 .disabled(!coordinator.hasHydratedProjects || coordinator.projectTransitionStatus.isPending)
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(localeOverride)
         }
         .defaultSize(width: 760, height: 620)
         .windowResizability(.contentMinSize)
@@ -271,6 +284,7 @@ struct StatisticsWindowScenes: Scene {
                 .id(coordinator.projectStore.activeProjectID)
                 .disabled(!coordinator.hasHydratedProjects || coordinator.projectTransitionStatus.isPending)
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(localeOverride)
         }
         .defaultSize(width: 980, height: 480)
         .windowResizability(.contentMinSize)
@@ -290,6 +304,7 @@ struct StatisticsWindowScenes: Scene {
                 .id(coordinator.projectStore.activeProjectID)
                 .disabled(!coordinator.hasHydratedProjects || coordinator.projectTransitionStatus.isPending)
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(localeOverride)
         }
         .defaultSize(width: 1_080, height: 480)
         .windowResizability(.contentMinSize)
@@ -309,6 +324,7 @@ struct StatisticsWindowScenes: Scene {
                 .id(coordinator.projectStore.activeProjectID)
                 .disabled(!coordinator.hasHydratedProjects || coordinator.projectTransitionStatus.isPending)
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(localeOverride)
         }
         .defaultSize(width: 800, height: 420)
         .windowResizability(.contentMinSize)
@@ -328,6 +344,7 @@ struct StatisticsWindowScenes: Scene {
                 .id(coordinator.projectStore.activeProjectID)
                 .disabled(!coordinator.hasHydratedProjects || coordinator.projectTransitionStatus.isPending)
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(localeOverride)
         }
         .defaultSize(width: 720, height: 460)
         .windowResizability(.contentMinSize)
@@ -347,6 +364,7 @@ struct StatisticsWindowScenes: Scene {
                 .id(coordinator.projectStore.activeProjectID)
                 .disabled(!coordinator.hasHydratedProjects || coordinator.projectTransitionStatus.isPending)
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(localeOverride)
         }
         .defaultSize(width: 760, height: 420)
         .windowResizability(.contentMinSize)

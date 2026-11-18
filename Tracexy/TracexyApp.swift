@@ -117,13 +117,18 @@ struct TracexyApp: App {
 
         SessionInspectorWindowScene(
             coordinator: coordinator,
-            colorScheme: colorScheme
+            colorScheme: colorScheme,
+            localeOverride: appLocaleOverride
         )
 
         // File ▸ Get Info (⌘I). A regular auxiliary window, not a panel: it keeps
         // the facts of the capture it was opened for (HIG Panels), re-binds only
         // when a different capture is adopted, and closes with the Project.
-        CaptureInfoWindowScene(coordinator: coordinator, colorScheme: colorScheme)
+        CaptureInfoWindowScene(
+            coordinator: coordinator,
+            colorScheme: colorScheme,
+            localeOverride: appLocaleOverride
+        )
 
         settingsScene
 
@@ -151,7 +156,11 @@ struct TracexyApp: App {
 
         // Statistics ▸ …: the capture-wide statistics windows, each remounted on
         // the Project identity like every auxiliary window.
-        StatisticsWindowScenes(coordinator: coordinator, colorScheme: colorScheme)
+        StatisticsWindowScenes(
+            coordinator: coordinator,
+            colorScheme: colorScheme,
+            localeOverride: appLocaleOverride
+        )
 
         decodeAsScene
     }
@@ -196,11 +205,15 @@ struct TracexyApp: App {
     @AppStorage(SettingsKeys.appearance, store: TracexyApp.applicationDefaults)
     private var appearance = AppAppearance.system.rawValue
 
+    @AppStorage(SettingsKeys.language, store: TracexyApp.applicationDefaults)
+    private var language = AppLanguage.system.rawValue
+
     /// Help ▸ Keyboard Shortcuts: a reference window, never restored.
     private var keyboardShortcutsScene: some Scene {
         let base = Window("Keyboard Shortcuts", id: Self.keyboardShortcutsWindowID) {
             KeyboardShortcutsView()
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(appLocaleOverride)
         }
         .defaultSize(width: 420, height: 520)
         .windowResizability(.contentMinSize)
@@ -220,6 +233,7 @@ struct TracexyApp: App {
                 .id(coordinator.projectStore.activeProjectID)
                 .disabled(!coordinator.hasHydratedProjects || coordinator.projectTransitionStatus.isPending)
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(appLocaleOverride)
         }
         .defaultSize(width: 660, height: 480)
         .windowResizability(.contentMinSize)
@@ -239,6 +253,7 @@ struct TracexyApp: App {
                 .id(coordinator.projectStore.activeProjectID)
                 .disabled(!coordinator.hasHydratedProjects || coordinator.projectTransitionStatus.isPending)
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(appLocaleOverride)
         }
         .defaultSize(width: 720, height: 440)
         .windowResizability(.contentMinSize)
@@ -258,6 +273,7 @@ struct TracexyApp: App {
                 .id(coordinator.projectStore.activeProjectID)
                 .disabled(!coordinator.hasHydratedProjects || coordinator.projectTransitionStatus.isPending)
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(appLocaleOverride)
         }
         .defaultSize(width: 460, height: 440)
         .windowResizability(.contentMinSize)
@@ -277,6 +293,7 @@ struct TracexyApp: App {
                 .id(coordinator.projectStore.activeProjectID)
                 .disabled(!coordinator.hasHydratedProjects || coordinator.projectTransitionStatus.isPending)
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(appLocaleOverride)
         }
         .defaultSize(width: 760, height: 560)
         .windowResizability(.contentMinSize)
@@ -296,6 +313,7 @@ struct TracexyApp: App {
                 .id(coordinator.projectStore.activeProjectID)
                 .disabled(!coordinator.hasHydratedProjects || coordinator.projectTransitionStatus.isPending)
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(appLocaleOverride)
         }
         .defaultSize(width: 1_000, height: 600)
         .windowResizability(.contentMinSize)
@@ -315,6 +333,7 @@ struct TracexyApp: App {
                 .id(coordinator.projectStore.activeProjectID)
                 .disabled(!coordinator.hasHydratedProjects || coordinator.projectTransitionStatus.isPending)
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(appLocaleOverride)
         }
         .defaultSize(width: 900, height: 560)
         .windowResizability(.contentMinSize)
@@ -334,6 +353,7 @@ struct TracexyApp: App {
                 .id(coordinator.projectStore.activeProjectID)
                 .disabled(!coordinator.hasHydratedProjects || coordinator.projectTransitionStatus.isPending)
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(appLocaleOverride)
         }
         .defaultSize(width: 860, height: 480)
         .windowResizability(.contentMinSize)
@@ -353,6 +373,7 @@ struct TracexyApp: App {
                 .id(coordinator.projectStore.activeProjectID)
                 .disabled(!coordinator.hasHydratedProjects || coordinator.projectTransitionStatus.isPending)
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(appLocaleOverride)
         }
         .defaultSize(width: 820, height: 480)
         .windowResizability(.contentMinSize)
@@ -372,6 +393,7 @@ struct TracexyApp: App {
                 .id(coordinator.projectStore.activeProjectID)
                 .disabled(!coordinator.hasHydratedProjects || coordinator.projectTransitionStatus.isPending)
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(appLocaleOverride)
         }
         .defaultSize(width: 560, height: 380)
         .windowResizability(.contentMinSize)
@@ -389,6 +411,7 @@ struct TracexyApp: App {
             ManageInterfacesWindow(coordinator: coordinator)
                 .id(coordinator.projectStore.activeProjectID)
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(appLocaleOverride)
         }
         // Wider than the window's own 820pt minimum, which the 760 declared
         // here could not honour: the window opened clamped to its minimum and
@@ -411,6 +434,7 @@ struct TracexyApp: App {
                 .id(coordinator.projectStore.activeProjectID)
                 .disabled(!coordinator.hasHydratedProjects || coordinator.projectTransitionStatus.isPending)
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(appLocaleOverride)
         }
         .defaultSize(width: 620, height: 340)
         .windowResizability(.contentMinSize)
@@ -432,6 +456,7 @@ struct TracexyApp: App {
                 .id(coordinator.projectStore.activeProjectID)
                 .disabled(!coordinator.hasHydratedProjects || coordinator.projectTransitionStatus.isPending)
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(appLocaleOverride)
         }
         .defaultSize(width: 600, height: 420)
         .windowResizability(.contentMinSize)
@@ -453,6 +478,7 @@ struct TracexyApp: App {
                 .id(coordinator.projectStore.activeProjectID)
                 .disabled(!coordinator.hasHydratedProjects || coordinator.projectTransitionStatus.isPending)
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(appLocaleOverride)
         }
         .defaultSize(width: 460, height: 560)
         .windowResizability(.contentMinSize)
@@ -494,6 +520,7 @@ struct TracexyApp: App {
             .id(coordinator.projectStore.activeProjectID)
             .disabled(coordinator.projectTransitionStatus.isPending)
             .preferredColorScheme(colorScheme)
+            .appLocaleOverride(appLocaleOverride)
             // Settings can open before the workspace's launch task runs. Share
             // the same idempotent hydration so grant scope cannot stay pending.
             .task { await coordinator.hydrateProjectsOnLaunch() }
@@ -529,6 +556,7 @@ struct TracexyApp: App {
                     applicationDefaults: Self.applicationDefaults
                 )
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(appLocaleOverride)
                 .onChange(of: appearance, initial: true) { _, newValue in
                     // Force the preference app-wide at the AppKit level (menus,
                     // panels, alerts, any future AppKit window) — not just SwiftUI
@@ -673,6 +701,10 @@ struct TracexyApp: App {
         AppAppearance(rawValue: appearance)?.colorScheme
     }
 
+    private var appLocaleOverride: Locale? {
+        AppLanguage(rawValue: language)?.localeOverride
+    }
+
     /// Resolve the terminal-history store for production. A directory/open/migration
     /// failure is isolated here: the app and capture engine start regardless, and
     /// History simply reports itself unavailable.
@@ -792,6 +824,7 @@ private struct TracexyProjectCommands: Commands {
 private struct SessionInspectorWindowScene: Scene {
     let coordinator: MainContentCoordinator
     let colorScheme: ColorScheme?
+    let localeOverride: Locale?
 
     var body: some Scene {
         let base = Window("Session Inspector", id: TracexyApp.sessionInspectorWindowID) {
@@ -800,6 +833,7 @@ private struct SessionInspectorWindowScene: Scene {
                 .disabled(coordinator.projectTransitionStatus.isPending)
                 .frame(minWidth: 640, minHeight: 400)
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(localeOverride)
         }
         .commandsRemoved()
         .defaultSize(width: 1_040, height: 680)
@@ -1324,6 +1358,7 @@ private struct CaptureCommandLabel: View {
 private struct CaptureInfoWindowScene: Scene {
     let coordinator: MainContentCoordinator
     let colorScheme: ColorScheme?
+    let localeOverride: Locale?
 
     var body: some Scene {
         let base = Window("Capture Info", id: TracexyApp.captureInfoWindowID) {
@@ -1332,6 +1367,7 @@ private struct CaptureInfoWindowScene: Scene {
                 .id(coordinator.captureInfoIdentityToken)
                 .disabled(coordinator.projectTransitionStatus.isPending)
                 .preferredColorScheme(colorScheme)
+                .appLocaleOverride(localeOverride)
         }
         .commandsRemoved()
         .defaultSize(width: 680, height: 620)
@@ -1410,6 +1446,17 @@ private struct TracexySettingsCommands: Commands {
     private func open(_ url: URL?) {
         if let url {
             openURL(url)
+        }
+    }
+}
+
+extension View {
+    @ViewBuilder
+    func appLocaleOverride(_ locale: Locale?) -> some View {
+        if let locale {
+            environment(\.locale, locale)
+        } else {
+            self
         }
     }
 }

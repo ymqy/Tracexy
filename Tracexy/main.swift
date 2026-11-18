@@ -1,6 +1,10 @@
 import Foundation
 import SwiftUI
 
+if !TracexyIdentity.isRunningTests {
+    AppLanguage.applyToAppleLanguages(AppLanguage.launchRawValue)
+}
+
 // The app binary doubles as the read-only `tracexy` command line. A first argument
 // naming one of its commands runs it and exits before any window, Project or
 // capture machinery starts; every other launch is the normal app.
