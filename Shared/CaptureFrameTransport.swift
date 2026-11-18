@@ -29,7 +29,8 @@ nonisolated final class CapturedFrameMessage: NSObject, NSSecureCoding, @uncheck
         timestampMicroseconds: Int64,
         capturedLength: Int64,
         originalLength: Int64,
-        linkType: UInt32
+        linkType: UInt32,
+        processName: String? = nil
     ) {
         self.bytes = bytes
         self.timestampSeconds = timestampSeconds
@@ -37,6 +38,7 @@ nonisolated final class CapturedFrameMessage: NSObject, NSSecureCoding, @uncheck
         self.capturedLength = capturedLength
         self.originalLength = originalLength
         self.linkType = linkType
+        self.processName = processName
     }
 
     required init?(coder: NSCoder) {
@@ -46,6 +48,8 @@ nonisolated final class CapturedFrameMessage: NSObject, NSSecureCoding, @uncheck
         capturedLength = coder.decodeInt64(forKey: Key.capturedLength)
         originalLength = coder.decodeInt64(forKey: Key.originalLength)
         linkType = UInt32(bitPattern: coder.decodeInt32(forKey: Key.linkType))
+        // Absent from replies of a helper without pktap attribution: nil.
+        processName = coder.decodeObject(of: NSString.self, forKey: Key.processName) as? String
     }
 
     // MARK: Internal
@@ -69,6 +73,9 @@ nonisolated final class CapturedFrameMessage: NSObject, NSSecureCoding, @uncheck
     /// The DLT for *this* frame. Homogeneous for a normal capture, but carried
     /// per frame so a link type is always authoritative rather than assumed.
     let linkType: UInt32
+    /// Originating process display name resolved from `pktap` metadata, or `nil`
+    /// when `pktap` was unavailable or did not identify a process.
+    let processName: String?
 
     func encode(with coder: NSCoder) {
         coder.encode(bytes as NSData, forKey: Key.bytes)
@@ -77,6 +84,9 @@ nonisolated final class CapturedFrameMessage: NSObject, NSSecureCoding, @uncheck
         coder.encode(capturedLength, forKey: Key.capturedLength)
         coder.encode(originalLength, forKey: Key.originalLength)
         coder.encode(Int32(bitPattern: linkType), forKey: Key.linkType)
+        if let processName {
+            coder.encode(processName as NSString, forKey: Key.processName)
+        }
     }
 
     // MARK: Private
@@ -88,6 +98,7 @@ nonisolated final class CapturedFrameMessage: NSObject, NSSecureCoding, @uncheck
         static let capturedLength = "cl"
         static let originalLength = "ol"
         static let linkType = "lt"
+        static let processName = "pn"
     }
 }
 
@@ -387,6 +398,7 @@ nonisolated enum TracexyHelperInterface {
             CapturedFrameMessage.self,
             NSArray.self,
             NSData.self,
+            NSString.self,
         ]
         if let allowed = NSSet(array: classes) as? Set<AnyHashable> {
             interface.setClasses(

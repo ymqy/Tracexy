@@ -78,7 +78,8 @@ nonisolated struct CapturedFrame: Sendable {
             timestamp: Date(timeIntervalSince1970: interval),
             originalLength: Int(reportedOriginal),
             capturedLength: byteArray.count,
-            linkType: message.linkType
+            linkType: message.linkType,
+            processName: (message.processName?.isEmpty == false) ? message.processName : nil
         )
     }
 
