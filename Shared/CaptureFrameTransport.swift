@@ -1,5 +1,43 @@
 import Foundation
 
+// MARK: - ProcessProvenance
+
+/// Rich process origin metadata resolved alongside a packet or socket's display
+/// name. Ferried inside `CapturedFrameMessage` using primitive `NSString` and
+/// `Bool` archive keys so `TracexyHelperInterface`'s class allow-list stays
+/// unchanged and protocol-v6 peers remain backward-compatible.
+nonisolated struct ProcessProvenance: Equatable, Hashable, Sendable, Codable {
+    // MARK: Lifecycle
+
+    init(
+        executablePath: String? = nil,
+        bundleIdentifier: String? = nil,
+        viaProcessName: String? = nil,
+        parentProcessName: String? = nil,
+        hasControllingTTY: Bool = false,
+        isRootUser: Bool = false,
+        isKernelTask: Bool = false
+    ) {
+        self.executablePath = executablePath
+        self.bundleIdentifier = bundleIdentifier
+        self.viaProcessName = viaProcessName
+        self.parentProcessName = parentProcessName
+        self.hasControllingTTY = hasControllingTTY
+        self.isRootUser = isRootUser
+        self.isKernelTask = isKernelTask
+    }
+
+    // MARK: Internal
+
+    var executablePath: String?
+    var bundleIdentifier: String?
+    var viaProcessName: String?
+    var parentProcessName: String?
+    var hasControllingTTY: Bool
+    var isRootUser: Bool
+    var isKernelTask: Bool
+}
+
 // MARK: - CapturedFrameMessage
 
 /// One captured frame, ferried across the app↔helper XPC boundary as a typed,
@@ -30,7 +68,8 @@ nonisolated final class CapturedFrameMessage: NSObject, NSSecureCoding, @uncheck
         capturedLength: Int64,
         originalLength: Int64,
         linkType: UInt32,
-        processName: String? = nil
+        processName: String? = nil,
+        processProvenance: ProcessProvenance? = nil
     ) {
         self.bytes = bytes
         self.timestampSeconds = timestampSeconds
@@ -39,6 +78,7 @@ nonisolated final class CapturedFrameMessage: NSObject, NSSecureCoding, @uncheck
         self.originalLength = originalLength
         self.linkType = linkType
         self.processName = processName
+        self.processProvenance = processProvenance
     }
 
     required init?(coder: NSCoder) {
@@ -50,6 +90,31 @@ nonisolated final class CapturedFrameMessage: NSObject, NSSecureCoding, @uncheck
         linkType = UInt32(bitPattern: coder.decodeInt32(forKey: Key.linkType))
         // Absent from replies of a helper without pktap attribution: nil.
         processName = coder.decodeObject(of: NSString.self, forKey: Key.processName) as? String
+
+        let executablePath = coder.decodeObject(of: NSString.self, forKey: Key.executablePath) as? String
+        let bundleIdentifier = coder.decodeObject(of: NSString.self, forKey: Key.bundleIdentifier) as? String
+        let viaProcessName = coder.decodeObject(of: NSString.self, forKey: Key.viaProcessName) as? String
+        let parentProcessName = coder.decodeObject(of: NSString.self, forKey: Key.parentProcessName) as? String
+        let hasProvenance = executablePath != nil
+            || bundleIdentifier != nil
+            || viaProcessName != nil
+            || parentProcessName != nil
+            || coder.containsValue(forKey: Key.hasControllingTTY)
+            || coder.containsValue(forKey: Key.isRootUser)
+            || coder.containsValue(forKey: Key.isKernelTask)
+        if hasProvenance {
+            processProvenance = ProcessProvenance(
+                executablePath: executablePath,
+                bundleIdentifier: bundleIdentifier,
+                viaProcessName: viaProcessName,
+                parentProcessName: parentProcessName,
+                hasControllingTTY: coder.decodeBool(forKey: Key.hasControllingTTY),
+                isRootUser: coder.decodeBool(forKey: Key.isRootUser),
+                isKernelTask: coder.decodeBool(forKey: Key.isKernelTask)
+            )
+        } else {
+            processProvenance = nil
+        }
     }
 
     // MARK: Internal
@@ -76,6 +141,9 @@ nonisolated final class CapturedFrameMessage: NSObject, NSSecureCoding, @uncheck
     /// Originating process display name resolved from `pktap` metadata, or `nil`
     /// when `pktap` was unavailable or did not identify a process.
     let processName: String?
+    /// Rich process origin provenance resolved alongside `processName`, or `nil`
+    /// when unavailable.
+    let processProvenance: ProcessProvenance?
 
     func encode(with coder: NSCoder) {
         coder.encode(bytes as NSData, forKey: Key.bytes)
@@ -86,6 +154,23 @@ nonisolated final class CapturedFrameMessage: NSObject, NSSecureCoding, @uncheck
         coder.encode(Int32(bitPattern: linkType), forKey: Key.linkType)
         if let processName {
             coder.encode(processName as NSString, forKey: Key.processName)
+        }
+        if let provenance = processProvenance {
+            if let executablePath = provenance.executablePath {
+                coder.encode(executablePath as NSString, forKey: Key.executablePath)
+            }
+            if let bundleIdentifier = provenance.bundleIdentifier {
+                coder.encode(bundleIdentifier as NSString, forKey: Key.bundleIdentifier)
+            }
+            if let viaProcessName = provenance.viaProcessName {
+                coder.encode(viaProcessName as NSString, forKey: Key.viaProcessName)
+            }
+            if let parentProcessName = provenance.parentProcessName {
+                coder.encode(parentProcessName as NSString, forKey: Key.parentProcessName)
+            }
+            coder.encode(provenance.hasControllingTTY, forKey: Key.hasControllingTTY)
+            coder.encode(provenance.isRootUser, forKey: Key.isRootUser)
+            coder.encode(provenance.isKernelTask, forKey: Key.isKernelTask)
         }
     }
 
@@ -99,6 +184,13 @@ nonisolated final class CapturedFrameMessage: NSObject, NSSecureCoding, @uncheck
         static let originalLength = "ol"
         static let linkType = "lt"
         static let processName = "pn"
+        static let executablePath = "ep"
+        static let bundleIdentifier = "bi"
+        static let viaProcessName = "vp"
+        static let parentProcessName = "pp"
+        static let hasControllingTTY = "tty"
+        static let isRootUser = "rt"
+        static let isKernelTask = "kt"
     }
 }
 

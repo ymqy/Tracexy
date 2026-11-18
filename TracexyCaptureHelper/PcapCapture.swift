@@ -199,6 +199,51 @@ final class PcapCapture: @unchecked Sendable {
         case rejected
     }
 
+    private struct PIDPair: Hashable {
+        let pid: Int32
+        let effectivePID: Int32
+    }
+
+    private struct CachedAttribution {
+        let processName: String?
+        let provenance: ProcessProvenance?
+    }
+
+    private struct CachedPIDMetadata {
+        let executablePath: String?
+        let displayName: String?
+        let bundleIdentifier: String?
+        let outerMainExecutable: String?
+        let bsdInfo: (ppid: Int32, uid: UInt32, hasTTY: Bool)?
+    }
+
+    private struct InboundSocketFallbackState {
+        static let refreshIntervalNanoseconds: UInt64 = 500_000_000
+
+        var portMap = PktapHeader.InboundSocketPortMap()
+        var hasLoaded = false
+        var lastRefreshNanoseconds: UInt64 = 0
+
+        mutating func resolveOwner(innerBytes: [UInt8], innerDLT: UInt32) -> (pid: Int32, command: String)? {
+            guard let target = PktapHeader.parseInboundTarget(innerBytes: innerBytes, innerDLT: innerDLT),
+                  !target.destinationIP.isMulticastOrBroadcast else
+            {
+                return nil
+            }
+            if hasLoaded, let hit = portMap.lookup(target: target) {
+                return hit
+            }
+            let now = DispatchTime.now().uptimeNanoseconds
+            guard !hasLoaded || now &- lastRefreshNanoseconds >= Self.refreshIntervalNanoseconds else {
+                return nil
+            }
+            portMap = PktapHeader.collectInboundSocketPortMap()
+            hasLoaded = true
+            lastRefreshNanoseconds = now
+            return portMap.lookup(target: target)
+        }
+    }
+
     private typealias OpenLiveFn = @convention(c) (
         UnsafePointer<CChar>?,
         Int32,
@@ -545,6 +590,116 @@ final class PcapCapture: @unchecked Sendable {
         cache.removeAll()
     }
 
+    private func cachedMetadata(
+        for pid: Int32,
+        cache: inout [Int32: CachedPIDMetadata]
+    )
+        -> CachedPIDMetadata?
+    {
+        guard pid > 0 else {
+            return nil
+        }
+        if let existing = cache[pid] {
+            return existing
+        }
+        let execPath = PktapHeader.executablePath(forPID: pid)
+        let displayName = execPath.flatMap(PktapHeader.displayName(fromExecutablePath:))
+        let bundleIdentifier = execPath.flatMap { PktapHeader.bundleIdentifier(fromExecutablePath: $0) }
+        let outerMainExecutable = execPath
+            .flatMap(PktapHeader.outermostAppBundlePath(fromExecutablePath:))
+            .flatMap(PktapHeader.bundleExecutableName(atBundlePath:))
+        let bsdInfo = PktapHeader.inspectBSDProcess(pid: pid)
+        let entry = CachedPIDMetadata(
+            executablePath: execPath,
+            displayName: displayName,
+            bundleIdentifier: bundleIdentifier,
+            outerMainExecutable: outerMainExecutable,
+            bsdInfo: bsdInfo
+        )
+        if cache.count >= Self.maxPIDCacheEntries {
+            cache.removeAll(keepingCapacity: true)
+        }
+        cache[pid] = entry
+        return entry
+    }
+
+    private func resolveCachedAttribution(
+        parsed: PktapHeader.Parsed,
+        pidPairCache: inout [PIDPair: CachedAttribution],
+        pidMetadataCache: inout [Int32: CachedPIDMetadata]
+    )
+        -> CachedAttribution
+    {
+        if parsed.pid == 0, parsed.effectivePID <= 0 {
+            let kernel = PktapHeader.resolveAttribution(parsed: parsed)
+            return CachedAttribution(processName: kernel.processName, provenance: kernel.provenance)
+        }
+
+        let hasLiveCandidatePID = parsed.pid > 0 || parsed.effectivePID > 0
+        let pair = PIDPair(pid: parsed.pid, effectivePID: parsed.effectivePID)
+        if hasLiveCandidatePID, let cached = pidPairCache[pair] {
+            return cached
+        }
+
+        var pathMetadata: [String: CachedPIDMetadata] = [:]
+        if let effectiveMeta = cachedMetadata(for: parsed.effectivePID, cache: &pidMetadataCache) {
+            if let path = effectiveMeta.executablePath {
+                pathMetadata[path] = effectiveMeta
+            }
+            if let ppid = effectiveMeta.bsdInfo?.ppid, ppid > 1,
+               let parentMeta = cachedMetadata(for: ppid, cache: &pidMetadataCache),
+               let parentPath = parentMeta.executablePath
+            {
+                pathMetadata[parentPath] = parentMeta
+            }
+        }
+        if parsed.pid != parsed.effectivePID,
+           let directMeta = cachedMetadata(for: parsed.pid, cache: &pidMetadataCache)
+        {
+            if let path = directMeta.executablePath {
+                pathMetadata[path] = directMeta
+            }
+            if let ppid = directMeta.bsdInfo?.ppid, ppid > 1,
+               let parentMeta = cachedMetadata(for: ppid, cache: &pidMetadataCache),
+               let parentPath = parentMeta.executablePath
+            {
+                pathMetadata[parentPath] = parentMeta
+            }
+        }
+
+        let snapshotByPID = pidMetadataCache
+        let snapshotByPath = pathMetadata
+        let resolved = PktapHeader.resolveAttribution(
+            parsed: parsed,
+            executablePathLookup: { snapshotByPID[$0]?.executablePath },
+            bsdProcessLookup: { snapshotByPID[$0]?.bsdInfo },
+            displayNameFromPath: { path in
+                snapshotByPath[path]?.displayName ?? PktapHeader.displayName(fromExecutablePath: path)
+            },
+            bundleIdentifierFromPath: { path in
+                snapshotByPath[path]?.bundleIdentifier ?? PktapHeader.bundleIdentifier(fromExecutablePath: path)
+            },
+            outerMainExecutableFromAppPath: { appPath in
+                for meta in snapshotByPath.values {
+                    if let execPath = meta.executablePath,
+                       PktapHeader.outermostAppBundlePath(fromExecutablePath: execPath) == appPath
+                    {
+                        return meta.outerMainExecutable
+                    }
+                }
+                return PktapHeader.bundleExecutableName(atBundlePath: appPath)
+            }
+        )
+        let entry = CachedAttribution(processName: resolved.processName, provenance: resolved.provenance)
+        if hasLiveCandidatePID {
+            if pidPairCache.count >= Self.maxPIDCacheEntries {
+                pidPairCache.removeAll(keepingCapacity: true)
+            }
+            pidPairCache[pair] = entry
+        }
+        return entry
+    }
+
     private func makeFrameMessage(
         header: PcapPacketHeader,
         data: UnsafePointer<UInt8>,
@@ -553,7 +708,9 @@ final class PcapCapture: @unchecked Sendable {
         bpfExpression: String?,
         bpfOptimizerFlag: Int32,
         innerFilterCache: inout [UInt32: CachedInnerFilter],
-        pidDisplayNameCache: inout [Int32: String]
+        pidPairCache: inout [PIDPair: CachedAttribution],
+        pidMetadataCache: inout [Int32: CachedPIDMetadata],
+        inboundSocketFallback: inout InboundSocketFallbackState
     )
         -> CapturedFrameMessage?
     {
@@ -604,18 +761,41 @@ final class PcapCapture: @unchecked Sendable {
             }
         }
 
-        let processName = PktapHeader.resolveProcessName(parsed: parsed) { pid in
-            if let cached = pidDisplayNameCache[pid] {
-                return cached
+        let isPureInboundUnattributed = parsed.pid < 0
+            && parsed.effectivePID <= 0
+            && parsed.process.isEmpty
+            && parsed.effectiveProcess.isEmpty
+
+        let attribution: CachedAttribution
+        if isPureInboundUnattributed {
+            if let socketOwner = inboundSocketFallback.resolveOwner(
+                innerBytes: innerBytes,
+                innerDLT: normalizedLinkType
+            ) {
+                let syntheticParsed = PktapHeader.Parsed(
+                    frame: [],
+                    typeNext: PktapHeader.typeNextPacket,
+                    innerDLT: normalizedLinkType,
+                    process: socketOwner.command,
+                    pid: socketOwner.pid,
+                    effectivePID: socketOwner.pid,
+                    effectiveProcess: "",
+                    interface: parsed.interface
+                )
+                attribution = resolveCachedAttribution(
+                    parsed: syntheticParsed,
+                    pidPairCache: &pidPairCache,
+                    pidMetadataCache: &pidMetadataCache
+                )
+            } else {
+                attribution = CachedAttribution(processName: nil, provenance: nil)
             }
-            guard let resolved = PktapHeader.resolveDisplayName(forPID: pid) else {
-                return nil
-            }
-            if pidDisplayNameCache.count >= Self.maxPIDCacheEntries {
-                pidDisplayNameCache.removeAll(keepingCapacity: true)
-            }
-            pidDisplayNameCache[pid] = resolved
-            return resolved
+        } else {
+            attribution = resolveCachedAttribution(
+                parsed: parsed,
+                pidPairCache: &pidPairCache,
+                pidMetadataCache: &pidMetadataCache
+            )
         }
 
         return CapturedFrameMessage(
@@ -625,7 +805,8 @@ final class PcapCapture: @unchecked Sendable {
             capturedLength: Int64(innerCaplen),
             originalLength: Int64(innerOrigLen),
             linkType: normalizedLinkType,
-            processName: processName
+            processName: attribution.processName,
+            processProvenance: attribution.provenance
         )
     }
 
@@ -681,7 +862,9 @@ final class PcapCapture: @unchecked Sendable {
     ) {
         var batch: [CapturedFrameMessage] = []
         var innerFilterCache: [UInt32: CachedInnerFilter] = [:]
-        var pidDisplayNameCache: [Int32: String] = [:]
+        var pidPairCache: [PIDPair: CachedAttribution] = [:]
+        var pidMetadataCache: [Int32: CachedPIDMetadata] = [:]
+        var inboundSocketFallback = InboundSocketFallbackState()
         defer {
             releaseInnerFilterCache(&innerFilterCache)
         }
@@ -702,7 +885,9 @@ final class PcapCapture: @unchecked Sendable {
                     bpfExpression: bpfExpression,
                     bpfOptimizerFlag: bpfOptimizerFlag,
                     innerFilterCache: &innerFilterCache,
-                    pidDisplayNameCache: &pidDisplayNameCache
+                    pidPairCache: &pidPairCache,
+                    pidMetadataCache: &pidMetadataCache,
+                    inboundSocketFallback: &inboundSocketFallback
                 ) {
                     batch.append(message)
                 }

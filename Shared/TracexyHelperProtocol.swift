@@ -73,6 +73,107 @@ nonisolated enum PktapHeader {
         let interface: String
     }
 
+    enum TransportProto: UInt8, Equatable, Hashable, Sendable {
+        case tcp = 6
+        case udp = 17
+    }
+
+    /// Allocation-free canonical IP key for fast inbound packet destination lookup.
+    enum InboundIPKey: Equatable, Hashable, Sendable {
+        case v4(UInt32)
+        case v6(UInt64, UInt64)
+
+        var isWildcard: Bool {
+            switch self {
+            case let .v4(addr):
+                addr == 0
+            case let .v6(hi, lo):
+                hi == 0 && lo == 0
+            }
+        }
+
+        var isMulticastOrBroadcast: Bool {
+            switch self {
+            case let .v4(addr):
+                let firstOctet = UInt8((addr >> 24) & 0xFF)
+                return addr == 0xFFFFFFFF || (firstOctet >= 224 && firstOctet <= 239)
+            case let .v6(hi, _):
+                return UInt8((hi >> 56) & 0xFF) == 0xFF
+            }
+        }
+
+        static func normalizedV6(
+            _ b0: UInt8, _ b1: UInt8, _ b2: UInt8, _ b3: UInt8,
+            _ b4: UInt8, _ b5: UInt8, _ b6: UInt8, _ b7: UInt8,
+            _ b8: UInt8, _ b9: UInt8, _ b10: UInt8, _ b11: UInt8,
+            _ b12: UInt8, _ b13: UInt8, _ b14: UInt8, _ b15: UInt8
+        )
+            -> InboundIPKey
+        {
+            var s2 = b2
+            var s3 = b3
+            // Strip KAME embedded interface scope ID on fe80::/10 link-local PCBs.
+            if b0 == 0xFE, (b1 & 0xC0) == 0x80 {
+                s2 = 0
+                s3 = 0
+            }
+            let hi = (UInt64(b0) << 56) | (UInt64(b1) << 48) | (UInt64(s2) << 40) | (UInt64(s3) << 32)
+                | (UInt64(b4) << 24) | (UInt64(b5) << 16) | (UInt64(b6) << 8) | UInt64(b7)
+            let lo = (UInt64(b8) << 56) | (UInt64(b9) << 48) | (UInt64(b10) << 40) | (UInt64(b11) << 32)
+                | (UInt64(b12) << 24) | (UInt64(b13) << 16) | (UInt64(b14) << 8) | UInt64(b15)
+            // Collapse IPv4-mapped IPv6 (`::ffff:a.b.c.d`) to `.v4`.
+            if hi == 0, (lo >> 32) == 0x0000FFFF {
+                return .v4(UInt32(truncatingIfNeeded: lo))
+            }
+            return .v6(hi, lo)
+        }
+    }
+
+    struct InboundPacketTarget: Equatable, Hashable, Sendable {
+        let proto: TransportProto
+        let destinationIP: InboundIPKey
+        let destinationPort: UInt16
+    }
+
+    struct InboundSocketPortMap: Sendable {
+        struct SpecificKey: Equatable, Hashable, Sendable {
+            let proto: TransportProto
+            let ip: InboundIPKey
+            let port: UInt16
+        }
+
+        struct WildcardKey: Equatable, Hashable, Sendable {
+            let proto: TransportProto
+            let port: UInt16
+        }
+
+        var localIPs: Set<InboundIPKey> = []
+        var specific: [SpecificKey: Int32] = [:]
+        var wildcard: [WildcardKey: Int32] = [:]
+        var commandByPID: [Int32: String] = [:]
+
+        func lookup(target: InboundPacketTarget) -> (pid: Int32, command: String)? {
+            guard !target.destinationIP.isMulticastOrBroadcast,
+                  localIPs.contains(target.destinationIP) else
+            {
+                return nil
+            }
+            let specificKey = SpecificKey(
+                proto: target.proto,
+                ip: target.destinationIP,
+                port: target.destinationPort
+            )
+            let wildcardKey = WildcardKey(
+                proto: target.proto,
+                port: target.destinationPort
+            )
+            guard let pid = specific[specificKey] ?? wildcard[wildcardKey], pid > 0 else {
+                return nil
+            }
+            return (pid: pid, command: commandByPID[pid] ?? "")
+        }
+    }
+
     /// Standard pcap/pcapng `LINKTYPE_PKTAP` value (258).
     static let dlt: UInt32 = 258
     /// Darwin `<net/bpf.h>` runtime `DLT_PKTAP` (`DLT_USER2 = 149`) used by live
@@ -170,8 +271,8 @@ nonisolated enum PktapHeader {
         return basename.isEmpty || basename == "/" ? nil : basename
     }
 
-    /// Resolves a live process's display name via `Darwin.proc_pidpath`.
-    static func resolveDisplayName(forPID pid: Int32) -> String? {
+    /// Resolves a live process's executable path via `Darwin.proc_pidpath`.
+    static func executablePath(forPID pid: Int32) -> String? {
         guard pid > 0 else {
             return nil
         }
@@ -179,7 +280,111 @@ nonisolated enum PktapHeader {
         guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else {
             return nil
         }
-        return displayName(fromExecutablePath: String(cString: buffer))
+        let path = decodeNullTerminatedUTF8(buffer)
+        return path.isEmpty ? nil : path
+    }
+
+    /// Resolves a live process's display name via `Darwin.proc_pidpath`.
+    static func resolveDisplayName(forPID pid: Int32) -> String? {
+        guard let path = executablePath(forPID: pid) else {
+            return nil
+        }
+        return displayName(fromExecutablePath: path)
+    }
+
+    /// Inspects live BSD process credentials and controlling terminal state via
+    /// `Darwin.sysctl` (`[CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]`, `kinfo_proc`).
+    static func inspectBSDProcess(pid: Int32) -> (ppid: Int32, uid: UInt32, hasTTY: Bool)? {
+        guard pid > 0 else {
+            return nil
+        }
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        var kp = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        let rc = sysctl(&mib, UInt32(mib.count), &kp, &size, nil, 0)
+        guard rc == 0, size >= MemoryLayout<kinfo_proc>.size, kp.kp_proc.p_pid == pid else {
+            return nil
+        }
+        let ppid = kp.kp_eproc.e_ppid
+        let uid = kp.kp_eproc.e_ucred.cr_uid
+        let nodev = dev_t(-1)
+        let tdev = kp.kp_eproc.e_tdev
+        let hasTTY = tdev != nodev && tdev != 0
+        return (ppid: ppid, uid: uid, hasTTY: hasTTY)
+    }
+
+    /// Resolves the `CFBundleIdentifier` of the outermost `.app` bundle (or outer
+    /// `.systemextension`, `.appex`, `.xpc`, or `.framework` bundle) containing `path`.
+    static func bundleIdentifier(
+        fromExecutablePath path: String,
+        bundleIdentifierLookup: (String) -> String? = bundleIdentifier(atBundlePath:)
+    )
+        -> String?
+    {
+        guard !path.isEmpty else {
+            return nil
+        }
+        for candidate in candidateBundlePaths(fromExecutablePath: path) {
+            if let identifier = trimmedNonEmpty(bundleIdentifierLookup(candidate)) {
+                return identifier
+            }
+        }
+        return nil
+    }
+
+    /// Reads `CFBundleIdentifier` from a bundle directory on disk.
+    static func bundleIdentifier(atBundlePath bundlePath: String) -> String? {
+        guard let bundle = Bundle(path: bundlePath) else {
+            return nil
+        }
+        if let identifier = trimmedNonEmpty(bundle.bundleIdentifier) {
+            return identifier
+        }
+        return nonEmptyBundleValue(forKey: "CFBundleIdentifier", in: bundle)
+    }
+
+    /// Reads `CFBundleExecutable` from a bundle directory on disk.
+    static func bundleExecutableName(atBundlePath bundlePath: String) -> String? {
+        guard let bundle = Bundle(path: bundlePath) else {
+            return nil
+        }
+        return nonEmptyBundleValue(forKey: "CFBundleExecutable", in: bundle)
+    }
+
+    /// Returns the leaf helper or daemon executable basename when `path` is nested
+    /// inside an outer `.app/` bundle and differs from the outer `.app`'s main binary
+    /// and display name (e.g., `UU远程.app/Contents/MacOS/UURemoteDaemon` → `"UURemoteDaemon"`,
+    /// `Antigravity.app/.../Antigravity Helper` → `"Antigravity Helper"`).
+    static func nestedHelperViaName(
+        executablePath path: String,
+        outerAppDisplayName: String,
+        outerMainExecutableLookup: (String) -> String? = bundleExecutableName(atBundlePath:)
+    )
+        -> String?
+    {
+        guard let outerAppPath = outermostAppBundlePath(fromExecutablePath: path) else {
+            return nil
+        }
+        let leaf = (path as NSString).lastPathComponent
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedDisplay = outerAppDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !leaf.isEmpty, leaf != "/", leaf != trimmedDisplay else {
+            return nil
+        }
+        let directMainBinaryPath = outerAppPath + "/Contents/MacOS/" + leaf
+        if path == directMainBinaryPath {
+            let outerFolderName = appName(fromExecutablePath: path)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if leaf == outerFolderName {
+                return nil
+            }
+            if let mainExecutable = trimmedNonEmpty(outerMainExecutableLookup(outerAppPath)),
+               leaf == mainExecutable
+            {
+                return nil
+            }
+        }
+        return leaf
     }
 
     /// Resolves the attributing process name for a parsed `pktap` header:
@@ -214,6 +419,280 @@ nonisolated enum PktapHeader {
         return fallback.isEmpty ? nil : fallback
     }
 
+    /// Resolves both the user-facing `processName` and full `ProcessProvenance`
+    /// (`executablePath`, `bundleIdentifier`, `viaProcessName`, `parentProcessName`,
+    /// `hasControllingTTY`, `isRootUser`, `isKernelTask`) from a parsed `pktap` header.
+    static func resolveAttribution(
+        parsed: Parsed,
+        executablePathLookup: (Int32) -> String? = executablePath(forPID:),
+        bsdProcessLookup: (Int32) -> (ppid: Int32, uid: UInt32, hasTTY: Bool)? = inspectBSDProcess(pid:),
+        displayNameFromPath: (String) -> String? = displayName(fromExecutablePath:),
+        bundleIdentifierFromPath: (String) -> String? = { bundleIdentifier(fromExecutablePath: $0) },
+        outerMainExecutableFromAppPath: (String) -> String? = bundleExecutableName(atBundlePath:)
+    )
+        -> (processName: String?, provenance: ProcessProvenance?)
+    {
+        // XNU `kernel_task` frames carry `pid == 0` with no delegating user `effectivePID`.
+        // Keep `processName == nil` while setting `isKernelTask == true` for classification.
+        if parsed.pid == 0, parsed.effectivePID <= 0 {
+            return (processName: nil, provenance: ProcessProvenance(isKernelTask: true))
+        }
+
+        func resolveLive(pid: Int32) -> (name: String, path: String)? {
+            guard pid > 0,
+                  let rawPath = trimmedNonEmpty(executablePathLookup(pid)),
+                  let resolvedName = trimmedNonEmpty(displayNameFromPath(rawPath)) else
+            {
+                return nil
+            }
+            return (name: resolvedName, path: rawPath)
+        }
+
+        let primaryPID: Int32
+        let primaryName: String
+        let primaryExecPath: String?
+        var delegatedViaName: String?
+
+        if parsed.effectivePID > 0, let liveEffective = resolveLive(pid: parsed.effectivePID) {
+            primaryPID = parsed.effectivePID
+            primaryName = liveEffective.name
+            primaryExecPath = liveEffective.path
+            if parsed.pid > 0, parsed.pid != parsed.effectivePID {
+                let carrier = resolveLive(pid: parsed.pid)?.name ?? trimmedNonEmpty(parsed.process)
+                if let carrier, carrier != primaryName {
+                    delegatedViaName = carrier
+                }
+            }
+        } else if parsed.effectivePID > 0, let effectiveComm = trimmedNonEmpty(parsed.effectiveProcess) {
+            primaryPID = parsed.effectivePID
+            primaryName = effectiveComm
+            primaryExecPath = nil
+            if parsed.pid > 0, parsed.pid != parsed.effectivePID {
+                let carrier = resolveLive(pid: parsed.pid)?.name ?? trimmedNonEmpty(parsed.process)
+                if let carrier, carrier != primaryName {
+                    delegatedViaName = carrier
+                }
+            }
+        } else if let liveDirect = resolveLive(pid: parsed.pid) {
+            primaryPID = parsed.pid
+            primaryName = liveDirect.name
+            primaryExecPath = liveDirect.path
+        } else if let directComm = trimmedNonEmpty(parsed.process) {
+            primaryPID = parsed.pid
+            primaryName = directComm
+            primaryExecPath = nil
+        } else {
+            return (processName: nil, provenance: nil)
+        }
+
+        let resolvedBundleID = primaryExecPath.flatMap { trimmedNonEmpty(bundleIdentifierFromPath($0)) }
+        let resolvedViaName: String?
+        if let delegatedViaName {
+            resolvedViaName = delegatedViaName
+        } else if let primaryExecPath {
+            resolvedViaName = nestedHelperViaName(
+                executablePath: primaryExecPath,
+                outerAppDisplayName: primaryName,
+                outerMainExecutableLookup: outerMainExecutableFromAppPath
+            )
+        } else {
+            resolvedViaName = nil
+        }
+
+        let bsdInfo = primaryPID > 0 ? bsdProcessLookup(primaryPID) : nil
+        let hasTTY = bsdInfo?.hasTTY ?? false
+        let isRootUser = bsdInfo.map { $0.uid == 0 } ?? false
+        var parentProcessName: String?
+        if let ppid = bsdInfo?.ppid,
+           ppid > 1,
+           ppid != primaryPID,
+           let parentPath = trimmedNonEmpty(executablePathLookup(ppid)),
+           let parentName = trimmedNonEmpty(displayNameFromPath(parentPath))
+        {
+            parentProcessName = parentName
+        }
+
+        let provenance = ProcessProvenance(
+            executablePath: primaryExecPath,
+            bundleIdentifier: resolvedBundleID,
+            viaProcessName: resolvedViaName,
+            parentProcessName: parentProcessName,
+            hasControllingTTY: hasTTY,
+            isRootUser: isRootUser,
+            isKernelTask: false
+        )
+        return (processName: primaryName, provenance: provenance)
+    }
+
+    // MARK: - Inbound Packet Target Parsing & Root libproc Socket Map
+
+    /// Parses the inner IPv4/IPv6 TCP/UDP destination `(proto, ip, port)` from an
+    /// unwrapped frame (`Ethernet`, `BSD Loopback`, `DLT_LOOP`, or `Raw IP`) for
+    /// pure-inbound socket fallback attribution before XNU socket demux.
+    static func parseInboundTarget(innerBytes bytes: [UInt8], innerDLT: UInt32) -> InboundPacketTarget? {
+        switch innerDLT {
+        case 1: // DLT_EN10MB (Ethernet)
+            guard bytes.count >= 14 else {
+                return nil
+            }
+            var etherType = (UInt16(bytes[12]) << 8) | UInt16(bytes[13])
+            var l3Offset = 14
+            var vlanTags = 0
+            while (etherType == 0x8100 || etherType == 0x88A8) && vlanTags < 2 {
+                guard l3Offset + 4 <= bytes.count else {
+                    return nil
+                }
+                etherType = (UInt16(bytes[l3Offset + 2]) << 8) | UInt16(bytes[l3Offset + 3])
+                l3Offset += 4
+                vlanTags += 1
+            }
+            switch etherType {
+            case 0x0800:
+                return parseIPv4InboundTarget(bytes, offset: l3Offset)
+            case 0x86DD:
+                return parseIPv6InboundTarget(bytes, offset: l3Offset)
+            default:
+                return nil
+            }
+
+        case 0, 108: // DLT_NULL (BSD Loopback) / DLT_LOOP
+            guard bytes.count > 4 else {
+                return nil
+            }
+            let familyLE = u32le(bytes, 0)
+            let familyBE = familyLE.byteSwapped
+            if familyLE == UInt32(AF_INET) || familyBE == UInt32(AF_INET) {
+                return parseIPv4InboundTarget(bytes, offset: 4)
+            }
+            if familyLE == UInt32(AF_INET6) || familyBE == UInt32(AF_INET6)
+                || familyLE == 24 || familyBE == 24
+                || familyLE == 28 || familyBE == 28
+            {
+                return parseIPv6InboundTarget(bytes, offset: 4)
+            }
+            return nil
+
+        case 12, 101: // Darwin DLT_RAW (12) / LINKTYPE_RAW (101)
+            guard !bytes.isEmpty else {
+                return nil
+            }
+            switch bytes[0] >> 4 {
+            case 4:
+                return parseIPv4InboundTarget(bytes, offset: 0)
+            case 6:
+                return parseIPv6InboundTarget(bytes, offset: 0)
+            default:
+                return nil
+            }
+
+        default:
+            return nil
+        }
+    }
+
+    /// Collects active local interface IPs (`getifaddrs`) and all TCP/UDP sockets
+    /// (`proc_listallpids` + `proc_pidfdinfo`) into a compact port map for inbound
+    /// packet attribution inside `TracexyCaptureHelper`.
+    static func collectInboundSocketPortMap() -> InboundSocketPortMap {
+        var map = InboundSocketPortMap()
+        map.localIPs = discoverLocalInboundIPKeys()
+
+        let estimatedCount = proc_listallpids(nil, 0)
+        guard estimatedCount > 0 else {
+            return map
+        }
+        var pids = [pid_t](repeating: 0, count: max(256, Int(estimatedCount) * 2))
+        let pidCount = Int(pids.withUnsafeMutableBytes { buffer in
+            proc_listallpids(buffer.baseAddress, Int32(buffer.count))
+        })
+        guard pidCount > 0 else {
+            return map
+        }
+
+        let fdStride = MemoryLayout<proc_fdinfo>.stride
+        let socketInfoSize = Int32(MemoryLayout<socket_fdinfo>.size)
+        var timeWaitKeys: Set<InboundSocketPortMap.SpecificKey> = []
+
+        for pidIndex in 0 ..< min(pidCount, pids.count) {
+            let pid = pids[pidIndex]
+            guard pid > 0 else {
+                continue
+            }
+            let byteCapacity = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
+            guard byteCapacity > 0 else {
+                continue
+            }
+            var fds = [proc_fdinfo](repeating: proc_fdinfo(), count: Int(byteCapacity) / fdStride + 16)
+            let bytesFilled = fds.withUnsafeMutableBytes { buffer in
+                proc_pidinfo(pid, PROC_PIDLISTFDS, 0, buffer.baseAddress, Int32(buffer.count))
+            }
+            guard bytesFilled > 0 else {
+                continue
+            }
+            let fdCount = min(fds.count, Int(bytesFilled) / fdStride)
+            for fdIndex in 0 ..< fdCount where fds[fdIndex].proc_fdtype == UInt32(PROX_FDTYPE_SOCKET) {
+                var sinfo = socket_fdinfo()
+                let filled = proc_pidfdinfo(
+                    pid,
+                    fds[fdIndex].proc_fd,
+                    PROC_PIDFDSOCKETINFO,
+                    &sinfo,
+                    socketInfoSize
+                )
+                guard filled >= socketInfoSize else {
+                    continue
+                }
+                let family = sinfo.psi.soi_family
+                let kind = sinfo.psi.soi_kind
+                guard family == AF_INET || family == AF_INET6 else {
+                    continue
+                }
+                let proto: TransportProto
+                let insi: in_sockinfo
+                if kind == SOCKINFO_TCP {
+                    proto = .tcp
+                    insi = sinfo.psi.soi_proto.pri_tcp.tcpsi_ini
+                } else if kind == SOCKINFO_IN,
+                          sinfo.psi.soi_protocol == IPPROTO_UDP || sinfo.psi.soi_protocol == 0
+                {
+                    proto = .udp
+                    insi = sinfo.psi.soi_proto.pri_in
+                } else {
+                    continue
+                }
+                let port = UInt16(bigEndian: UInt16(truncatingIfNeeded: insi.insi_lport))
+                guard port > 0,
+                      let ipKey = extractInboundSocketLocalIP(insi: insi, family: family) else
+                {
+                    continue
+                }
+                if map.commandByPID[pid] == nil {
+                    map.commandByPID[pid] = procCommandName(forPID: pid)
+                }
+                if ipKey.isWildcard {
+                    let wildcardKey = InboundSocketPortMap.WildcardKey(proto: proto, port: port)
+                    if map.wildcard[wildcardKey] == nil {
+                        map.wildcard[wildcardKey] = pid
+                    }
+                } else {
+                    let isTimeWait = kind == SOCKINFO_TCP
+                        && sinfo.psi.soi_proto.pri_tcp.tcpsi_state == TSI_S_TIME_WAIT
+                    let specificKey = InboundSocketPortMap.SpecificKey(proto: proto, ip: ipKey, port: port)
+                    if map.specific[specificKey] == nil {
+                        map.specific[specificKey] = pid
+                        if isTimeWait {
+                            timeWaitKeys.insert(specificKey)
+                        }
+                    } else if !isTimeWait, timeWaitKeys.contains(specificKey) {
+                        map.specific[specificKey] = pid
+                        timeWaitKeys.remove(specificKey)
+                    }
+                }
+            }
+        }
+        return map
+    }
+
     // MARK: Private
 
     /// Field byte offsets within the (little-endian, host-order) header.
@@ -231,6 +710,41 @@ nonisolated enum PktapHeader {
         static let minimumSize = 73 // through the end of pth_comm
     }
 
+    private static let nonAppBundleSuffixes = [
+        ".systemextension/",
+        ".appex/",
+        ".xpc/",
+        ".framework/",
+    ]
+
+    private static func trimmedNonEmpty(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else
+        {
+            return nil
+        }
+        return trimmed
+    }
+
+    private static func candidateBundlePaths(fromExecutablePath path: String) -> [String] {
+        if let outerApp = outermostAppBundlePath(fromExecutablePath: path) {
+            return [outerApp]
+        }
+        var matches: [(lowerBound: String.Index, bundlePath: String)] = []
+        for suffix in nonAppBundleSuffixes {
+            if let range = path.range(of: suffix) {
+                let bundlePrefix = String(path[..<range.lowerBound])
+                let bundleName = (bundlePrefix as NSString).lastPathComponent
+                if !bundlePrefix.isEmpty, !bundleName.isEmpty, bundleName != "/" {
+                    let suffixWithoutSlash = String(suffix.dropLast())
+                    matches.append((range.lowerBound, bundlePrefix + suffixWithoutSlash))
+                }
+            }
+        }
+        matches.sort { $0.lowerBound < $1.lowerBound }
+        return matches.map(\.bundlePath)
+    }
+
     private static func nonEmptyBundleValue(forKey key: String, in bundle: Bundle) -> String? {
         if let localized = (bundle.object(forInfoDictionaryKey: key) as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines),
@@ -245,6 +759,174 @@ nonisolated enum PktapHeader {
             return raw
         }
         return nil
+    }
+
+    private static func parseIPv4InboundTarget(_ bytes: [UInt8], offset: Int) -> InboundPacketTarget? {
+        guard offset + 20 <= bytes.count, (bytes[offset] >> 4) == 4 else {
+            return nil
+        }
+        let ihl = Int(bytes[offset] & 0x0F) * 4
+        guard ihl >= 20, offset + ihl + 4 <= bytes.count else {
+            return nil
+        }
+        let fragOffset = ((UInt16(bytes[offset + 6]) << 8) | UInt16(bytes[offset + 7])) & 0x1FFF
+        guard fragOffset == 0,
+              let proto = TransportProto(rawValue: bytes[offset + 9]) else
+        {
+            return nil
+        }
+        let dstIP4 = (UInt32(bytes[offset + 16]) << 24)
+            | (UInt32(bytes[offset + 17]) << 16)
+            | (UInt32(bytes[offset + 18]) << 8)
+            | UInt32(bytes[offset + 19])
+        let l4 = offset + ihl
+        let dstPort = (UInt16(bytes[l4 + 2]) << 8) | UInt16(bytes[l4 + 3])
+        guard dstPort > 0 else {
+            return nil
+        }
+        return InboundPacketTarget(proto: proto, destinationIP: .v4(dstIP4), destinationPort: dstPort)
+    }
+
+    private static func parseIPv6InboundTarget(_ bytes: [UInt8], offset: Int) -> InboundPacketTarget? {
+        guard offset + 40 <= bytes.count, (bytes[offset] >> 4) == 6 else {
+            return nil
+        }
+        let d = offset + 24
+        let dstIP = InboundIPKey.normalizedV6(
+            bytes[d], bytes[d + 1], bytes[d + 2], bytes[d + 3],
+            bytes[d + 4], bytes[d + 5], bytes[d + 6], bytes[d + 7],
+            bytes[d + 8], bytes[d + 9], bytes[d + 10], bytes[d + 11],
+            bytes[d + 12], bytes[d + 13], bytes[d + 14], bytes[d + 15]
+        )
+        var nextHeader = bytes[offset + 6]
+        var cursor = offset + 40
+        for _ in 0 ..< 6 {
+            if let proto = TransportProto(rawValue: nextHeader) {
+                guard cursor + 4 <= bytes.count else {
+                    return nil
+                }
+                let dstPort = (UInt16(bytes[cursor + 2]) << 8) | UInt16(bytes[cursor + 3])
+                guard dstPort > 0 else {
+                    return nil
+                }
+                return InboundPacketTarget(proto: proto, destinationIP: dstIP, destinationPort: dstPort)
+            }
+            if nextHeader == 0 || nextHeader == 43 || nextHeader == 60 {
+                guard cursor + 2 <= bytes.count else {
+                    return nil
+                }
+                let extLen = (Int(bytes[cursor + 1]) + 1) * 8
+                nextHeader = bytes[cursor]
+                cursor += extLen
+            } else if nextHeader == 44 {
+                guard cursor + 8 <= bytes.count else {
+                    return nil
+                }
+                let fragOff = ((UInt16(bytes[cursor + 2]) << 8) | UInt16(bytes[cursor + 3])) & 0xFFF8
+                guard fragOff == 0 else {
+                    return nil
+                }
+                nextHeader = bytes[cursor]
+                cursor += 8
+            } else {
+                return nil
+            }
+        }
+        return nil
+    }
+
+    private static func discoverLocalInboundIPKeys() -> Set<InboundIPKey> {
+        var keys: Set<InboundIPKey> = [.v4(0x7F00_0001), .v6(0, 1)]
+        var firstAddress: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&firstAddress) == 0, let head = firstAddress else {
+            return keys
+        }
+        defer { freeifaddrs(head) }
+
+        var cursor: UnsafeMutablePointer<ifaddrs>? = head
+        while let entry = cursor {
+            defer { cursor = entry.pointee.ifa_next }
+            guard let sockaddrPtr = entry.pointee.ifa_addr else {
+                continue
+            }
+            let family = Int32(sockaddrPtr.pointee.sa_family)
+            if family == AF_INET {
+                let sin = sockaddrPtr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee }
+                keys.insert(.v4(UInt32(bigEndian: sin.sin_addr.s_addr)))
+            } else if family == AF_INET6 {
+                var sin6 = sockaddrPtr.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { $0.pointee }
+                let key = withUnsafeBytes(of: &sin6.sin6_addr) { raw -> InboundIPKey? in
+                    guard raw.count == 16 else {
+                        return nil
+                    }
+                    return InboundIPKey.normalizedV6(
+                        raw[0], raw[1], raw[2], raw[3],
+                        raw[4], raw[5], raw[6], raw[7],
+                        raw[8], raw[9], raw[10], raw[11],
+                        raw[12], raw[13], raw[14], raw[15]
+                    )
+                }
+                if let key {
+                    keys.insert(key)
+                }
+            }
+        }
+        return keys
+    }
+
+    private static func extractInboundSocketLocalIP(insi: in_sockinfo, family: Int32) -> InboundIPKey? {
+        let hasIPv4 = (insi.insi_vflag & UInt8(INI_IPV4)) != 0
+        let hasIPv6 = (insi.insi_vflag & UInt8(INI_IPV6)) != 0
+
+        if (hasIPv4 && !hasIPv6) || (!hasIPv4 && !hasIPv6 && family == AF_INET) {
+            return .v4(UInt32(bigEndian: insi.insi_laddr.ina_46.i46a_addr4.s_addr))
+        }
+        if hasIPv6 || (!hasIPv4 && !hasIPv6 && family == AF_INET6) {
+            var addr6 = insi.insi_laddr.ina_6
+            let v6Key = withUnsafeBytes(of: &addr6) { raw -> InboundIPKey? in
+                guard raw.count == 16 else {
+                    return nil
+                }
+                let isMappedV4 = raw[0 ..< 10].allSatisfy { $0 == 0 } && raw[10] == 0xFF && raw[11] == 0xFF
+                if isMappedV4 {
+                    return .v4(UInt32(bigEndian: insi.insi_laddr.ina_46.i46a_addr4.s_addr))
+                }
+                return InboundIPKey.normalizedV6(
+                    raw[0], raw[1], raw[2], raw[3],
+                    raw[4], raw[5], raw[6], raw[7],
+                    raw[8], raw[9], raw[10], raw[11],
+                    raw[12], raw[13], raw[14], raw[15]
+                )
+            }
+            return v6Key
+        }
+        return nil
+    }
+
+    private static func procCommandName(forPID pid: Int32) -> String {
+        guard pid > 0 else {
+            return ""
+        }
+        var nameBuffer = [CChar](repeating: 0, count: 256)
+        if proc_name(pid, &nameBuffer, UInt32(nameBuffer.count)) > 0 {
+            let name = decodeNullTerminatedUTF8(nameBuffer).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !name.isEmpty {
+                return name
+            }
+        }
+        if let execPath = executablePath(forPID: pid) {
+            let basename = (execPath as NSString).lastPathComponent
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !basename.isEmpty, basename != "/" {
+                return basename
+            }
+        }
+        return ""
+    }
+
+    private static func decodeNullTerminatedUTF8(_ buffer: [CChar]) -> String {
+        let prefix = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        return String(decoding: prefix, as: UTF8.self)
     }
 
     private static func u32le(_ bytes: [UInt8], _ offset: Int) -> UInt32 {

@@ -15,6 +15,7 @@ nonisolated struct CapturedFrame: Sendable {
         capturedLength: Int? = nil,
         linkType: UInt32? = nil,
         processName: String? = nil,
+        processProvenance: ProcessProvenance? = nil,
         direction: CaptureDirection = .unknown,
         packetID: UInt64? = nil
     ) {
@@ -27,6 +28,7 @@ nonisolated struct CapturedFrame: Sendable {
         self.capturedLength = capturedLength ?? bytes.count
         self.linkType = linkType
         self.processName = processName
+        self.processProvenance = processProvenance
         self.direction = direction
         self.packetID = packetID
     }
@@ -79,7 +81,8 @@ nonisolated struct CapturedFrame: Sendable {
             originalLength: Int(reportedOriginal),
             capturedLength: byteArray.count,
             linkType: message.linkType,
-            processName: (message.processName?.isEmpty == false) ? message.processName : nil
+            processName: (message.processName?.isEmpty == false) ? message.processName : nil,
+            processProvenance: message.processProvenance
         )
     }
 
@@ -106,6 +109,8 @@ nonisolated struct CapturedFrame: Sendable {
     var linkType: UInt32?
     /// Originating process name from pktap, when capturing live (nil = unknown).
     var processName: String?
+    /// Originating process provenance from pktap / root socket fallback, when capturing live.
+    var processProvenance: ProcessProvenance?
     /// Interface-relative packet direction, if the capture supplied it.
     let direction: CaptureDirection
     /// Arbitrary packet identity carried by pcapng `epb_packetid`.

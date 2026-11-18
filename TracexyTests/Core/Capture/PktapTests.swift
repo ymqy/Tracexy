@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 @testable import Tracexy
@@ -368,7 +369,564 @@ struct PktapTests {
         #expect(sessions.first?.processName == "Google Chrome")
     }
 
+    @Test
+    func processProvenanceSecureCodingRoundTripsViaXPCAllowListAndPropagatesToCapturedFrame() throws {
+        let payload = Data([0x45, 0x00, 0x00, 0x28])
+        let appProvenance = ProcessProvenance(
+            executablePath: "/Applications/Safari.app/Contents/MacOS/Safari",
+            bundleIdentifier: "com.apple.Safari",
+            viaProcessName: "nsurlsessiond",
+            parentProcessName: "Dock",
+            hasControllingTTY: false,
+            isRootUser: false,
+            isKernelTask: false
+        )
+        let cliProvenance = ProcessProvenance(
+            executablePath: "/opt/homebrew/bin/curl",
+            bundleIdentifier: nil,
+            viaProcessName: nil,
+            parentProcessName: "Antigravity",
+            hasControllingTTY: true,
+            isRootUser: false,
+            isKernelTask: false
+        )
+        let rootProvenance = ProcessProvenance(
+            executablePath: "/usr/sbin/mDNSResponderHelper",
+            isRootUser: true
+        )
+        let kernelProvenance = ProcessProvenance(isKernelTask: true)
+        let emptyStructProvenance = ProcessProvenance()
+
+        let messages = [
+            CapturedFrameMessage(
+                bytes: payload,
+                timestampSeconds: 1_700_000_010,
+                timestampMicroseconds: 100,
+                capturedLength: Int64(payload.count),
+                originalLength: Int64(payload.count),
+                linkType: 1,
+                processName: "Safari",
+                processProvenance: appProvenance
+            ),
+            CapturedFrameMessage(
+                bytes: payload,
+                timestampSeconds: 1_700_000_011,
+                timestampMicroseconds: 200,
+                capturedLength: Int64(payload.count),
+                originalLength: Int64(payload.count),
+                linkType: 1,
+                processName: "curl",
+                processProvenance: cliProvenance
+            ),
+            CapturedFrameMessage(
+                bytes: payload,
+                timestampSeconds: 1_700_000_012,
+                timestampMicroseconds: 300,
+                capturedLength: Int64(payload.count),
+                originalLength: Int64(payload.count),
+                linkType: 1,
+                processName: "mDNSResponderHelper",
+                processProvenance: rootProvenance
+            ),
+            CapturedFrameMessage(
+                bytes: payload,
+                timestampSeconds: 1_700_000_013,
+                timestampMicroseconds: 400,
+                capturedLength: Int64(payload.count),
+                originalLength: Int64(payload.count),
+                linkType: 1,
+                processName: nil,
+                processProvenance: kernelProvenance
+            ),
+            CapturedFrameMessage(
+                bytes: payload,
+                timestampSeconds: 1_700_000_014,
+                timestampMicroseconds: 500,
+                capturedLength: Int64(payload.count),
+                originalLength: Int64(payload.count),
+                linkType: 1,
+                processName: "exited-tool",
+                processProvenance: emptyStructProvenance
+            ),
+            CapturedFrameMessage(
+                bytes: payload,
+                timestampSeconds: 1_700_000_015,
+                timestampMicroseconds: 600,
+                capturedLength: Int64(payload.count),
+                originalLength: Int64(payload.count),
+                linkType: 1
+            ),
+        ]
+
+        let batch = FrameBatchMessage(
+            frames: messages,
+            bufferDroppedCount: 0,
+            captureLinkType: 1,
+            stats: nil
+        )
+        let archived = try NSKeyedArchiver.archivedData(withRootObject: batch, requiringSecureCoding: true)
+
+        // Decode strictly against TracexyHelperInterface's fetchFrames XPC allow-list!
+        let interface = TracexyHelperInterface.make()
+        let allowedSet = interface.classes(
+            for: #selector(TracexyHelperProtocol.fetchFrames(withReply:)),
+            argumentIndex: 0,
+            ofReply: true
+        )
+        let allowedClasses = allowedSet.compactMap { $0.base as? AnyClass }
+        let unarchiver = try NSKeyedUnarchiver(forReadingFrom: archived)
+        unarchiver.requiresSecureCoding = true
+        let decodedBatch = try #require(
+            unarchiver.decodeObject(of: allowedClasses, forKey: NSKeyedArchiveRootObjectKey) as? FrameBatchMessage
+        )
+        unarchiver.finishDecoding()
+
+        #expect(decodedBatch.frames.count == 6)
+        #expect(decodedBatch.frames[0].processName == "Safari")
+        #expect(decodedBatch.frames[0].processProvenance == appProvenance)
+        #expect(decodedBatch.frames[1].processName == "curl")
+        #expect(decodedBatch.frames[1].processProvenance == cliProvenance)
+        #expect(decodedBatch.frames[2].processProvenance == rootProvenance)
+        #expect(decodedBatch.frames[3].processName == nil)
+        #expect(decodedBatch.frames[3].processProvenance == kernelProvenance)
+        #expect(decodedBatch.frames[4].processProvenance == emptyStructProvenance)
+        #expect(decodedBatch.frames[5].processName == nil)
+        #expect(decodedBatch.frames[5].processProvenance == nil)
+
+        let convertedFrames = decodedBatch.frames.compactMap(CapturedFrame.init(message:))
+        #expect(convertedFrames.count == 6)
+        #expect(convertedFrames[0].processProvenance == appProvenance)
+        #expect(convertedFrames[1].processProvenance == cliProvenance)
+        #expect(convertedFrames[2].processProvenance == rootProvenance)
+        #expect(convertedFrames[3].processName == nil)
+        #expect(convertedFrames[3].processProvenance?.isKernelTask == true)
+        #expect(convertedFrames[4].processProvenance == emptyStructProvenance)
+        #expect(convertedFrames[5].processProvenance == nil)
+    }
+
+    @Test
+    func resolvesDelegatedEffectivePIDWithViaProcessNameAndParentProvenance() throws {
+        let inner = [UInt8](repeating: 0x42, count: 48)
+        let delegatedPacket = makePktapPacket(
+            process: "nsurlsessiond",
+            pid: 312,
+            epid: 9_001,
+            effectiveProcess: "Safari",
+            typeNext: PktapHeader.typeNextPacket,
+            interface: "en0",
+            innerDLT: 1,
+            frame: inner
+        )
+        let parsed = try #require(PktapHeader.parse(delegatedPacket))
+
+        let safariExec = "/Applications/Safari.app/Contents/MacOS/Safari"
+        let daemonExec = "/usr/libexec/nsurlsessiond"
+        let dockExec = "/System/Library/CoreServices/Dock.app/Contents/MacOS/Dock"
+
+        let resolved = PktapHeader.resolveAttribution(
+            parsed: parsed,
+            executablePathLookup: { pid in
+                switch pid {
+                case 9_001: safariExec
+                case 312: daemonExec
+                case 450: dockExec
+                default: nil
+                }
+            },
+            bsdProcessLookup: { pid in
+                pid == 9_001 ? (ppid: 450, uid: 501, hasTTY: false) : nil
+            },
+            displayNameFromPath: { path in
+                switch path {
+                case safariExec: "Safari"
+                case daemonExec: "nsurlsessiond"
+                case dockExec: "Dock"
+                default: PktapHeader.displayName(fromExecutablePath: path)
+                }
+            },
+            bundleIdentifierFromPath: { path in
+                path == safariExec ? "com.apple.Safari" : nil
+            },
+            outerMainExecutableFromAppPath: { _ in "Safari" }
+        )
+
+        #expect(resolved.processName == "Safari")
+        #expect(resolved.provenance == ProcessProvenance(
+            executablePath: safariExec,
+            bundleIdentifier: "com.apple.Safari",
+            viaProcessName: "nsurlsessiond",
+            parentProcessName: "Dock",
+            hasControllingTTY: false,
+            isRootUser: false,
+            isKernelTask: false
+        ))
+
+        // Exited `effectivePID` still attributes to `effectiveProcess` (`Safari`) via `nsurlsessiond`.
+        let exitedClientResolved = PktapHeader.resolveAttribution(
+            parsed: parsed,
+            executablePathLookup: { pid in pid == 312 ? daemonExec : nil },
+            bsdProcessLookup: { _ in nil },
+            displayNameFromPath: { path in PktapHeader.displayName(fromExecutablePath: path) },
+            bundleIdentifierFromPath: { _ in nil },
+            outerMainExecutableFromAppPath: { _ in nil }
+        )
+        #expect(exitedClientResolved.processName == "Safari")
+        #expect(exitedClientResolved.provenance?.viaProcessName == "nsurlsessiond")
+
+        // CLI process launched by an IDE with TTY attached (`ppid > 1`).
+        let cliPacket = makePktapPacket(
+            process: "node",
+            pid: 7_700,
+            epid: 7_700,
+            effectiveProcess: "node",
+            typeNext: PktapHeader.typeNextPacket,
+            interface: "en0",
+            innerDLT: 1,
+            frame: inner
+        )
+        let parsedCLI = try #require(PktapHeader.parse(cliPacket))
+        let nodeExec = "/opt/homebrew/bin/node"
+        let ideExec = "/Applications/Antigravity.app/Contents/MacOS/Antigravity"
+        let cliResolved = PktapHeader.resolveAttribution(
+            parsed: parsedCLI,
+            executablePathLookup: { pid in
+                switch pid {
+                case 7_700: nodeExec
+                case 3_580: ideExec
+                default: nil
+                }
+            },
+            bsdProcessLookup: { pid in
+                pid == 7_700 ? (ppid: 3_580, uid: 501, hasTTY: true) : nil
+            },
+            displayNameFromPath: { path in
+                path == ideExec ? "Antigravity" : PktapHeader.displayName(fromExecutablePath: path)
+            },
+            bundleIdentifierFromPath: { _ in nil },
+            outerMainExecutableFromAppPath: { _ in nil }
+        )
+        #expect(cliResolved.processName == "node")
+        #expect(cliResolved.provenance == ProcessProvenance(
+            executablePath: nodeExec,
+            bundleIdentifier: nil,
+            viaProcessName: nil,
+            parentProcessName: "Antigravity",
+            hasControllingTTY: true,
+            isRootUser: false,
+            isKernelTask: false
+        ))
+    }
+
+    @Test
+    func resolvesNestedHelperViaProcessNameAndFrameworkBundleIdentifier() throws {
+        let inner = [UInt8](repeating: 0x55, count: 40)
+
+        // 1. `UU远程.app/Contents/MacOS/UURemoteDaemon` -> `UU远程` via `UURemoteDaemon` (root).
+        let uuPacket = makePktapPacket(
+            process: "UURemoteDaemon",
+            pid: 572,
+            epid: 572,
+            effectiveProcess: "UURemoteDaemon",
+            typeNext: PktapHeader.typeNextPacket,
+            interface: "en0",
+            innerDLT: 1,
+            frame: inner
+        )
+        let parsedUU = try #require(PktapHeader.parse(uuPacket))
+        let uuDaemonExec = "/Applications/UU远程.app/Contents/MacOS/UURemoteDaemon"
+        let resolvedUU = PktapHeader.resolveAttribution(
+            parsed: parsedUU,
+            executablePathLookup: { pid in pid == 572 ? uuDaemonExec : nil },
+            bsdProcessLookup: { pid in pid == 572 ? (ppid: 1, uid: 0, hasTTY: false) : nil },
+            displayNameFromPath: { _ in "UU远程" },
+            bundleIdentifierFromPath: { _ in "com.netease.uuremote" },
+            outerMainExecutableFromAppPath: { _ in "UURemote" }
+        )
+        #expect(resolvedUU.processName == "UU远程")
+        #expect(resolvedUU.provenance == ProcessProvenance(
+            executablePath: uuDaemonExec,
+            bundleIdentifier: "com.netease.uuremote",
+            viaProcessName: "UURemoteDaemon",
+            parentProcessName: nil,
+            hasControllingTTY: false,
+            isRootUser: true,
+            isKernelTask: false
+        ))
+
+        // Main UI binary of a localized bundle (`UURemote.app/Contents/MacOS/UURemote`
+        // whose localized display name is `"UU远程"`) must NOT emit a spurious `via UURemote`.
+        #expect(
+            PktapHeader.nestedHelperViaName(
+                executablePath: "/Applications/UURemote.app/Contents/MacOS/UURemote",
+                outerAppDisplayName: "UU远程",
+                outerMainExecutableLookup: { _ in "UURemote" }
+            ) == nil
+        )
+        #expect(
+            PktapHeader.nestedHelperViaName(
+                executablePath: "/Applications/UURemote.app/Contents/MacOS/UURemoteDaemon",
+                outerAppDisplayName: "UU远程",
+                outerMainExecutableLookup: { _ in "UURemote" }
+            ) == "UURemoteDaemon"
+        )
+
+        // 2. Nested Helper `.app` inside `Contents/Frameworks/` -> `Antigravity` via `Antigravity Helper`.
+        let helperExec = "/Applications/Antigravity.app/Contents/Frameworks/"
+            + "Antigravity Helper.app/Contents/MacOS/Antigravity Helper"
+        let helperPacket = makePktapPacket(
+            process: "Antigravity Help",
+            pid: 3_631,
+            epid: 3_631,
+            typeNext: PktapHeader.typeNextPacket,
+            interface: "en0",
+            innerDLT: 1,
+            frame: inner
+        )
+        let parsedHelper = try #require(PktapHeader.parse(helperPacket))
+        let resolvedHelper = PktapHeader.resolveAttribution(
+            parsed: parsedHelper,
+            executablePathLookup: { pid in
+                switch pid {
+                case 3_631: helperExec
+                case 3_580: "/Applications/Antigravity.app/Contents/MacOS/Antigravity"
+                default: nil
+                }
+            },
+            bsdProcessLookup: { pid in pid == 3_631 ? (ppid: 3_580, uid: 501, hasTTY: false) : nil },
+            displayNameFromPath: { _ in "Antigravity" },
+            bundleIdentifierFromPath: { _ in "com.amunx.antigravity" },
+            outerMainExecutableFromAppPath: { _ in "Antigravity" }
+        )
+        #expect(resolvedHelper.processName == "Antigravity")
+        #expect(resolvedHelper.provenance?.viaProcessName == "Antigravity Helper")
+        #expect(resolvedHelper.provenance?.parentProcessName == "Antigravity")
+
+        // 3. Framework bundle identifier extraction when not inside an `.app/`.
+        let ampExec = "/System/Library/PrivateFrameworks/AMPDevices.framework/"
+            + "Versions/A/Support/AMPDeviceDiscoveryAgent"
+        let ampBundleID = PktapHeader.bundleIdentifier(fromExecutablePath: ampExec) { bundlePath in
+            bundlePath == "/System/Library/PrivateFrameworks/AMPDevices.framework"
+                ? "com.apple.AMPDevices"
+                : nil
+        }
+        #expect(ampBundleID == "com.apple.AMPDevices")
+    }
+
+    @Test
+    func resolvesKernelTaskPIDZeroAndInspectsLiveBSDProcesses() throws {
+        let inner = [UInt8](repeating: 0x11, count: 40)
+
+        for comm in ["", "kernel_task"] {
+            let kernelPacket = makePktapPacket(
+                process: comm,
+                pid: 0,
+                epid: 0,
+                typeNext: PktapHeader.typeNextPacket,
+                interface: "en0",
+                innerDLT: 1,
+                frame: inner
+            )
+            let parsedKernel = try #require(PktapHeader.parse(kernelPacket))
+            let resolved = PktapHeader.resolveAttribution(parsed: parsedKernel)
+            #expect(resolved.processName == nil)
+            #expect(resolved.provenance == ProcessProvenance(isKernelTask: true))
+        }
+
+        // Pure inbound packet before XNU socket demux (`pid == -1, epid == -1, comm == ""`):
+        // NOT kernel_task, resolves to `(nil, nil)` so helper socket fallback can take over.
+        let unattributedInbound = makePktapPacket(
+            process: "",
+            pid: -1,
+            epid: -1,
+            typeNext: PktapHeader.typeNextPacket,
+            interface: "en0",
+            innerDLT: 1,
+            frame: inner
+        )
+        let parsedInbound = try #require(PktapHeader.parse(unattributedInbound))
+        let unattributed = PktapHeader.resolveAttribution(parsed: parsedInbound)
+        #expect(unattributed.processName == nil)
+        #expect(unattributed.provenance == nil)
+
+        // Live Darwin.sysctl `KERN_PROC_PID` verification:
+        let launchdInfo = try #require(PktapHeader.inspectBSDProcess(pid: 1))
+        #expect(launchdInfo.uid == 0)
+        #expect(launchdInfo.hasTTY == false)
+
+        let selfPID = ProcessInfo.processInfo.processIdentifier
+        let selfInfo = try #require(PktapHeader.inspectBSDProcess(pid: selfPID))
+        #expect(selfInfo.uid == getuid())
+        #expect(PktapHeader.inspectBSDProcess(pid: -1) == nil)
+        #expect(PktapHeader.inspectBSDProcess(pid: 999_999) == nil)
+    }
+
+    @Test
+    func parsesInboundTargetsAcrossLinkTypesAndResolvesLiveSocketPortMap() throws {
+        // 1. Ethernet IPv4 TCP (`93.184.216.34:443 -> 192.168.1.10:54321`)
+        let ethIPv4TCP = makeEthernetIPv4Packet(
+            proto: 6,
+            srcIP: [93, 184, 216, 34],
+            dstIP: [192, 168, 1, 10],
+            srcPort: 443,
+            dstPort: 54_321
+        )
+        let parsedEthV4 = try #require(PktapHeader.parseInboundTarget(innerBytes: ethIPv4TCP, innerDLT: 1))
+        #expect(parsedEthV4.proto == .tcp)
+        #expect(parsedEthV4.destinationIP == .v4(0xC0A8_010A))
+        #expect(parsedEthV4.destinationPort == 54_321)
+        #expect(!parsedEthV4.destinationIP.isMulticastOrBroadcast)
+
+        // 2. Ethernet 802.1Q VLAN-tagged IPv4 UDP (`-> 224.0.0.251:5353` multicast)
+        let vlanHeader: [UInt8] = [
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+            0x81, 0x00, 0x00, 0x0A, 0x08, 0x00,
+        ]
+        let rawIPv4MulticastUDP = Array(makeEthernetIPv4Packet(
+            proto: 17,
+            srcIP: [192, 168, 1, 78],
+            dstIP: [224, 0, 0, 251],
+            srcPort: 5_353,
+            dstPort: 5_353
+        ).dropFirst(14))
+        let parsedVLANMulticast = try #require(
+            PktapHeader.parseInboundTarget(innerBytes: vlanHeader + rawIPv4MulticastUDP, innerDLT: 1)
+        )
+        #expect(parsedVLANMulticast.proto == .udp)
+        #expect(parsedVLANMulticast.destinationPort == 5_353)
+        #expect(parsedVLANMulticast.destinationIP.isMulticastOrBroadcast)
+
+        // 3. BSD Loopback (`DLT_NULL = 0`) IPv6 UDP (`[::1]:53 -> [::1]:59123`)
+        var loopbackIPv6: [UInt8] = [UInt8(AF_INET6), 0, 0, 0]
+        loopbackIPv6.append(contentsOf: makeRawIPv6Packet(
+            nextHeader: 17,
+            dstIP: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            srcPort: 53,
+            dstPort: 59_123
+        ))
+        let parsedLoopV6 = try #require(PktapHeader.parseInboundTarget(innerBytes: loopbackIPv6, innerDLT: 0))
+        #expect(parsedLoopV6.proto == .udp)
+        #expect(parsedLoopV6.destinationIP == .v6(0, 1))
+        #expect(parsedLoopV6.destinationPort == 59_123)
+
+        // 4. Raw IP (`DLT_RAW = 12` & `LINKTYPE_RAW = 101`) IPv4 TCP
+        let rawIPv4 = Array(ethIPv4TCP.dropFirst(14))
+        #expect(PktapHeader.parseInboundTarget(innerBytes: rawIPv4, innerDLT: 12) == parsedEthV4)
+        #expect(PktapHeader.parseInboundTarget(innerBytes: rawIPv4, innerDLT: 101) == parsedEthV4)
+
+        // 5. Rejects ARP (`0x0806`) and non-initial IPv4 fragments (`fragOffset != 0`)
+        let arpFrame: [UInt8] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0x08, 0x06] + [UInt8](repeating: 0, count: 28)
+        #expect(PktapHeader.parseInboundTarget(innerBytes: arpFrame, innerDLT: 1) == nil)
+
+        var nonInitialFrag = ethIPv4TCP
+        nonInitialFrag[14 + 6] = 0x00
+        nonInitialFrag[14 + 7] = 0x20
+        #expect(PktapHeader.parseInboundTarget(innerBytes: nonInitialFrag, innerDLT: 1) == nil)
+
+        // 6. Live `<libproc.h>` inbound socket port map resolves local sockets and rejects multicast/wrong-proto.
+        let tcpFD = socket(AF_INET, SOCK_STREAM, 0)
+        try #require(tcpFD >= 0)
+        defer { close(tcpFD) }
+
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = 0
+        addr.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+        let bindRC = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { saPtr in
+                bind(tcpFD, saPtr, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        try #require(bindRC == 0)
+        try #require(listen(tcpFD, 1) == 0)
+
+        var bound = sockaddr_in()
+        var boundLen = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let nameRC = withUnsafeMutablePointer(to: &bound) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { saPtr in
+                getsockname(tcpFD, saPtr, &boundLen)
+            }
+        }
+        try #require(nameRC == 0)
+        let tcpPort = UInt16(bigEndian: bound.sin_port)
+        try #require(tcpPort > 0)
+
+        let portMap = PktapHeader.collectInboundSocketPortMap()
+        let inboundLoopbackTCP = [UInt8(AF_INET), 0, 0, 0] + Array(makeEthernetIPv4Packet(
+            proto: 6,
+            srcIP: [127, 0, 0, 1],
+            dstIP: [127, 0, 0, 1],
+            srcPort: 60_000,
+            dstPort: tcpPort
+        ).dropFirst(14))
+        let inboundTarget = try #require(PktapHeader.parseInboundTarget(innerBytes: inboundLoopbackTCP, innerDLT: 0))
+        let owner = try #require(portMap.lookup(target: inboundTarget))
+        #expect(owner.pid == ProcessInfo.processInfo.processIdentifier)
+        #expect(!owner.command.isEmpty)
+
+        // Wrong protocol (UDP packet to that TCP port) and multicast destination must not match.
+        let wrongProtoTarget = PktapHeader.InboundPacketTarget(
+            proto: .udp,
+            destinationIP: .v4(0x7F00_0001),
+            destinationPort: tcpPort
+        )
+        #expect(portMap.lookup(target: wrongProtoTarget) == nil)
+        #expect(portMap.lookup(target: parsedVLANMulticast) == nil)
+    }
+
     // MARK: Private
+
+    private func makeEthernetIPv4Packet(
+        proto: UInt8,
+        srcIP: [UInt8],
+        dstIP: [UInt8],
+        srcPort: UInt16,
+        dstPort: UInt16
+    )
+        -> [UInt8]
+    {
+        var bytes = [UInt8](repeating: 0, count: 14 + 20 + 8)
+        bytes[12] = 0x08
+        bytes[13] = 0x00
+        bytes[14] = 0x45
+        bytes[14 + 2] = 0x00
+        bytes[14 + 3] = 28
+        bytes[14 + 8] = 64
+        bytes[14 + 9] = proto
+        for index in 0 ..< 4 {
+            bytes[14 + 12 + index] = srcIP[index]
+            bytes[14 + 16 + index] = dstIP[index]
+        }
+        bytes[34] = UInt8((srcPort >> 8) & 0xFF)
+        bytes[35] = UInt8(srcPort & 0xFF)
+        bytes[36] = UInt8((dstPort >> 8) & 0xFF)
+        bytes[37] = UInt8(dstPort & 0xFF)
+        return bytes
+    }
+
+    private func makeRawIPv6Packet(
+        nextHeader: UInt8,
+        dstIP: [UInt8],
+        srcPort: UInt16,
+        dstPort: UInt16
+    )
+        -> [UInt8]
+    {
+        var bytes = [UInt8](repeating: 0, count: 40 + 8)
+        bytes[0] = 0x60
+        bytes[4] = 0x00
+        bytes[5] = 0x08
+        bytes[6] = nextHeader
+        bytes[7] = 64
+        for index in 0 ..< 16 {
+            bytes[24 + index] = dstIP[index]
+        }
+        bytes[40] = UInt8((srcPort >> 8) & 0xFF)
+        bytes[41] = UInt8(srcPort & 0xFF)
+        bytes[42] = UInt8((dstPort >> 8) & 0xFF)
+        bytes[43] = UInt8(dstPort & 0xFF)
+        return bytes
+    }
 
     /// Builds a synthetic DLT_PKTAP packet: a header (process at offset 56,
     /// interface at 12, DLT at 8, typeNext at 4, length at 0) followed by the inner frame.
@@ -402,7 +960,7 @@ struct PktapTests {
     }
 
     private func writeU32LE(_ bytes: inout [UInt8], at offset: Int, _ value: Int) {
-        let v = UInt32(value)
+        let v = UInt32(bitPattern: Int32(truncatingIfNeeded: value))
         bytes[offset] = UInt8(v & 0xFF)
         bytes[offset + 1] = UInt8((v >> 8) & 0xFF)
         bytes[offset + 2] = UInt8((v >> 16) & 0xFF)

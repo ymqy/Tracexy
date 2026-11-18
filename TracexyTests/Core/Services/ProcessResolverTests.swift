@@ -423,5 +423,161 @@ struct ProcessResolverTests {
             liveResolver.appName(forEndpoints: "127.0.0.1:\(udpPort)", "198.51.100.1:53")
                 == expectedName
         )
+
+        let liveAttribution = try #require(
+            liveResolver.attribution(forEndpoints: "127.0.0.1:\(tcpPort)", "127.0.0.1:59999")
+        )
+        #expect(liveAttribution.appName == expectedName)
+        #expect(liveAttribution.provenance.executablePath?.isEmpty == false)
+        #expect(liveAttribution.provenance.isRootUser == (getuid() == 0))
+        #expect(liveAttribution.provenance.isKernelTask == false)
+    }
+
+    @Test
+    func resolvesProcessAttributionProvenanceForNestedHelpersCLIsAndDaemons() {
+        // 1. Nested daemon inside `UU远程.app` running as root (`uid == 0`).
+        let uuExec = "/Applications/UU远程.app/Contents/MacOS/UURemoteDaemon"
+        let uuAttr = ProcessResolver.resolveProcessAttribution(
+            pid: 572,
+            command: "UURemoteDaemon",
+            executablePathProvider: { pid in pid == 572 ? uuExec : nil },
+            bsdProcessInspector: { pid in pid == 572 ? (ppid: 1, uid: 0, hasTTY: false) : nil },
+            bundleNameLookup: { path in path == "/Applications/UU远程.app" ? "UU远程" : nil },
+            bundleIdentifierLookup: { path in path == "/Applications/UU远程.app" ? "com.netease.uuremote" : nil },
+            outerMainExecutableLookup: { _ in "UURemote" },
+            runningAppNameLookup: { _ in nil },
+            runningAppBundleIdentifierLookup: { _ in nil }
+        )
+        #expect(uuAttr.appName == "UU远程")
+        #expect(uuAttr.provenance == ProcessProvenance(
+            executablePath: uuExec,
+            bundleIdentifier: "com.netease.uuremote",
+            viaProcessName: "UURemoteDaemon",
+            parentProcessName: nil,
+            hasControllingTTY: false,
+            isRootUser: true,
+            isKernelTask: false
+        ))
+
+        // 2. Homebrew CLI tool launched by Terminal (`ppid > 1`, `hasTTY == true`).
+        let curlExec = "/opt/homebrew/bin/curl"
+        let terminalExec = "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"
+        let cliAttr = ProcessResolver.resolveProcessAttribution(
+            pid: 8_810,
+            command: "curl",
+            executablePathProvider: { pid in
+                switch pid {
+                case 8_810: curlExec
+                case 2_200: terminalExec
+                default: nil
+                }
+            },
+            bsdProcessInspector: { pid in pid == 8_810 ? (ppid: 2_200, uid: 501, hasTTY: true) : nil },
+            bundleNameLookup: { path in
+                path == "/System/Applications/Utilities/Terminal.app" ? "Terminal" : nil
+            },
+            bundleIdentifierLookup: { _ in nil },
+            outerMainExecutableLookup: { _ in nil },
+            runningAppNameLookup: { _ in nil },
+            runningAppBundleIdentifierLookup: { _ in nil }
+        )
+        #expect(cliAttr.appName == "curl")
+        #expect(cliAttr.provenance == ProcessProvenance(
+            executablePath: curlExec,
+            bundleIdentifier: nil,
+            viaProcessName: nil,
+            parentProcessName: "Terminal",
+            hasControllingTTY: true,
+            isRootUser: false,
+            isKernelTask: false
+        ))
+
+        // 3. System framework daemon extracts outer `.framework` bundle identifier.
+        let ampExec = "/System/Library/PrivateFrameworks/AMPDevices.framework/"
+            + "Versions/A/Support/AMPDeviceDiscoveryAgent"
+        let ampAttr = ProcessResolver.resolveProcessAttribution(
+            pid: 717,
+            command: "AMPDeviceDiscove",
+            executablePathProvider: { pid in pid == 717 ? ampExec : nil },
+            bsdProcessInspector: { pid in pid == 717 ? (ppid: 1, uid: 501, hasTTY: false) : nil },
+            bundleNameLookup: { _ in nil },
+            bundleIdentifierLookup: { path in
+                path == "/System/Library/PrivateFrameworks/AMPDevices.framework" ? "com.apple.AMPDevices" : nil
+            },
+            outerMainExecutableLookup: { _ in nil },
+            runningAppNameLookup: { _ in nil },
+            runningAppBundleIdentifierLookup: { _ in nil }
+        )
+        #expect(ampAttr.appName == "AMPDeviceDiscoveryAgent")
+        #expect(ampAttr.provenance.bundleIdentifier == "com.apple.AMPDevices")
+        #expect(ampAttr.provenance.viaProcessName == nil)
+    }
+
+    @Test
+    @MainActor
+    func attributionForEndpointsCachesPerPIDAndPreservesSpecificOverWildcard() async throws {
+        let provenanceCallCount = OSAllocatedUnfairLock(initialState: 0)
+        let netstatFixture = [
+            "tcp4 0 0 192.168.0.130.55718 142.251.10.188.443 ESTABLISHED"
+                + " 12040 3412 131072 131072 Antigravity Help:85092"
+                + " 00102 00000008 00fc1001 00000080 04000900 2 0 000000",
+            "tcp4 0 0 192.168.0.130.55719 142.251.10.188.443 ESTABLISHED"
+                + " 12040 3412 131072 131072 Antigravity Help:85092"
+                + " 00102 00000008 00fc1002 00000080 04000900 2 0 000000",
+            "udp4 0 0 *.5353 *.*"
+                + " 1024 512 786896 9216 mDNSResponder:503 00100 00050200 000008fb 10000000 04000800 1 0 000002",
+        ].joined(separator: "\n")
+
+        let antigravityProvenance = ProcessProvenance(
+            executablePath: "/Applications/Antigravity.app/Contents/Frameworks/"
+                + "Antigravity Helper.app/Contents/MacOS/Antigravity Helper",
+            bundleIdentifier: "com.amunx.antigravity",
+            viaProcessName: "Antigravity Helper",
+            parentProcessName: "Antigravity"
+        )
+        let mdnsProvenance = ProcessProvenance(
+            executablePath: "/usr/sbin/mDNSResponder",
+            isRootUser: false
+        )
+
+        let resolver = ProcessResolver(
+            netstatRunner: { netstatFixture },
+            localIPsProvider: { ["192.168.0.130", "127.0.0.1", "::1"] },
+            appNameResolver: { pid, command in
+                pid == 85_092 ? "Antigravity" : command
+            },
+            provenanceResolver: { pid, _, _ in
+                provenanceCallCount.withLock { $0 += 1 }
+                return pid == 85_092 ? antigravityProvenance : mdnsProvenance
+            }
+        )
+
+        resolver.refresh(force: true)
+        for _ in 0 ..< 40 {
+            if resolver.attribution(forEndpoints: "192.168.0.130:55718", "142.251.10.188:443") != nil {
+                break
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        let first = try #require(
+            resolver.attribution(forEndpoints: "192.168.0.130:55718", "142.251.10.188:443")
+        )
+        let second = try #require(
+            resolver.attribution(forEndpoints: "192.168.0.130:55719", "142.251.10.188:443")
+        )
+        let wildcard = try #require(
+            resolver.attribution(forEndpoints: "192.168.0.130:5353", "224.0.0.251:5353")
+        )
+
+        #expect(first.appName == "Antigravity")
+        #expect(first.provenance == antigravityProvenance)
+        #expect(second.appName == "Antigravity")
+        #expect(second.provenance == antigravityProvenance)
+        #expect(wildcard.appName == "mDNSResponder")
+        #expect(wildcard.provenance == mdnsProvenance)
+        #expect(resolver.attribution(forEndpoints: "192.168.0.50:5353", "224.0.0.251:5353") == nil)
+        // Two distinct PIDs (`85_092` across 2 sockets + `503`) -> resolved strictly once per PID!
+        #expect(provenanceCallCount.withLock { $0 } == 2)
     }
 }

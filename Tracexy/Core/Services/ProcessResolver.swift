@@ -14,31 +14,41 @@ final class ProcessResolver {
         socketTableProvider: @escaping @Sendable () -> SocketTable = { ProcessResolver.collectLibprocSockets() },
         populateImmediately: Bool = true,
         localIPsProvider: @escaping @Sendable () -> Set<String> = { ProcessResolver.discoverLocalIPs() },
-        appNameResolver: @escaping @Sendable (Int32, String) -> String = { pid, command in
-            ProcessResolver.resolveAppName(pid: pid, command: command)
-        }
+        appNameResolver: (@Sendable (Int32, String) -> String)? = nil,
+        provenanceResolver: (@Sendable (Int32, String, String) -> ProcessProvenance)? = nil
     ) {
         self.socketTableProvider = socketTableProvider
         self.localIPsProvider = localIPsProvider
-        self.appNameResolver = appNameResolver
+        let combinedResolver: @Sendable (Int32, String) -> (appName: String, provenance: ProcessProvenance) = { pid, command in
+            if appNameResolver == nil, provenanceResolver == nil {
+                return ProcessResolver.resolveProcessAttribution(pid: pid, command: command)
+            }
+            let defaultAttribution = (appNameResolver == nil || provenanceResolver == nil)
+                ? ProcessResolver.resolveProcessAttribution(pid: pid, command: command)
+                : (appName: "", provenance: ProcessProvenance())
+            let appName = appNameResolver?(pid, command) ?? defaultAttribution.appName
+            let provenance = provenanceResolver?(pid, command, appName) ?? defaultAttribution.provenance
+            return (appName: appName, provenance: provenance)
+        }
+        attributionResolver = combinedResolver
         localIPs = ProcessResolver.normalizeLocalIPs(localIPsProvider())
         if populateImmediately {
-            resolvedTable = Self.resolveNames(socketTableProvider(), using: appNameResolver)
+            resolvedTable = Self.resolveEntries(socketTableProvider(), using: combinedResolver)
         }
     }
 
     convenience init(
         netstatRunner: @escaping @Sendable () -> String,
         localIPsProvider: @escaping @Sendable () -> Set<String> = { ProcessResolver.discoverLocalIPs() },
-        appNameResolver: @escaping @Sendable (Int32, String) -> String = { pid, command in
-            ProcessResolver.resolveAppName(pid: pid, command: command)
-        }
+        appNameResolver: (@Sendable (Int32, String) -> String)? = nil,
+        provenanceResolver: (@Sendable (Int32, String, String) -> ProcessProvenance)? = nil
     ) {
         self.init(
             socketTableProvider: { ProcessResolver.parseNetstat(netstatRunner()) },
             populateImmediately: false,
             localIPsProvider: localIPsProvider,
-            appNameResolver: appNameResolver
+            appNameResolver: appNameResolver,
+            provenanceResolver: provenanceResolver
         )
     }
 
@@ -92,6 +102,8 @@ final class ProcessResolver {
     nonisolated struct ResolvedSocketTable: Equatable, Sendable {
         var specific: [SocketEndpoint: String] = [:]
         var wildcard: [UInt16: String] = [:]
+        var specificProvenance: [SocketEndpoint: ProcessProvenance] = [:]
+        var wildcardProvenance: [UInt16: ProcessProvenance] = [:]
 
         func appName(
             forEndpoints source: String,
@@ -102,6 +114,21 @@ final class ProcessResolver {
         {
             let normalizedIPs = ProcessResolver.normalizeLocalIPs(localIPs)
             return appName(
+                forEndpoints: source,
+                destination,
+                normalizedLocalIPs: normalizedIPs
+            )
+        }
+
+        func attribution(
+            forEndpoints source: String,
+            _ destination: String,
+            localIPs: Set<String>
+        )
+            -> (appName: String, provenance: ProcessProvenance)?
+        {
+            let normalizedIPs = ProcessResolver.normalizeLocalIPs(localIPs)
+            return attribution(
                 forEndpoints: source,
                 destination,
                 normalizedLocalIPs: normalizedIPs
@@ -119,6 +146,17 @@ final class ProcessResolver {
                 ?? lookup(endpoint: destination, normalizedLocalIPs: normalizedLocalIPs)
         }
 
+        fileprivate func attribution(
+            forEndpoints source: String,
+            _ destination: String,
+            normalizedLocalIPs: Set<String>
+        )
+            -> (appName: String, provenance: ProcessProvenance)?
+        {
+            lookupAttribution(endpoint: source, normalizedLocalIPs: normalizedLocalIPs)
+                ?? lookupAttribution(endpoint: destination, normalizedLocalIPs: normalizedLocalIPs)
+        }
+
         private func lookup(
             endpoint rawEndpoint: String,
             normalizedLocalIPs: Set<String>
@@ -131,6 +169,32 @@ final class ProcessResolver {
                 return nil
             }
             return specific[endpoint] ?? wildcard[endpoint.port]
+        }
+
+        private func lookupAttribution(
+            endpoint rawEndpoint: String,
+            normalizedLocalIPs: Set<String>
+        )
+            -> (appName: String, provenance: ProcessProvenance)?
+        {
+            guard let endpoint = ProcessResolver.parseEndpoint(rawEndpoint),
+                  normalizedLocalIPs.contains(endpoint.ip) else
+            {
+                return nil
+            }
+            if let specificApp = specific[endpoint] {
+                return (
+                    appName: specificApp,
+                    provenance: specificProvenance[endpoint] ?? ProcessProvenance()
+                )
+            }
+            if let wildcardApp = wildcard[endpoint.port] {
+                return (
+                    appName: wildcardApp,
+                    provenance: wildcardProvenance[endpoint.port] ?? ProcessProvenance()
+                )
+            }
+            return nil
         }
     }
 
@@ -477,6 +541,88 @@ final class ProcessResolver {
         return path.isEmpty ? nil : path
     }
 
+    /// Resolves a socket's `(pid, command)` to both a user-facing app/daemon name and
+    /// full `ProcessProvenance` (`executablePath`, outermost `bundleIdentifier`,
+    /// nested helper `viaProcessName`, `parentProcessName`, `hasControllingTTY`, `isRootUser`).
+    nonisolated static func resolveProcessAttribution(
+        pid: Int32,
+        command: String,
+        executablePathProvider: (Int32) -> String? = executablePath(forPID:),
+        bsdProcessInspector: (Int32) -> (ppid: Int32, uid: UInt32, hasTTY: Bool)? = PktapHeader.inspectBSDProcess(pid:),
+        bundleNameLookup: (String) -> String? = bundleDisplayName(atPath:),
+        bundleIdentifierLookup: (String) -> String? = PktapHeader.bundleIdentifier(atBundlePath:),
+        outerMainExecutableLookup: (String) -> String? = PktapHeader.bundleExecutableName(atBundlePath:),
+        runningAppNameLookup: (Int32) -> String? = runningApplicationName(forPID:),
+        runningAppBundleIdentifierLookup: (Int32) -> String? = runningApplicationBundleIdentifier(forPID:)
+    )
+        -> (appName: String, provenance: ProcessProvenance)
+    {
+        let resolvedExecPath = pid > 0 ? executablePathProvider(pid) : nil
+        let appName = resolveAppNameFromResolvedPath(
+            pid: pid,
+            command: command,
+            resolvedExecPath: resolvedExecPath,
+            bundleNameLookup: bundleNameLookup,
+            runningAppNameLookup: runningAppNameLookup
+        )
+
+        var resolvedBundleID = resolvedExecPath.flatMap { execPath in
+            PktapHeader.bundleIdentifier(
+                fromExecutablePath: execPath,
+                bundleIdentifierLookup: bundleIdentifierLookup
+            )
+        }
+        if resolvedBundleID == nil,
+           pid > 0,
+           let runningID = runningAppBundleIdentifierLookup(pid)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !runningID.isEmpty
+        {
+            resolvedBundleID = runningID
+        }
+
+        let viaName = resolvedExecPath.flatMap { execPath in
+            PktapHeader.nestedHelperViaName(
+                executablePath: execPath,
+                outerAppDisplayName: appName,
+                outerMainExecutableLookup: outerMainExecutableLookup
+            )
+        }
+
+        let bsdInfo = pid > 0 ? bsdProcessInspector(pid) : nil
+        let hasTTY = bsdInfo?.hasTTY ?? false
+        let isRootUser = bsdInfo.map { $0.uid == 0 } ?? false
+        var parentProcessName: String?
+        if let ppid = bsdInfo?.ppid,
+           ppid > 1,
+           ppid != pid,
+           let parentExecPath = executablePathProvider(ppid)
+        {
+            if let outerBundlePath = outermostAppBundlePath(fromExecutablePath: parentExecPath) {
+                parentProcessName = appNameFromAppBundlePath(
+                    outerBundlePath,
+                    bundleNameLookup: bundleNameLookup
+                )
+            } else {
+                let basename = (parentExecPath as NSString).lastPathComponent
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !basename.isEmpty, basename != "/" {
+                    parentProcessName = basename
+                }
+            }
+        }
+
+        let provenance = ProcessProvenance(
+            executablePath: resolvedExecPath,
+            bundleIdentifier: resolvedBundleID,
+            viaProcessName: viaName,
+            parentProcessName: parentProcessName,
+            hasControllingTTY: hasTTY,
+            isRootUser: isRootUser,
+            isKernelTask: false
+        )
+        return (appName: appName, provenance: provenance)
+    }
+
     /// Resolves a socket's `(pid, command)` to a user-facing app or daemon name:
     /// 1) Outermost `.app` bundle from `proc_pidpath` (via `Bundle` Info.plist or bundle basename),
     /// 2) `NSRunningApplication(processIdentifier: pid)?.localizedName` when not inside an `.app/`,
@@ -491,29 +637,13 @@ final class ProcessResolver {
         -> String
     {
         let resolvedExecPath = pid > 0 ? executablePathProvider(pid) : nil
-        if let execPath = resolvedExecPath,
-           let outerBundlePath = outermostAppBundlePath(fromExecutablePath: execPath),
-           let appName = appNameFromAppBundlePath(outerBundlePath, bundleNameLookup: bundleNameLookup)
-        {
-            return appName
-        }
-
-        if pid > 0,
-           let runningName = runningAppNameLookup(pid)?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !runningName.isEmpty
-        {
-            return runningName
-        }
-
-        if let execPath = resolvedExecPath {
-            let basename = (execPath as NSString).lastPathComponent
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !basename.isEmpty, basename != "/" {
-                return basename
-            }
-        }
-
-        return command
+        return resolveAppNameFromResolvedPath(
+            pid: pid,
+            command: command,
+            resolvedExecPath: resolvedExecPath,
+            bundleNameLookup: bundleNameLookup,
+            runningAppNameLookup: runningAppNameLookup
+        )
     }
 
     // MARK: - Live Lookup & Refresh
@@ -522,6 +652,22 @@ final class ProcessResolver {
     /// (with wildcard `*.port` fallback only when the endpoint IP belongs to this Mac).
     func appName(forEndpoints source: String, _ destination: String) -> String? {
         resolvedTable.appName(
+            forEndpoints: source,
+            destination,
+            normalizedLocalIPs: localIPs
+        )
+    }
+
+    /// Full `(appName, provenance)` owning a session, found by matching either
+    /// endpoint's local `(ip, port)` (with wildcard `*.port` fallback only when
+    /// the endpoint IP belongs to this Mac).
+    func attribution(
+        forEndpoints source: String,
+        _ destination: String
+    )
+        -> (appName: String, provenance: ProcessProvenance)?
+    {
+        resolvedTable.attribution(
             forEndpoints: source,
             destination,
             normalizedLocalIPs: localIPs
@@ -545,11 +691,11 @@ final class ProcessResolver {
         lastRefresh = now
         let provider = socketTableProvider
         let ipProvider = localIPsProvider
-        let resolver = appNameResolver
+        let resolver = attributionResolver
         Task.detached(priority: .utility) {
             let parsed = provider()
             let discoveredIPs = Self.normalizeLocalIPs(ipProvider())
-            let resolved = Self.resolveNames(parsed, using: resolver)
+            let resolved = Self.resolveEntries(parsed, using: resolver)
             await MainActor.run {
                 self.localIPs = discoveredIPs
                 self.resolvedTable = resolved
@@ -582,7 +728,7 @@ final class ProcessResolver {
 
     private let socketTableProvider: @Sendable () -> SocketTable
     private let localIPsProvider: @Sendable () -> Set<String>
-    private let appNameResolver: @Sendable (Int32, String) -> String
+    private let attributionResolver: @Sendable (Int32, String) -> (appName: String, provenance: ProcessProvenance)
     private var resolvedTable = ResolvedSocketTable()
     private var localIPs: Set<String>
     private var lastRefresh = Date.distantPast
@@ -655,11 +801,52 @@ final class ProcessResolver {
         return ""
     }
 
+    nonisolated private static func resolveAppNameFromResolvedPath(
+        pid: Int32,
+        command: String,
+        resolvedExecPath: String?,
+        bundleNameLookup: (String) -> String?,
+        runningAppNameLookup: (Int32) -> String?
+    )
+        -> String
+    {
+        if let execPath = resolvedExecPath,
+           let outerBundlePath = outermostAppBundlePath(fromExecutablePath: execPath),
+           let appName = appNameFromAppBundlePath(outerBundlePath, bundleNameLookup: bundleNameLookup)
+        {
+            return appName
+        }
+
+        if pid > 0,
+           let runningName = runningAppNameLookup(pid)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !runningName.isEmpty
+        {
+            return runningName
+        }
+
+        if let execPath = resolvedExecPath {
+            let basename = (execPath as NSString).lastPathComponent
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !basename.isEmpty, basename != "/" {
+                return basename
+            }
+        }
+
+        return command
+    }
+
     nonisolated private static func runningApplicationName(forPID pid: Int32) -> String? {
         guard pid > 0 else {
             return nil
         }
         return NSRunningApplication(processIdentifier: pid)?.localizedName
+    }
+
+    nonisolated private static func runningApplicationBundleIdentifier(forPID pid: Int32) -> String? {
+        guard pid > 0 else {
+            return nil
+        }
+        return NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
     }
 
     nonisolated private static func parseNetstatRow(_ rawLine: Substring) -> ParsedRow? {
@@ -755,33 +942,39 @@ final class ProcessResolver {
         return nil
     }
 
-    nonisolated private static func resolveNames(
+    nonisolated private static func resolveEntries(
         _ parsed: SocketTable,
-        using appNameResolver: (Int32, String) -> String
+        using attributionResolver: (Int32, String) -> (appName: String, provenance: ProcessProvenance)
     )
         -> ResolvedSocketTable
     {
-        var nameByPID: [Int32: String] = [:]
+        var attributionByPID: [Int32: (appName: String, provenance: ProcessProvenance)] = [:]
         var resolved = ResolvedSocketTable()
         resolved.specific.reserveCapacity(parsed.specific.count)
         resolved.wildcard.reserveCapacity(parsed.wildcard.count)
+        resolved.specificProvenance.reserveCapacity(parsed.specific.count)
+        resolved.wildcardProvenance.reserveCapacity(parsed.wildcard.count)
 
-        func resolve(_ info: ResolvedProcess) -> String {
-            if info.pid > 0, let cached = nameByPID[info.pid] {
+        func resolve(_ info: ResolvedProcess) -> (appName: String, provenance: ProcessProvenance) {
+            if info.pid > 0, let cached = attributionByPID[info.pid] {
                 return cached
             }
-            let name = appNameResolver(info.pid, info.command)
+            let entry = attributionResolver(info.pid, info.command)
             if info.pid > 0 {
-                nameByPID[info.pid] = name
+                attributionByPID[info.pid] = entry
             }
-            return name
+            return entry
         }
 
         for (endpoint, info) in parsed.specific {
-            resolved.specific[endpoint] = resolve(info)
+            let entry = resolve(info)
+            resolved.specific[endpoint] = entry.appName
+            resolved.specificProvenance[endpoint] = entry.provenance
         }
         for (port, info) in parsed.wildcard {
-            resolved.wildcard[port] = resolve(info)
+            let entry = resolve(info)
+            resolved.wildcard[port] = entry.appName
+            resolved.wildcardProvenance[port] = entry.provenance
         }
         return resolved
     }
