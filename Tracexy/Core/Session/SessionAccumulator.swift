@@ -634,18 +634,22 @@ private extension SessionAccumulator {
         private var firstDataState: FirstDataTrackingState = .idle
 
         private var anyTCPRST = false
+        private var sawFINBeforeFirstRST = false
         private var anySCTPAbort = false
 
         private var status: SessionStatus {
-            // Only observed evidence sets status. An explicit TCP RST is a real
-            // reset and reads as an error, as does an SCTP ABORT chunk (RFC 4960
-            // §3.3.7), which tears an association down without an orderly
-            // shutdown. The absence of a decoded application
-            // protocol is *not* evidence of anything — a bare SYN, a midstream
-            // TCP payload we could not classify, or a tunnel we do not parse are
-            // all normal traffic, so they stay `.ok` rather than being invented
-            // into a warning that then feeds Security/findings.
-            anyTCPRST || anySCTPAbort ? .error : .ok
+            // Only observed evidence sets status. An explicit abortive TCP RST reads
+            // as an error, as does an SCTP ABORT chunk (RFC 4960 §3.3.7), which tears
+            // an association down without an orderly shutdown. When a TCP flow has
+            // already transferred payload data and initiated graceful FIN teardown on
+            // an earlier segment before the first RST arrives, a trailing RST is
+            // post-close socket cleanup (e.g. a late ACK or TLS close_notify hitting a
+            // closed descriptor) and stays `.ok` while `tcpCompleteness` still records
+            // `.rst`. The absence of a decoded application protocol is *not* evidence
+            // of anything — a bare SYN, a midstream TCP payload we could not classify,
+            // or a tunnel we do not parse are all normal traffic, so they stay `.ok`
+            // rather than being invented into a warning that then feeds Security/findings.
+            (anyTCPRST && !sawFINBeforeFirstRST) || anySCTPAbort ? .error : .ok
         }
 
         /// End-to-end session latency in milliseconds, published only when every
@@ -666,7 +670,13 @@ private extension SessionAccumulator {
                let reply = firstInboundPayloadAfterOutboundTime,
                reply > req
             {
-                return reply.timeIntervalSince(req) * 1_000
+                // Bound the generic first-payload exchange fallback to 5.0 s so an
+                // idle persistent stream where the peer pushes data minutes later
+                // falls through to transport RTT instead of publishing pseudo-latency.
+                let delta = reply.timeIntervalSince(req)
+                if delta <= 5.0 {
+                    return delta * 1_000
+                }
             }
             if let syn = lastSynBeforeSynAckTime, let synAck = firstSynAckTime, synAck > syn {
                 return synAck.timeIntervalSince(syn) * 1_000
@@ -728,6 +738,9 @@ private extension SessionAccumulator {
                 return
             }
             let flags = facts.flags
+            if flags.contains(.rst), !tcpCompleteness.contains(.rst) {
+                sawFINBeforeFirstRST = tcpCompleteness.contains(.data) && tcpCompleteness.contains(.fin)
+            }
             if flags.contains(.syn) {
                 if flags.contains(.ack) {
                     tcpCompleteness.insert(.synAck)
