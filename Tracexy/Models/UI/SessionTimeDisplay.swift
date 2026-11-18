@@ -19,18 +19,26 @@ nonisolated enum SessionTimeFormat: String, CaseIterable, Identifiable, Sendable
     }
 
     var menuTitle: String {
-        switch self {
-        case .timeOfDay: "Time of Day"
-        case .utc: "Time of Day (UTC)"
-        case .sinceCaptureStart: "Seconds Since Capture Start"
-        }
+        menuTitle(in: .main)
     }
 
     var columnTitle: String {
+        columnTitle(in: .main)
+    }
+
+    func menuTitle(in bundle: Bundle) -> String {
         switch self {
-        case .timeOfDay: "Time"
-        case .utc: "UTC"
-        case .sinceCaptureStart: "Since Start"
+        case .timeOfDay: String(localized: "Time of Day", bundle: bundle)
+        case .utc: String(localized: "Time of Day (UTC)", bundle: bundle)
+        case .sinceCaptureStart: String(localized: "Seconds Since Capture Start", bundle: bundle)
+        }
+    }
+
+    func columnTitle(in bundle: Bundle) -> String {
+        switch self {
+        case .timeOfDay: String(localized: "Time", bundle: bundle)
+        case .utc: String(localized: "UTC", bundle: bundle)
+        case .sinceCaptureStart: String(localized: "Since Start", bundle: bundle)
         }
     }
 

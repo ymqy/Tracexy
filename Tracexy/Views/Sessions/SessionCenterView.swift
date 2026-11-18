@@ -470,21 +470,7 @@ struct SessionCenterView: View {
                 }
             }
         ), sortOrder: $sortOrder, columnCustomization: $columnCustomization) {
-            TableColumn(coordinator.sessionTimeDisplay.format.columnTitle, value: \.sortableStartTime) { session in
-                timeCell(session.startTime)
-            }
-            .width(72)
-            .customizationID("time")
-            TableColumn("Source", value: \.sourceEndpoint) { session in
-                Text(session.sourceEndpoint).font(Theme.Typography.mono).lineLimit(1)
-            }
-            .width(min: 110, ideal: 150)
-            .customizationID("source")
-            TableColumn("Destination", value: \.destinationEndpoint) { session in
-                Text(session.destinationEndpoint).font(Theme.Typography.mono).lineLimit(1)
-            }
-            .width(min: 110, ideal: 150)
-            .customizationID("destination")
+            endpointColumns
             TableColumn("Host", value: \.host) { session in
                 HStack(spacing: Theme.Metrics.spacingS) {
                     SessionTagDots(tags: coordinator.investigationNotes.tags(onSession: session.id))
@@ -520,6 +506,14 @@ struct SessionCenterView: View {
             }
             .width(72)
             .customizationID("length")
+            TableColumn("Latency", value: \.sortableLatency) { session in
+                Text(session.latencyMilliseconds.map { String(format: "%.1f ms", $0) } ?? "—")
+                    .font(Theme.Typography.monoSmall)
+                    .foregroundStyle(.secondary)
+            }
+            .width(72)
+            .customizationID("latency")
+            .defaultVisibility(.automatic)
             TableColumn("", value: \.statusRank) { session in
                 Image(systemName: session.status.systemImage)
                     .font(.system(size: Theme.Icon.small))
@@ -619,6 +613,12 @@ struct SessionCenterView: View {
                     .foregroundStyle(.secondary)
             }
             .width(72)
+            TableColumn("Latency") { (row: SessionRow) in
+                Text(row.latencyMilliseconds.map { String(format: "%.1f ms", $0) } ?? "—")
+                    .font(Theme.Typography.monoSmall)
+                    .foregroundStyle(.secondary)
+            }
+            .width(72)
             TableColumn("") { (row: SessionRow) in
                 Image(systemName: row.status.systemImage)
                     .font(.system(size: Theme.Icon.small))
@@ -634,12 +634,6 @@ struct SessionCenterView: View {
                     .foregroundStyle(row.status == .error ? Color.red : Color.primary)
             }
             .width(min: 160, ideal: 280)
-            TableColumn("Latency") { (row: SessionRow) in
-                Text(row.latencyMilliseconds.map { String(format: "%.1f ms", $0) } ?? "—")
-                    .font(Theme.Typography.monoSmall)
-                    .foregroundStyle(.secondary)
-            }
-            .width(72)
         } rows: {
             ForEach(rows) { row in
                 if case .action = row, !row.childRows.isEmpty {
@@ -1031,13 +1025,41 @@ struct SessionCenterView: View {
     /// The session-expression terms this session's own facts support, with menu titles.
     private func likeThisTerms(_ session: SessionSummary) -> [(title: String, term: String)] {
         let terms: [(String, String?)] = [
-            ("Same Host", SessionExpressionTerm.sameHost(session.host)),
-            ("Same Destination Address", SessionExpressionTerm.sameDestinationIP(session.destinationEndpointValue)),
-            ("Same Destination Port", SessionExpressionTerm.sameDestinationPort(session.destinationEndpointValue)),
-            ("Same Process", SessionExpressionTerm.sameProcess(validProcessName(session.processName))),
-            ("Same Protocol", SessionExpressionTerm.sameProtocol(session.primaryProtocol)),
+            (String(localized: "Same Host"), SessionExpressionTerm.sameHost(session.host)),
+            (
+                String(localized: "Same Destination Address"),
+                SessionExpressionTerm.sameDestinationIP(session.destinationEndpointValue)
+            ),
+            (
+                String(localized: "Same Destination Port"),
+                SessionExpressionTerm.sameDestinationPort(session.destinationEndpointValue)
+            ),
+            (String(localized: "Same Process"), SessionExpressionTerm.sameProcess(validProcessName(session.processName))),
+            (String(localized: "Same Protocol"), SessionExpressionTerm.sameProtocol(session.primaryProtocol)),
         ]
         return terms.compactMap { title, term in term.map { (title, $0) } }
+    }
+
+    @TableColumnBuilder<SessionSummary, KeyPathComparator<SessionSummary>>
+    private var endpointColumns: some TableColumnContent<
+        SessionSummary,
+        KeyPathComparator<SessionSummary>
+    > {
+        TableColumn(coordinator.sessionTimeDisplay.format.columnTitle, value: \.sortableStartTime) { session in
+            timeCell(session.startTime)
+        }
+        .width(72)
+        .customizationID("time")
+        TableColumn("Source", value: \.sourceEndpoint) { session in
+            Text(session.sourceEndpoint).font(Theme.Typography.mono).lineLimit(1)
+        }
+        .width(min: 110, ideal: 150)
+        .customizationID("source")
+        TableColumn("Destination", value: \.destinationEndpoint) { session in
+            Text(session.destinationEndpoint).font(Theme.Typography.mono).lineLimit(1)
+        }
+        .width(min: 110, ideal: 150)
+        .customizationID("destination")
     }
 
     /// Columns a user can add from the header's context menu. Each reads a typed
@@ -1081,13 +1103,6 @@ struct SessionCenterView: View {
         .width(72)
         .customizationID("bytesDown")
         .defaultVisibility(.hidden)
-        TableColumn("Latency", value: \.sortableLatency) { session in
-            Text(session.latencyMilliseconds.map { String(format: "%.1f ms", $0) } ?? "—")
-                .font(Theme.Typography.monoSmall).foregroundStyle(.secondary)
-        }
-        .width(72)
-        .customizationID("latency")
-        .defaultVisibility(.automatic)
         TableColumn("Protocols") { session in
             Text(session.protocolStack.map(\.label).joined(separator: " "))
                 .font(Theme.Typography.monoSmall).foregroundStyle(.secondary).lineLimit(1)
@@ -1109,13 +1124,21 @@ struct SessionCenterView: View {
         let decoder = JSONDecoder()
         let saved = data.flatMap { try? decoder.decode(TableColumnCustomization<SessionSummary>.self, from: $0) }
         var customization = saved ?? TableColumnCustomization<SessionSummary>()
-        let migrationKey = TracexyIdentity.current.defaultsKey("migrated.latencyColumnVisible.v1")
-        if !defaults.bool(forKey: migrationKey) {
+        var didMigrate = false
+        let visibilityMigrationKey = TracexyIdentity.current.defaultsKey("migrated.latencyColumnVisible.v1")
+        if !defaults.bool(forKey: visibilityMigrationKey) {
             customization[visibility: "latency"] = .visible
-            if saved != nil, let migrated = try? JSONEncoder().encode(customization) {
-                defaults.set(migrated, forKey: ProjectScopedSettingsKeys.sessionTableColumns)
-            }
-            defaults.set(true, forKey: migrationKey)
+            defaults.set(true, forKey: visibilityMigrationKey)
+            didMigrate = true
+        }
+        let orderMigrationKey = TracexyIdentity.current.defaultsKey("migrated.latencyColumnOrder.v1")
+        if !defaults.bool(forKey: orderMigrationKey) {
+            customization.resetOrder()
+            defaults.set(true, forKey: orderMigrationKey)
+            didMigrate = true
+        }
+        if didMigrate, saved != nil, let migrated = try? JSONEncoder().encode(customization) {
+            defaults.set(migrated, forKey: ProjectScopedSettingsKeys.sessionTableColumns)
         }
         columnCustomization = customization
         didLoadColumnCustomization = true

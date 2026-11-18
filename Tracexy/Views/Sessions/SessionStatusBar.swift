@@ -118,7 +118,8 @@ nonisolated enum SessionStatusBarModel {
         totalBytes: Int,
         bytesUp: Int,
         bytesDown: Int,
-        attribution: (known: Int, total: Int)? = nil
+        attribution: (known: Int, total: Int)? = nil,
+        bundle: Bundle = .main
     )
         -> [FooterTelemetry]
     {
@@ -131,10 +132,19 @@ nonisolated enum SessionStatusBarModel {
         if loss.hasStatistics, loss.totalDropped > 0 {
             items.append(FooterTelemetry(
                 kind: .packetDrops,
-                text: "\(loss.totalDropped.formatted()) dropped",
+                text: String(
+                    format: String(localized: "%@ dropped", bundle: bundle),
+                    loss.totalDropped.formatted()
+                ),
                 help: loss.isMaterialLoss
-                    ? "Material packet loss — the derived numbers may understate the real traffic."
-                    : "Some packets were dropped, but below the level that skews the numbers.",
+                    ? String(
+                        localized: "Material packet loss — the derived numbers may understate the real traffic.",
+                        bundle: bundle
+                    )
+                    : String(
+                        localized: "Some packets were dropped, but below the level that skews the numbers.",
+                        bundle: bundle
+                    ),
                 systemImage: "exclamationmark.triangle.fill",
                 role: loss.isMaterialLoss ? .warning : .neutral
             ))
@@ -148,9 +158,14 @@ nonisolated enum SessionStatusBarModel {
         if loss.helperDropCount > 0 {
             items.append(FooterTelemetry(
                 kind: .helperDrops,
-                text: "\(loss.helperDropCount.formatted()) helper drops",
-                help: "Frames the capture helper dropped before reaching the app — "
-                    + "capture-stage loss, not counted in the kernel fidelity figure.",
+                text: String(
+                    format: String(localized: "%@ helper drops", bundle: bundle),
+                    loss.helperDropCount.formatted()
+                ),
+                help: String(
+                    localized: "Frames the capture helper dropped before reaching the app — capture-stage loss, not counted in the kernel fidelity figure.",
+                    bundle: bundle
+                ),
                 systemImage: "exclamationmark.triangle.fill",
                 role: .warning
             ))
@@ -160,8 +175,13 @@ nonisolated enum SessionStatusBarModel {
         if errorCount > 0 {
             items.append(FooterTelemetry(
                 kind: .sessionErrors,
-                text: errorCount == 1 ? "1 session error" : "\(errorCount.formatted()) session errors",
-                help: "Sessions that ended in an error state.",
+                text: errorCount == 1
+                    ? String(localized: "1 session error", bundle: bundle)
+                    : String(
+                        format: String(localized: "%@ session errors", bundle: bundle),
+                        errorCount.formatted()
+                    ),
+                help: String(localized: "Sessions that ended in an error state.", bundle: bundle),
                 systemImage: "xmark.octagon.fill",
                 role: .error
             ))
@@ -172,7 +192,7 @@ nonisolated enum SessionStatusBarModel {
             items.append(FooterTelemetry(
                 kind: .captureDuration,
                 text: "",
-                help: "Elapsed time since this capture started.",
+                help: String(localized: "Elapsed time since this capture started.", bundle: bundle),
                 systemImage: nil,
                 role: .neutral
             ))
@@ -184,7 +204,7 @@ nonisolated enum SessionStatusBarModel {
             items.append(FooterTelemetry(
                 kind: .liveRate,
                 text: "\(formatBytes(Int(bps)))/s",
-                help: "Combined live throughput across both directions.",
+                help: String(localized: "Combined live throughput across both directions.", bundle: bundle),
                 systemImage: "waveform.path.ecg",
                 role: .live
             ))
@@ -195,8 +215,14 @@ nonisolated enum SessionStatusBarModel {
         if totalBytes > 0 {
             items.append(FooterTelemetry(
                 kind: .totalBytes,
-                text: "\(formatBytes(totalBytes)) total",
-                help: "Session-attributed bytes — the sum of each session's accounted bytes, not raw payload.",
+                text: String(
+                    format: String(localized: "%@ total", bundle: bundle),
+                    formatBytes(totalBytes)
+                ),
+                help: String(
+                    localized: "Session-attributed bytes — the sum of each session's accounted bytes, not raw payload.",
+                    bundle: bundle
+                ),
                 systemImage: nil,
                 role: .neutral
             ))
@@ -209,7 +235,7 @@ nonisolated enum SessionStatusBarModel {
             items.append(FooterTelemetry(
                 kind: .bytesUp,
                 text: "↑ \(formatBytes(bytesUp))",
-                help: "First-observed direction — cumulative bytes.",
+                help: String(localized: "First-observed direction — cumulative bytes.", bundle: bundle),
                 systemImage: nil,
                 role: .neutral
             ))
@@ -218,7 +244,7 @@ nonisolated enum SessionStatusBarModel {
             items.append(FooterTelemetry(
                 kind: .bytesDown,
                 text: "↓ \(formatBytes(bytesDown))",
-                help: "Reverse direction — cumulative bytes.",
+                help: String(localized: "Reverse direction — cumulative bytes.", bundle: bundle),
                 systemImage: nil,
                 role: .neutral
             ))
@@ -232,9 +258,15 @@ nonisolated enum SessionStatusBarModel {
             let known = min(attribution.known, attribution.total)
             items.append(FooterTelemetry(
                 kind: .attribution,
-                text: "Process \(known.formatted()) of \(attribution.total.formatted())",
-                help: "Sessions with a known local process. The others were seen on the wire without "
-                    + "process metadata, so their process is unknown rather than absent.",
+                text: String(
+                    format: String(localized: "Process %@ of %@", bundle: bundle),
+                    known.formatted(),
+                    attribution.total.formatted()
+                ),
+                help: String(
+                    localized: "Sessions with a known local process. The others were seen on the wire without process metadata, so their process is unknown rather than absent.",
+                    bundle: bundle
+                ),
                 systemImage: "app.dashed",
                 role: .neutral
             ))
@@ -248,9 +280,14 @@ nonisolated enum SessionStatusBarModel {
         if loss.retentionEvictionCount > 0 {
             items.append(FooterTelemetry(
                 kind: .retentionTruncation,
-                text: "\(loss.retentionEvictionCount.formatted()) outside memory window",
-                help: "Older raw frames left the bounded inspection window — sessions and the complete "
-                    + "disk-backed save remain unaffected.",
+                text: String(
+                    format: String(localized: "%@ outside memory window", bundle: bundle),
+                    loss.retentionEvictionCount.formatted()
+                ),
+                help: String(
+                    localized: "Older raw frames left the bounded inspection window — sessions and the complete disk-backed save remain unaffected.",
+                    bundle: bundle
+                ),
                 systemImage: "tray.full",
                 role: .neutral
             ))
@@ -265,23 +302,31 @@ nonisolated enum SessionStatusBarModel {
         surface: StatusSurface,
         totalSessions: Int,
         visibleCount: Int,
-        hasSelection: Bool
+        hasSelection: Bool,
+        bundle: Bundle = .main
     )
         -> String
     {
         switch surface {
-        case .overview:
-            return totalSessions == 0 ? "No sessions" : "\(totalSessions) sessions"
-        case .flow:
-            return totalSessions == 0 ? "No sessions" : "\(totalSessions) sessions"
+        case .overview, .flow:
+            return sessionCountText(totalSessions, bundle: bundle)
         case .history:
-            return totalSessions == 0 ? "No saved sessions" : "\(totalSessions) saved sessions"
+            if totalSessions == 0 {
+                return String(localized: "No saved sessions", bundle: bundle)
+            }
+            if totalSessions == 1 {
+                return String(localized: "1 saved session", bundle: bundle)
+            }
+            return String(
+                format: String(localized: "%@ saved sessions", bundle: bundle),
+                totalSessions.formatted()
+            )
         case .sessionList:
             break
         }
 
         if totalSessions == 0 {
-            return "No sessions"
+            return String(localized: "No sessions", bundle: bundle)
         }
         // Single-selection model: the count is derived from the flag, never a
         // hardcoded "1", so it stays honest if selection is ever cleared.
@@ -289,16 +334,42 @@ nonisolated enum SessionStatusBarModel {
         let isFiltered = visibleCount != totalSessions
         if selectedCount > 0 {
             return isFiltered
-                ? "\(selectedCount) selected, \(visibleCount) of \(totalSessions) shown"
-                : "\(selectedCount) of \(totalSessions) selected"
+                ? String(
+                    format: String(localized: "%@ selected, %@ of %@ shown", bundle: bundle),
+                    selectedCount.formatted(),
+                    visibleCount.formatted(),
+                    totalSessions.formatted()
+                )
+                : String(
+                    format: String(localized: "%@ of %@ selected", bundle: bundle),
+                    selectedCount.formatted(),
+                    totalSessions.formatted()
+                )
         }
         if isFiltered {
-            return "\(visibleCount) of \(totalSessions) sessions"
+            return String(
+                format: String(localized: "%@ of %@ sessions", bundle: bundle),
+                visibleCount.formatted(),
+                totalSessions.formatted()
+            )
         }
-        return "\(totalSessions) sessions"
+        return sessionCountText(totalSessions, bundle: bundle)
     }
 
     // MARK: Private
+
+    private static func sessionCountText(_ count: Int, bundle: Bundle) -> String {
+        if count == 0 {
+            return String(localized: "No sessions", bundle: bundle)
+        }
+        if count == 1 {
+            return String(localized: "1 session", bundle: bundle)
+        }
+        return String(
+            format: String(localized: "%@ sessions", bundle: bundle),
+            count.formatted()
+        )
+    }
 
     private static func formatBytes(_ bytes: Int) -> String {
         ByteUnits.string(Int64(bytes))
@@ -311,15 +382,33 @@ nonisolated enum SessionStatusBarModel {
 /// keyset page exists; it never presents a loaded-page subtotal as a database-wide
 /// exact total.
 nonisolated enum HistoryFooterModel {
-    static func statusText(captureCount: Int, sessionCount: Int, hasMore: Bool) -> String {
+    static func statusText(
+        captureCount: Int,
+        sessionCount: Int,
+        hasMore: Bool,
+        bundle: Bundle = .main
+    ) -> String {
         guard captureCount > 0 else {
-            return "No saved captures"
+            return String(localized: "No saved captures", bundle: bundle)
         }
         let suffix = hasMore ? "+" : ""
-        let captureLabel = captureCount == 1 && !hasMore ? "capture" : "captures"
-        let sessionLabel = sessionCount == 1 && !hasMore ? "session" : "sessions"
-        return "\(captureCount.formatted())\(suffix) \(captureLabel), "
-            + "\(sessionCount.formatted())\(suffix) \(sessionLabel)"
+        let captureText = captureCount == 1 && !hasMore
+            ? String(localized: "1 capture", bundle: bundle)
+            : String(
+                format: String(localized: "%@ captures", bundle: bundle),
+                "\(captureCount.formatted())\(suffix)"
+            )
+        let sessionText = sessionCount == 1 && !hasMore
+            ? String(localized: "1 session", bundle: bundle)
+            : String(
+                format: String(localized: "%@ sessions", bundle: bundle),
+                "\(sessionCount.formatted())\(suffix)"
+            )
+        return String(
+            format: String(localized: "%@, %@", bundle: bundle),
+            captureText,
+            sessionText
+        )
     }
 }
 

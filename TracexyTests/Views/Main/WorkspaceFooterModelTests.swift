@@ -12,27 +12,39 @@ struct WorkspaceFooterModelTests {
 
     @Test("Session-list status text follows the selected/visible/total hierarchy")
     func statusTextSessionList() {
-        #expect(status(total: 0, visible: 0, selected: false) == "No sessions")
-        #expect(status(total: 5, visible: 5, selected: false) == "5 sessions")
-        #expect(status(total: 5, visible: 3, selected: false) == "3 of 5 sessions")
-        #expect(status(total: 5, visible: 5, selected: true) == "1 of 5 selected")
+        #expect(["No sessions", "无会话"].contains(status(total: 0, visible: 0, selected: false)))
+        #expect(["1 session", "1 个会话"].contains(status(total: 1, visible: 1, selected: false)))
+        #expect(["5 sessions", "5 个会话"].contains(status(total: 5, visible: 5, selected: false)))
+        #expect(["3 of 5 sessions", "3 / 5 个会话"].contains(status(total: 5, visible: 3, selected: false)))
+        #expect(["1 of 5 selected", "已选 1 / 5"].contains(status(total: 5, visible: 5, selected: true)))
         // Selected + filtered retains selected, visible and total.
-        #expect(status(total: 5, visible: 3, selected: true) == "1 selected, 3 of 5 shown")
+        #expect([
+            "1 selected, 3 of 5 shown",
+            "已选 1，显示 3 / 5",
+        ].contains(status(total: 5, visible: 3, selected: true)))
     }
 
     @Test("Intelligence surfaces keep their own quiet summaries")
     func statusTextIntelligenceSurfaces() {
-        #expect(SessionStatusBarModel.statusText(
+        #expect(["No sessions", "无会话"].contains(SessionStatusBarModel.statusText(
             surface: .overview, totalSessions: 0, visibleCount: 0, hasSelection: false
-        ) == "No sessions")
+        )))
 
-        #expect(SessionStatusBarModel.statusText(
+        #expect(["4 sessions", "4 个会话"].contains(SessionStatusBarModel.statusText(
             surface: .overview, totalSessions: 4, visibleCount: 4, hasSelection: false
-        ) == "4 sessions")
+        )))
 
-        #expect(SessionStatusBarModel.statusText(
+        #expect(["2 sessions", "2 个会话"].contains(SessionStatusBarModel.statusText(
             surface: .flow, totalSessions: 2, visibleCount: 2, hasSelection: false
-        ) == "2 sessions")
+        )))
+
+        #expect(["No saved sessions", "无已保存会话"].contains(SessionStatusBarModel.statusText(
+            surface: .history, totalSessions: 0, visibleCount: 0, hasSelection: false
+        )))
+
+        #expect(["3 saved sessions", "3 个已保存会话"].contains(SessionStatusBarModel.statusText(
+            surface: .history, totalSessions: 3, visibleCount: 3, hasSelection: false
+        )))
     }
 
     // MARK: - Telemetry chips
@@ -57,9 +69,13 @@ struct WorkspaceFooterModelTests {
     func sessionErrorsLabel() {
         #expect(telemetry(errorCount: 0, kind: .sessionErrors) == nil)
 
+        let single = telemetry(errorCount: 1, kind: .sessionErrors)
+        #expect(single?.role == .error)
+        #expect(["1 session error", "1 个会话错误"].contains(single?.text ?? ""))
+
         let errors = telemetry(errorCount: 3, kind: .sessionErrors)
         #expect(errors?.role == .error)
-        #expect(errors?.text.contains("session error") == true)
+        #expect(["3 session errors", "3 个会话错误"].contains(errors?.text ?? ""))
     }
 
     @Test("Combined live rate appears only while capturing with a sample, and is never directional")
@@ -108,8 +124,11 @@ struct WorkspaceFooterModelTests {
     @Test("Total help names session-attributed bytes, not payload")
     func totalHelpWording() {
         let total = telemetry(totalBytes: 100, kind: .totalBytes)
-        #expect(total?.help.contains("Session-attributed") == true)
-        #expect(total?.help.contains("not raw payload") == true)
+        let matchesEnglish = total?.help.contains("Session-attributed") == true
+            && total?.help.contains("not raw payload") == true
+        let matchesChinese = total?.help.contains("会话") == true
+            && total?.help.contains("而非原始载荷") == true
+        #expect(matchesEnglish || matchesChinese)
     }
 
     @Test("Telemetry is ordered by importance when everything is present")
@@ -148,7 +167,7 @@ struct WorkspaceFooterModelTests {
         // loss is real capture loss the kernel figure never sees.
         let noStats = telemetry(hasCaptureStatistics: false, helperBufferDropCount: 12, kind: .helperDrops)
         #expect(noStats?.role == .warning)
-        #expect(noStats?.text.contains("helper") == true)
+        #expect(["12 helper drops", "助手丢弃 12"].contains(noStats?.text ?? ""))
 
         // Present and warning even when the kernel reports a perfect capture: a
         // green fidelity must never imply the helper stage lost nothing.
@@ -169,11 +188,18 @@ struct WorkspaceFooterModelTests {
     func retentionTruncationPresence() {
         #expect(telemetry(retainedFrameEvictionCount: 0, kind: .retentionTruncation) == nil)
 
+        let formattedCount = (5_000 as UInt64).formatted()
         let truncated = telemetry(retainedFrameEvictionCount: 5_000, kind: .retentionTruncation)
         // Neutral, not warning/error — sessions and the disk-backed save are intact.
         #expect(truncated?.role == .neutral)
-        #expect(truncated?.text.contains("outside memory window") == true)
-        #expect(truncated?.help.contains("complete disk-backed save remain unaffected") == true)
+        #expect([
+            "\(formattedCount) outside memory window",
+            "内存窗口外 \(formattedCount)",
+        ].contains(truncated?.text ?? ""))
+        #expect(
+            truncated?.help.contains("complete disk-backed save remain unaffected") == true
+                || truncated?.help.contains("完整的磁盘落盘保存均不受影响") == true
+        )
         // It never masquerades as kernel packet loss.
         #expect(truncated?.kind != .packetDrops)
         // A pure retention eviction produces no packet-drop or helper-drop chip.
@@ -235,10 +261,10 @@ struct WorkspaceFooterModelTests {
             )
             .first { $0.kind == .attribution }
         }
-        #expect(chip(capturing: true, known: 12, total: 40)?.text == "Process 12 of 40")
-        #expect(chip(capturing: false, known: 3, total: 3)?.text == "Process 3 of 3")
+        #expect(["Process 12 of 40", "进程已识别 12 / 40"].contains(chip(capturing: true, known: 12, total: 40)?.text ?? ""))
+        #expect(["Process 3 of 3", "进程已识别 3 / 3"].contains(chip(capturing: false, known: 3, total: 3)?.text ?? ""))
         // Live capture with no attribution is itself worth seeing.
-        #expect(chip(capturing: true, known: 0, total: 5)?.text == "Process 0 of 5")
+        #expect(["Process 0 of 5", "进程已识别 0 / 5"].contains(chip(capturing: true, known: 0, total: 5)?.text ?? ""))
         #expect(chip(capturing: true, known: 0, total: 5)?.role == .neutral)
         // A capture file without process metadata, or no sessions at all, stays quiet.
         #expect(chip(capturing: false, known: 0, total: 5) == nil)

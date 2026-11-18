@@ -401,6 +401,16 @@
         }
       }
     },
+    "%@ captures": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 个抓包"
+          }
+        }
+      }
+    },
     "%@ chart. %@": {
       "localizations": {
         "vi": {
@@ -445,6 +455,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "%@ 个对话（来自当前视图中的 %@ 个会话）"
+          }
+        }
+      }
+    },
+    "%@ dropped": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已丢弃 %@"
           }
         }
       }
@@ -637,6 +657,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "%@（从 %@ 到 %@）。当前过滤器已在列表中将其隐藏。"
+          }
+        }
+      }
+    },
+    "%@ helper drops": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "助手丢弃 %@"
           }
         }
       }
@@ -945,6 +975,26 @@
         }
       }
     },
+    "%@ of %@ selected": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已选 %@ / %@"
+          }
+        }
+      }
+    },
+    "%@ of %@ sessions": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ / %@ 个会话"
+          }
+        }
+      }
+    },
     "%@ of %@ sessions in view": {
       "localizations": {
         "vi": {
@@ -1005,6 +1055,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "仅 %@"
+          }
+        }
+      }
+    },
+    "%@ outside memory window": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内存窗口外 %@"
           }
         }
       }
@@ -1117,6 +1177,36 @@
           "stringUnit": {
             "state": "translated",
             "value": "%@ 秒"
+          }
+        }
+      }
+    },
+    "%@ saved sessions": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 个已保存会话"
+          }
+        }
+      }
+    },
+    "%@ selected, %@ of %@ shown": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已选 %@，显示 %@ / %@"
+          }
+        }
+      }
+    },
+    "%@ session errors": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 个会话错误"
           }
         }
       }
@@ -2097,6 +2187,16 @@
         }
       }
     },
+    "1 capture": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 个抓包"
+          }
+        }
+      }
+    },
     "1 frame": {
       "localizations": {
         "vi": {
@@ -2189,6 +2289,56 @@
           "stringUnit": {
             "state": "translated",
             "value": "已计时 1 个响应"
+          }
+        }
+      }
+    },
+    "1 saved session": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 个已保存会话"
+          }
+        }
+      }
+    },
+    "1 selected, %@ of %@ shown": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已选 1，显示 %@ / %@"
+          }
+        }
+      }
+    },
+    "1 selected, %@ shown": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已选 1，显示 %@"
+          }
+        }
+      }
+    },
+    "1 session": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 个会话"
+          }
+        }
+      }
+    },
+    "1 session error": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 个会话错误"
           }
         }
       }
@@ -7107,6 +7257,16 @@
         }
       }
     },
+    "Combined live throughput across both directions.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "双向合计实时吞吐速率。"
+          }
+        }
+      }
+    },
     "Comfort noise (PT=13, RFC 3389)": {
       "localizations": {
         "vi": {
@@ -9858,6 +10018,16 @@
         }
       }
     },
+    "Elapsed time since this capture started.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本次抓包开始以来的已用时间。"
+          }
+        }
+      }
+    },
     "Email (IMF)": {
       "localizations": {
         "vi": {
@@ -11931,6 +12101,16 @@
         }
       }
     },
+    "First-observed direction — cumulative bytes.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "首包方向——累计字节数。"
+          }
+        }
+      }
+    },
     "Flagged Here": {
       "extractionState": "manual",
       "localizations": {
@@ -12738,6 +12918,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "不计入任何会话之外的数据帧"
+          }
+        }
+      }
+    },
+    "Frames the capture helper dropped before reaching the app — capture-stage loss, not counted in the kernel fidelity figure.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "抓包助手在送达应用前丢弃的数据帧——属于采集阶段丢包，不计入内核完整度统计。"
           }
         }
       }
@@ -15649,7 +15839,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "阶梯图"
+            "value": "时序图"
           }
         }
       }
@@ -15857,6 +16047,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "局域网其他设备间的二层 MAC 寻址"
+          }
+        }
+      }
+    },
+    "Layers": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "协议层"
           }
         }
       }
@@ -17009,6 +17209,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "跟随 macOS"
+          }
+        }
+      }
+    },
+    "Material packet loss — the derived numbers may understate the real traffic.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "丢包量显著——统计数值可能低于实际流量。"
           }
         }
       }
@@ -20161,6 +20371,16 @@
         }
       }
     },
+    "No saved sessions": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无已保存会话"
+          }
+        }
+      }
+    },
     "No selection": {
       "localizations": {
         "vi": {
@@ -20189,6 +20409,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "未附加会话证据。"
+          }
+        }
+      }
+    },
+    "No sessions": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无会话"
           }
         }
       }
@@ -20882,6 +21112,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "偏移量"
+          }
+        }
+      }
+    },
+    "Older raw frames left the bounded inspection window — sessions and the complete disk-backed save remain unaffected.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "较早的原始数据帧已移出有界内存检视窗口——会话统计与完整的磁盘落盘保存均不受影响。"
           }
         }
       }
@@ -22796,6 +23036,16 @@
         }
       }
     },
+    "Process %@ of %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "进程已识别 %@ / %@"
+          }
+        }
+      }
+    },
     "Process contains": {
       "localizations": {
         "vi": {
@@ -24444,7 +24694,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "请求数"
+            "value": "请求"
           }
         }
       }
@@ -25129,6 +25379,16 @@
         }
       }
     },
+    "Reverse direction — cumulative bytes.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "反向——累计字节数。"
+          }
+        }
+      }
+    },
     "Reverse stream": {
       "localizations": {
         "vi": {
@@ -25626,6 +25886,56 @@
           "stringUnit": {
             "state": "translated",
             "value": "SSRC"
+          }
+        }
+      }
+    },
+    "Same Destination Address": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "相同目标地址"
+          }
+        }
+      }
+    },
+    "Same Destination Port": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "相同目标端口"
+          }
+        }
+      }
+    },
+    "Same Host": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "相同主机"
+          }
+        }
+      }
+    },
+    "Same Process": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "相同进程"
+          }
+        }
+      }
+    },
+    "Same Protocol": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "相同协议"
           }
         }
       }
@@ -27458,6 +27768,16 @@
         }
       }
     },
+    "Session-attributed bytes — the sum of each session's accounted bytes, not raw payload.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已归属会话字节数——各会话计入字节数之和，而非原始载荷大小。"
+          }
+        }
+      }
+    },
     "Sessions": {
       "localizations": {
         "vi": {
@@ -27583,6 +27903,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "同时承载 %@ 的会话"
+          }
+        }
+      }
+    },
+    "Sessions that ended in an error state.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "以错误状态结束的会话。"
+          }
+        }
+      }
+    },
+    "Sessions with a known local process. The others were seen on the wire without process metadata, so their process is unknown rather than absent.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已识别本地进程的会话数。其余会话在链路上未携带进程元数据，因此属于进程未知而非无应用。"
           }
         }
       }
@@ -29098,6 +29438,16 @@
         }
       }
     },
+    "Some packets were dropped, but below the level that skews the numbers.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "存在少量丢包，但未达到影响统计结果的程度。"
+          }
+        }
+      }
+    },
     "Source": {
       "localizations": {
         "vi": {
@@ -29850,7 +30200,7 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "流"
+            "value": "数据流"
           }
         }
       }
@@ -31921,6 +32271,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "当日时间"
+          }
+        }
+      }
+    },
+    "Time of Day (UTC)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当日时间 (UTC)"
           }
         }
       }

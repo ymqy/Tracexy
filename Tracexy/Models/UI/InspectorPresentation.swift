@@ -27,15 +27,19 @@ enum InspectorTab: String, CaseIterable, Identifiable, Hashable {
     }
 
     nonisolated var title: String {
+        title(in: .main)
+    }
+
+    nonisolated func title(in bundle: Bundle) -> String {
         switch self {
-        case .timeline: "Timeline"
-        case .evidence: "Evidence"
-        case .ladder: "Ladder"
-        case .frames: "Frames"
-        case .stream: "Stream"
-        case .layers: "Layers"
-        case .requests: "Requests"
-        case .payload: "Payload"
+        case .timeline: String(localized: "Timeline", bundle: bundle)
+        case .evidence: String(localized: "Evidence", bundle: bundle)
+        case .ladder: String(localized: "Ladder", bundle: bundle)
+        case .frames: String(localized: "Frames", bundle: bundle)
+        case .stream: String(localized: "Stream", bundle: bundle)
+        case .layers: String(localized: "Layers", bundle: bundle)
+        case .requests: String(localized: "Requests", bundle: bundle)
+        case .payload: String(localized: "Payload", bundle: bundle)
         case .hex: "Hex"
         }
     }
@@ -156,9 +160,13 @@ enum ContextDockTab: String, CaseIterable, Identifiable, Hashable {
     }
 
     nonisolated var title: String {
+        title(in: .main)
+    }
+
+    nonisolated func title(in bundle: Bundle) -> String {
         switch self {
-        case .details: "Details"
-        case .aiAssistant: "AI Assistant"
+        case .details: String(localized: "Details", bundle: bundle)
+        case .aiAssistant: String(localized: "AI Assistant", bundle: bundle)
         }
     }
 
