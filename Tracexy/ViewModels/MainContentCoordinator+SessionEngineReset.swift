@@ -11,6 +11,7 @@ extension MainContentCoordinator {
         preservingCaptureLocalTools: Bool = false
     ) {
         if !preservingCaptureLocalTools {
+            attributedProcessesBySessionID.removeAll()
             retireCaptureLocalTools()
         }
         let engine = sessionEngine

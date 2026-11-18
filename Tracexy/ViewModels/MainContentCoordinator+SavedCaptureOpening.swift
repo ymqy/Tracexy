@@ -705,6 +705,7 @@ extension MainContentCoordinator {
         retainedFrames = result.retainedTail
         if !request.preservesCaptureLocalState {
             clearCaptureLocalSessionMarks()
+            attributedProcessesBySessionID.removeAll()
             clearAllInvestigationQueries()
         }
         sessions = result.sessions
@@ -899,13 +900,27 @@ extension MainContentCoordinator {
     )
         -> Task<Void, Never>
     {
-        ProcessResolver.shared.refresh()
+        guard startGeneration == expectedGeneration,
+              isCapturing == expectedCaptureState else
+        {
+            return Task {}
+        }
         var built = snapshot.sessions
-        for index in built.indices where built[index].processName == nil {
-            if let app = ProcessResolver.shared.appName(
-                forEndpoints: built[index].sourceEndpoint, built[index].destinationEndpoint
-            ) {
-                built[index].processName = app
+        if !isHistoryDemoMode {
+            for index in built.indices {
+                if let name = built[index].processName, !name.isEmpty {
+                    attributedProcessesBySessionID[built[index].id] = name
+                } else if let cached = attributedProcessesBySessionID[built[index].id] {
+                    built[index].processName = cached
+                } else if let app = ProcessResolver.shared.appName(
+                    forEndpoints: built[index].sourceEndpoint, built[index].destinationEndpoint
+                ), !app.isEmpty {
+                    built[index].processName = app
+                    attributedProcessesBySessionID[built[index].id] = app
+                }
+            }
+            if built.contains(where: { ($0.processName ?? "").isEmpty }) {
+                ProcessResolver.shared.refresh()
             }
         }
         let applied = built

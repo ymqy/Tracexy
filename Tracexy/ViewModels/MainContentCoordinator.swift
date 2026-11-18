@@ -641,6 +641,9 @@ final class MainContentCoordinator {
     /// Sessions pinned above the Sessions table for this capture (Wireshark's pinned
     /// packets). Capture-scoped like ``removedSessionIDs`` and never persisted.
     var pinnedSessionIDs: [UUID] = []
+    /// Sticky session → app attribution resolved during the current capture so
+    /// closed sockets never revert to unattributed on subsequent live snapshots.
+    var attributedProcessesBySessionID: [UUID: String] = [:]
 
     /// The *active Project's* complete local raw-frame retention for save/export.
     /// Every Project keeps its own spool actor while parked, so starting, clearing
@@ -1135,6 +1138,7 @@ final class MainContentCoordinator {
         helperBufferDropCount = 0
         retainedFrames.reset()
         clearCaptureLocalSessionMarks()
+        attributedProcessesBySessionID.removeAll()
         sessions = []
         // Clear connection + analysis publication at the boundary so a late
         // generation can never revive any of them alongside the cleared sessions.
@@ -1237,6 +1241,7 @@ final class MainContentCoordinator {
             capacity: CaptureSettingsResolver.retainCapacity(defaults: activeProjectDefaults)
         )
         clearCaptureLocalSessionMarks()
+        attributedProcessesBySessionID.removeAll()
         sessions = []
         // Clear stale connection + analysis publication at the start boundary
         // before any new capture work can publish over it.

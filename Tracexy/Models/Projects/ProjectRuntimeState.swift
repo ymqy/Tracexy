@@ -75,6 +75,7 @@ final class ProjectRuntimeState {
     var currentLinkType: UInt32 = LinkType.ethernet
     var removedSessionIDs: Set<UUID> = []
     var pinnedSessionIDs: [UUID] = []
+    var attributedProcessesBySessionID: [UUID: String] = [:]
 
     /// True when this Project's stopped live spool had already completed its exact
     /// final ingest boundary. The generation token itself is never carried across a

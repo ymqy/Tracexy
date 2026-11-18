@@ -173,6 +173,7 @@ extension MainContentCoordinator {
         runtime.currentLinkType = currentLinkType
         runtime.removedSessionIDs = removedSessionIDs
         runtime.pinnedSessionIDs = pinnedSessionIDs
+        runtime.attributedProcessesBySessionID = attributedProcessesBySessionID
         // The token itself is generation-scoped and never travels; only the fact
         // that this Project's stopped spool had reached its exact final boundary.
         runtime.isStoppedCaptureReady = stoppedCaptureReadyGeneration == startGeneration
@@ -243,6 +244,7 @@ extension MainContentCoordinator {
         pendingChartBytes = runtime.pendingChartBytes
         removedSessionIDs = runtime.removedSessionIDs
         pinnedSessionIDs = runtime.pinnedSessionIDs
+        attributedProcessesBySessionID = runtime.attributedProcessesBySessionID
         isCapturing = false
         isStarting = false
         captureStartedAt = nil
