@@ -19,6 +19,21 @@ enum CallerValidation {
         let teamIdentifier: String?
         let certificateDERs: [Data]
         let executablePath: String?
+        let cdHash: Data?
+
+        init(
+            identifier: String?,
+            teamIdentifier: String?,
+            certificateDERs: [Data],
+            executablePath: String?,
+            cdHash: Data? = nil
+        ) {
+            self.identifier = identifier
+            self.teamIdentifier = teamIdentifier
+            self.certificateDERs = certificateDERs
+            self.executablePath = executablePath
+            self.cdHash = cdHash
+        }
 
         var isAdHoc: Bool {
             teamIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true
@@ -68,6 +83,9 @@ enum CallerValidation {
                 return true
             }
             if callerSatisfiesLocalXcodeAdHocIdentifier(callerCode: callerCode, identifier: identifier) {
+                return true
+            }
+            if callerSatisfiesInstalledAppAdHocIdentifier(callerCode: callerCode, identifier: identifier) {
                 return true
             }
         }
@@ -238,7 +256,10 @@ enum CallerValidation {
         if !helper.certificateDERs.isEmpty, !caller.certificateDERs.isEmpty {
             return certificateDataChainsMatch(helper.certificateDERs, caller.certificateDERs)
         }
-        return localXcodeAdHocPair(helper: helper, caller: caller)
+        if localXcodeAdHocPair(helper: helper, caller: caller) {
+            return true
+        }
+        return installedAppAdHocPair(helper: helper, caller: caller)
     }
 
     // MARK: Private
@@ -271,7 +292,8 @@ enum CallerValidation {
             identifier: dict[kSecCodeInfoIdentifier as String] as? String,
             teamIdentifier: dict[kSecCodeInfoTeamIdentifier as String] as? String,
             certificateDERs: certificateDERData(from: certs),
-            executablePath: executableURL?.path
+            executablePath: executableURL?.path,
+            cdHash: dict[kSecCodeInfoUnique as String] as? Data
         )
     }
 
@@ -327,6 +349,83 @@ enum CallerValidation {
             return false
         }
         return isXcodeDerivedDataBuildProduct(path: callerPath)
+    }
+
+    private static let defaultInstalledAppBundlePath = "/Applications/Tracexy.app"
+    private static let embeddedHelperSuffix = "/Contents/Library/HelperTools/TracexyCaptureHelper"
+
+    private static func enclosingAppBundlePath(for helper: CodeSigningProfile) -> String {
+        if let path = helper.executablePath,
+           path.hasSuffix(embeddedHelperSuffix)
+        {
+            let prefix = String(path.dropLast(embeddedHelperSuffix.count))
+            if !prefix.isEmpty {
+                return prefix
+            }
+        }
+        return defaultInstalledAppBundlePath
+    }
+
+    private static func callerSatisfiesInstalledAppAdHocIdentifier(
+        callerCode: SecCode,
+        identifier: String
+    )
+        -> Bool
+    {
+        let appBundlePath = launchSigningProfile.map(enclosingAppBundlePath(for:)) ?? defaultInstalledAppBundlePath
+        guard let profile = signingProfile(from: callerCode),
+              profile.isAdHoc,
+              profile.identifier == identifier,
+              let callerHash = profile.cdHash,
+              !callerHash.isEmpty,
+              let installedHash = staticCDHash(atPath: appBundlePath) else
+        {
+            return false
+        }
+        return callerHash == installedHash
+    }
+
+    private static func installedAppAdHocPair(
+        helper: CodeSigningProfile,
+        caller: CodeSigningProfile
+    )
+        -> Bool
+    {
+        let appBundlePath = enclosingAppBundlePath(for: helper)
+        guard helper.isAdHoc,
+              caller.isAdHoc,
+              let helperHash = helper.cdHash,
+              !helperHash.isEmpty,
+              let callerHash = caller.cdHash,
+              !callerHash.isEmpty,
+              let installedAppHash = staticCDHash(atPath: appBundlePath),
+              let embeddedHelperHash = staticCDHash(
+                  atPath: "\(appBundlePath)\(embeddedHelperSuffix)"
+              ) else
+        {
+            return false
+        }
+        return callerHash == installedAppHash && helperHash == embeddedHelperHash
+    }
+
+    private static func staticCDHash(atPath path: String) -> Data? {
+        var staticCode: SecStaticCode?
+        let url = URL(fileURLWithPath: path) as CFURL
+        guard SecStaticCodeCreateWithPath(url, [], &staticCode) == errSecSuccess,
+              let sc = staticCode,
+              SecStaticCodeCheckValidity(sc, SecCSFlags([]), nil) == errSecSuccess else
+        {
+            return nil
+        }
+        var info: CFDictionary?
+        guard SecCodeCopySigningInformation(
+            sc, SecCSFlags(rawValue: kSecCSSigningInformation), &info
+        ) == errSecSuccess,
+            let dict = info as? [String: Any] else
+        {
+            return nil
+        }
+        return dict[kSecCodeInfoUnique as String] as? Data
     }
 
     private static func signingInformation(from code: SecCode) -> [String: Any]? {

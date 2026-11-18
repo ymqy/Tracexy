@@ -54,6 +54,83 @@ extension HelperClient {
 
     // MARK: Shell scripting (osascript "with administrator privileges")
 
+    /// Path of the system LaunchDaemon plist used when the app build is ad-hoc signed
+    /// (no Apple Developer Team ID, where macOS `SMAppService` ignores `BundleProgram`).
+    nonisolated static func localLaunchDaemonPlistPath(identity: TracexyIdentity) -> String {
+        "/Library/LaunchDaemons/\(identity.helperPlistName)"
+    }
+
+    nonisolated static func isLocalLaunchDaemonInstalled(
+        identity: TracexyIdentity,
+        expectedProgramPath: String,
+        fileManager: FileManager = .default
+    )
+        -> Bool
+    {
+        let plistPath = localLaunchDaemonPlistPath(identity: identity)
+        guard fileManager.fileExists(atPath: plistPath),
+              let data = try? Data(contentsOf: URL(fileURLWithPath: plistPath)),
+              let raw = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
+              let plist = raw as? [String: Any],
+              let label = plist["Label"] as? String,
+              label == identity.helperMachServiceName,
+              let args = plist["ProgramArguments"] as? [String],
+              args.first == expectedProgramPath,
+              let machServices = plist["MachServices"] as? [String: Any],
+              machServices[identity.helperMachServiceName] != nil else
+        {
+            return false
+        }
+        return true
+    }
+
+    nonisolated static func localAdHocInstallShellScript(
+        identity: TracexyIdentity,
+        helperExecutablePath: String
+    )
+        -> String
+    {
+        let rawLabel = identity.helperMachServiceName
+        let label = shellQuote(rawLabel)
+        let plistPath = localLaunchDaemonPlistPath(identity: identity)
+        let quotedPlistPath = shellQuote(plistPath)
+        let quotedTmpPath = shellQuote("/Library/LaunchDaemons/.\(identity.helperPlistName).tmp")
+
+        let plistXML = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>Label</key>
+            <string>\(xmlEscape(rawLabel))</string>
+            <key>ProgramArguments</key>
+            <array>
+                <string>\(xmlEscape(helperExecutablePath))</string>
+            </array>
+            <key>MachServices</key>
+            <dict>
+                <key>\(xmlEscape(rawLabel))</key>
+                <true/>
+            </dict>
+        </dict>
+        </plist>
+        """
+
+        let commands = [
+            "/bin/launchctl kill SIGTERM system/\(label) 2>/dev/null || true",
+            "/bin/launchctl bootout system/\(label) 2>/dev/null || true",
+            "printf '%s\\n' \(shellQuote(plistXML)) > \(quotedTmpPath)",
+            "/usr/bin/plutil -lint \(quotedTmpPath) >/dev/null",
+            "/usr/sbin/chown root:wheel \(quotedTmpPath)",
+            "/bin/chmod 0644 \(quotedTmpPath)",
+            "/bin/mv -f \(quotedTmpPath) \(quotedPlistPath)",
+            "/bin/launchctl enable system/\(label) 2>/dev/null || true",
+            "/bin/launchctl bootstrap system \(quotedPlistPath)",
+        ]
+
+        return commands.joined(separator: "; ")
+    }
+
     /// The privileged, **app-specific** cleanup script: terminate this helper's
     /// launchd job by its exact service label, bootout that same job, remove only
     /// this app's legacy helper binary and launch-daemon plist, then verify with
@@ -124,6 +201,15 @@ extension HelperClient {
 
     nonisolated private static func shellQuote(_ value: String) -> String {
         "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
+
+    nonisolated private static func xmlEscape(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&apos;")
     }
 }
 

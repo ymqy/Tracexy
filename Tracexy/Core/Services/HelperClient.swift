@@ -392,10 +392,33 @@ final class HelperClient {
     /// the probe is timeout-bounded, so a wedged helper resolves to `.unavailable`
     /// rather than leaving the Start path spinning.
     func prepareForCaptureViaHelper() async -> CaptureAvailability {
+        for _ in 0 ..< 120 where isBusy {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
         guard !isBusy else {
             return .unavailable("another helper operation is already in progress. Wait for it to finish and try again.")
         }
         return await runBusyReturning { () async -> CaptureAvailability in
+            if Self.usesLocalAdHocLaunchDaemon {
+                let helperPath = Self.bundledHelperExecutablePath
+                if !Self.isLocalLaunchDaemonInstalled(
+                    identity: TracexyIdentity.current,
+                    expectedProgramPath: helperPath
+                ) {
+                    await self.performLocalAdHocInstall()
+                    if case let .failed(reason) = self.status {
+                        return .unavailable(reason)
+                    }
+                } else {
+                    await self.performCheckStatus()
+                    if self.status == .unreachable {
+                        await self.performLocalAdHocInstall()
+                    }
+                    await self.performExecutableReconciliation(allowsLegacyMigration: false)
+                }
+                return await self.captureAvailabilityFromCurrentEvidence()
+            }
+
             let service = SMAppService.daemon(plistName: Self.plistName)
             switch service.status {
             case .enabled:
@@ -476,6 +499,28 @@ final class HelperClient {
                 proxy.stopCapture { _ in }
             }
             self.disconnect()
+            if Self.usesLocalAdHocLaunchDaemon {
+                let script = Self.forceRemoveShellScript(identity: TracexyIdentity.current)
+                do {
+                    _ = try await Self.runPrivilegedShellScript(script)
+                    let service = SMAppService.daemon(plistName: Self.plistName)
+                    if service.status == .enabled || service.status == .requiresApproval {
+                        try? await service.unregister()
+                    }
+                    self.status = .notInstalled
+                    self.installedInfo = nil
+                    self.installedIdentity = nil
+                    self.automaticRefreshRecoveryPending = false
+                    self.probeFailureDetail = nil
+                    Self.logger.info("local ad-hoc helper uninstalled")
+                } catch let error as ForceRemoveError where error.isAuthorizationCancelled {
+                    Self.logger.info("local ad-hoc helper uninstall cancelled")
+                } catch {
+                    self.status = .failed(error.localizedDescription)
+                    Self.logger.error("local ad-hoc helper uninstall failed: \(error.localizedDescription, privacy: .public)")
+                }
+                return
+            }
             do {
                 try await SMAppService.daemon(plistName: Self.plistName).unregister()
                 self.status = .notInstalled
@@ -725,6 +770,20 @@ final class HelperClient {
 
     private static let logger = Logger(subsystem: TracexyIdentity.current.logSubsystem, category: "HelperClient")
     private static let plistName = TracexyIdentity.current.helperPlistName
+
+    nonisolated private static var usesLocalAdHocLaunchDaemon: Bool {
+        guard !TracexyIdentity.isRunningTests else {
+            return false
+        }
+        _ = CallerValidation.captureLaunchSigningProfile()
+        return CallerValidation.launchSigningProfile?.isAdHoc == true
+    }
+
+    nonisolated private static var bundledHelperExecutablePath: String {
+        let helperURL = Bundle.main.bundleURL
+            .appendingPathComponent(bundledHelperBinaryRelativePath, isDirectory: false)
+        return HelperExecutableDigest.canonicalPath(helperURL.path)
+    }
 
     // MARK: Probe tuning + approval classification
 
@@ -1006,6 +1065,11 @@ final class HelperClient {
         }
         disconnect()
 
+        if Self.usesLocalAdHocLaunchDaemon {
+            await performLocalAdHocInstall()
+            return
+        }
+
         // A not-registered/notFound state is fine. If an existing registration
         // cannot be removed, abort instead of pretending a re-submission happened.
         let service = SMAppService.daemon(plistName: Self.plistName)
@@ -1030,7 +1094,45 @@ final class HelperClient {
         await performInstall()
     }
 
+    private func performLocalAdHocInstall() async {
+        if case let .incomplete(reason) = BundledHelperPackage.validateBundled(identity: TracexyIdentity.current) {
+            status = .failed("Helper package is incomplete: \(reason)")
+            Self.logger.error("bundled helper package incomplete: \(reason, privacy: .public)")
+            return
+        }
+        let service = SMAppService.daemon(plistName: Self.plistName)
+        if service.status == .enabled || service.status == .requiresApproval {
+            try? await service.unregister()
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        }
+        let script = Self.localAdHocInstallShellScript(
+            identity: TracexyIdentity.current,
+            helperExecutablePath: Self.bundledHelperExecutablePath
+        )
+        do {
+            _ = try await Self.runPrivilegedShellScript(script)
+            resetConnection()
+            await performCheckStatus()
+        } catch let error as ForceRemoveError {
+            if error.isAuthorizationCancelled {
+                probeFailureDetail = error.errorDescription
+                status = .notInstalled
+            } else {
+                let detail = error.errorDescription ?? error.commandOutput
+                probeFailureDetail = detail
+                status = .failed(detail)
+            }
+        } catch {
+            probeFailureDetail = error.localizedDescription
+            status = .failed(error.localizedDescription)
+        }
+    }
+
     private func performInstall() async {
+        if Self.usesLocalAdHocLaunchDaemon {
+            await performLocalAdHocInstall()
+            return
+        }
         // Local, deterministic package preflight before touching launchd: a broken
         // app bundle never attempts registration; it fails with a clear reason.
         if case let .incomplete(reason) = BundledHelperPackage.validateBundled(identity: TracexyIdentity.current) {
@@ -1065,73 +1167,28 @@ final class HelperClient {
 
     private func performCheckStatus() async {
         signingIssue = nil
+        if Self.usesLocalAdHocLaunchDaemon {
+            let service = SMAppService.daemon(plistName: Self.plistName)
+            if service.status == .enabled || service.status == .requiresApproval {
+                try? await service.unregister()
+            }
+            guard Self.isLocalLaunchDaemonInstalled(
+                identity: TracexyIdentity.current,
+                expectedProgramPath: Self.bundledHelperExecutablePath
+            ) else {
+                status = .notInstalled
+                installedInfo = nil
+                installedIdentity = nil
+                probeFailureDetail = nil
+                return
+            }
+            await probeInstalledDaemonAndClassify()
+            return
+        }
         let service = SMAppService.daemon(plistName: Self.plistName)
         switch service.status {
         case .enabled:
-            // Signing preflight first: a signature/identity mismatch is surfaced
-            // immediately and must not be "fixed" by re-registration (sibling-app logic).
-            switch SigningDiagnostics.diagnose() {
-            case let .appSignatureInvalid(detail):
-                signingIssue = .appSignatureInvalid(detail: detail)
-                installedInfo = nil
-                installedIdentity = nil
-                status = .signingMismatch
-                return
-            case let .signingIdentityMismatch(appSigner, helperSigner):
-                signingIssue = .identityMismatch(appSigner: appSigner, helperSigner: helperSigner)
-                installedInfo = nil
-                installedIdentity = nil
-                status = .signingMismatch
-                return
-            case .healthy,
-                 .helperBinaryNotFound,
-                 .certificateChainUnavailable,
-                 .diagnosticError:
-                break
-            }
-            switch await probeHelperInfoWithRetry() {
-            case let .success(info):
-                installedInfo = info
-                probeFailureDetail = nil
-                status = evaluateCompatibility(info)
-                if HelperCompatibilityPolicy.supportsExecutableIdentity(
-                    protocolVersion: info.protocolVersion
-                ) {
-                    do {
-                        let identity = try await fetchExecutableIdentity(
-                            timeoutNanoseconds: Self.probeTimeoutNanoseconds
-                        )
-                        guard identity.isWellFormed,
-                              identity.protocolVersion == info.protocolVersion,
-                              identity.buildNumber == info.buildNumber else
-                        {
-                            installedIdentity = nil
-                            probeFailureDetail = "The running helper returned inconsistent executable identity metadata."
-                            status = .installedOutdated
-                            return
-                        }
-                        installedIdentity = identity
-                    } catch {
-                        installedIdentity = nil
-                        probeFailureDetail = "The running helper executable could not be verified: \(error.localizedDescription)"
-                        status = .installedOutdated
-                        Self.logger.warning(
-                            "helper identity probe failed: \(error.localizedDescription, privacy: .public)"
-                        )
-                    }
-                } else {
-                    installedIdentity = nil
-                }
-                Self.logger.info(
-                    "helper enabled: build=\(info.buildNumber) proto=\(info.protocolVersion) → \(String(describing: self.status))"
-                )
-            case let .failure(error):
-                installedInfo = nil
-                installedIdentity = nil
-                probeFailureDetail = error.detail
-                status = .unreachable
-                Self.logger.warning("helper enabled but unreachable: \(error.detail, privacy: .public)")
-            }
+            await probeInstalledDaemonAndClassify()
         case .requiresApproval:
             status = .requiresApproval
             installedInfo = nil
@@ -1148,6 +1205,73 @@ final class HelperClient {
             installedInfo = nil
             installedIdentity = nil
             probeFailureDetail = nil
+        }
+    }
+
+    private func probeInstalledDaemonAndClassify() async {
+        // Signing preflight first: a signature/identity mismatch is surfaced
+        // immediately and must not be "fixed" by re-registration (sibling-app logic).
+        switch SigningDiagnostics.diagnose() {
+        case let .appSignatureInvalid(detail):
+            signingIssue = .appSignatureInvalid(detail: detail)
+            installedInfo = nil
+            installedIdentity = nil
+            status = .signingMismatch
+            return
+        case let .signingIdentityMismatch(appSigner, helperSigner):
+            signingIssue = .identityMismatch(appSigner: appSigner, helperSigner: helperSigner)
+            installedInfo = nil
+            installedIdentity = nil
+            status = .signingMismatch
+            return
+        case .healthy,
+             .helperBinaryNotFound,
+             .certificateChainUnavailable,
+             .diagnosticError:
+            break
+        }
+        switch await probeHelperInfoWithRetry() {
+        case let .success(info):
+            installedInfo = info
+            probeFailureDetail = nil
+            status = evaluateCompatibility(info)
+            if HelperCompatibilityPolicy.supportsExecutableIdentity(
+                protocolVersion: info.protocolVersion
+            ) {
+                do {
+                    let identity = try await fetchExecutableIdentity(
+                        timeoutNanoseconds: Self.probeTimeoutNanoseconds
+                    )
+                    guard identity.isWellFormed,
+                          identity.protocolVersion == info.protocolVersion,
+                          identity.buildNumber == info.buildNumber else
+                    {
+                        installedIdentity = nil
+                        probeFailureDetail = "The running helper returned inconsistent executable identity metadata."
+                        status = .installedOutdated
+                        return
+                    }
+                    installedIdentity = identity
+                } catch {
+                    installedIdentity = nil
+                    probeFailureDetail = "The running helper executable could not be verified: \(error.localizedDescription)"
+                    status = .installedOutdated
+                    Self.logger.warning(
+                        "helper identity probe failed: \(error.localizedDescription, privacy: .public)"
+                    )
+                }
+            } else {
+                installedIdentity = nil
+            }
+            Self.logger.info(
+                "helper enabled: build=\(info.buildNumber) proto=\(info.protocolVersion) → \(String(describing: self.status))"
+            )
+        case let .failure(error):
+            installedInfo = nil
+            installedIdentity = nil
+            probeFailureDetail = error.detail
+            status = .unreachable
+            Self.logger.warning("helper enabled but unreachable: \(error.detail, privacy: .public)")
         }
     }
 
