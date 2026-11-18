@@ -2642,6 +2642,16 @@
         }
       }
     },
+    "ARP Resolution": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ARP 地址解析"
+          }
+        }
+      }
+    },
     "AS Number": {
       "localizations": {
         "vi": {
@@ -3427,6 +3437,16 @@
         }
       }
     },
+    "AirDrop, Handoff & Continuity": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隔空投送 / 接力 / 通用控制"
+          }
+        }
+      }
+    },
     "All": {
       "extractionState": "manual",
       "localizations": {
@@ -3860,6 +3880,16 @@
         }
       }
     },
+    "App Store & media account service": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "App Store 与媒体账户服务"
+          }
+        }
+      }
+    },
     "Appearance": {
       "localizations": {
         "vi": {
@@ -3872,6 +3902,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "外观"
+          }
+        }
+      }
+    },
+    "Apple Push Notification service": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apple 推送通知服务 (APNs)"
+          }
+        }
+      }
+    },
+    "Apple device discovery service": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apple 设备发现服务"
           }
         }
       }
@@ -3984,6 +4034,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "应用为过滤器"
+          }
+        }
+      }
+    },
+    "Apps": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "应用"
           }
         }
       }
@@ -4464,6 +4524,16 @@
         }
       }
     },
+    "Background Agent": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "第三方后台常驻服务"
+          }
+        }
+      }
+    },
     "Bandwidth": {
       "localizations": {
         "vi": {
@@ -4627,6 +4697,16 @@
         }
       }
     },
+    "Bonjour / mDNS": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bonjour / mDNS"
+          }
+        }
+      }
+    },
     "Both Directions": {
       "localizations": {
         "vi": {
@@ -4671,6 +4751,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "底部检查器"
+          }
+        }
+      }
+    },
+    "Broadcast or multicast from nearby LAN devices": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网邻近设备发出的广播或组播"
           }
         }
       }
@@ -5101,6 +5191,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "CIDR 网段"
+          }
+        }
+      }
+    },
+    "CLI Tools": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "命令行工具"
           }
         }
       }
@@ -7585,6 +7685,26 @@
         }
       }
     },
+    "Copy App Name": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "拷贝应用名称"
+          }
+        }
+      }
+    },
+    "Copy App Names": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "拷贝应用名称"
+          }
+        }
+      }
+    },
     "Copy Bytes": {
       "localizations": {
         "vi": {
@@ -7665,6 +7785,16 @@
         }
       }
     },
+    "Copy Domains": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "拷贝域名"
+          }
+        }
+      }
+    },
     "Copy Expanded Expression": {
       "localizations": {
         "vi": {
@@ -7709,6 +7839,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "拷贝分组名称"
+          }
+        }
+      }
+    },
+    "Copy IP Address": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "拷贝 IP 地址"
+          }
+        }
+      }
+    },
+    "Copy IP Addresses": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "拷贝 IP 地址"
           }
         }
       }
@@ -7821,6 +7971,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "拷贝 SHA-256 指纹"
+          }
+        }
+      }
+    },
+    "Copy Source Name": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "拷贝来源名称"
+          }
+        }
+      }
+    },
+    "Copy Source Names": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "拷贝来源名称"
           }
         }
       }
@@ -8476,6 +8646,16 @@
         }
       }
     },
+    "DHCP Lease Broadcast": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DHCP 地址分配"
+          }
+        }
+      }
+    },
     "DNS": {
       "localizations": {
         "vi": {
@@ -9091,6 +9271,16 @@
         }
       }
     },
+    "Developer Toolchain": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "开发工具链"
+          }
+        }
+      }
+    },
     "Diagnostics": {
       "extractionState": "manual",
       "localizations": {
@@ -9249,6 +9439,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "不包含"
+          }
+        }
+      }
+    },
+    "Domains": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "域名"
           }
         }
       }
@@ -9430,6 +9630,16 @@
         }
       }
     },
+    "Dynamic IP address configuration broadcast": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网动态 IP 租约广播"
+          }
+        }
+      }
+    },
     "Each Project keeps its own sessions, saved-capture Library, local History, and capture/privacy settings. Exported Project files carry configuration only.": {
       "localizations": {
         "vi": {
@@ -9506,6 +9716,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "当前视图会话中每条已识别的消息，可供 Wireshark 直接解析。"
+          }
+        }
+      }
+    },
+    "Echo ping & unreachable / TTL network diagnostics": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ping 回显与不可达/超时差错回报"
           }
         }
       }
@@ -13516,6 +13736,16 @@
         }
       }
     },
+    "Homebrew CLI": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Homebrew 命令行"
+          }
+        }
+      }
+    },
     "Host": {
       "localizations": {
         "vi": {
@@ -13661,6 +13891,46 @@
         }
       }
     },
+    "ICMP Probe & Diagnostics": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ICMP 探测与网络差错"
+          }
+        }
+      }
+    },
+    "ICMPv6 router advertisements & neighbor solicitation": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "IPv6 网关通告与链路邻居发现"
+          }
+        }
+      }
+    },
+    "IGMP / MLD Multicast Control": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "IGMP / MLD 多播管理"
+          }
+        }
+      }
+    },
+    "IP Addresses": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "IP 地址"
+          }
+        }
+      }
+    },
     "IP Protocol Types": {
       "localizations": {
         "vi": {
@@ -13769,6 +14039,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "IPv6"
+          }
+        }
+      }
+    },
+    "IPv6 Neighbor & Router Discovery": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "IPv6 邻居与路由发现 (NDP)"
           }
         }
       }
@@ -14090,6 +14370,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "入站"
+          }
+        }
+      }
+    },
+    "Inbound Unanswered Port": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未监听端口入站请求"
           }
         }
       }
@@ -15120,6 +15410,96 @@
         }
       }
     },
+    "Kernel & Link": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内核与基础协议"
+          }
+        }
+      }
+    },
+    "Kernel TCP Teardown / Reset": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内核 TCP 回收 / 复位"
+          }
+        }
+      }
+    },
+    "Kernel multicast group membership reports": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机加入/离开多播组控制报文"
+          }
+        }
+      }
+    },
+    "Kernel · ARP": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内核 · ARP"
+          }
+        }
+      }
+    },
+    "Kernel · Closed Port": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内核 · 未开放端口"
+          }
+        }
+      }
+    },
+    "Kernel · ICMP": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内核 · ICMP"
+          }
+        }
+      }
+    },
+    "Kernel · IPv6 NDP": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内核 · IPv6 NDP"
+          }
+        }
+      }
+    },
+    "Kernel · Multicast": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内核 · 多播管理"
+          }
+        }
+      }
+    },
+    "Kernel · TCP Reset": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内核 · TCP 回收"
+          }
+        }
+      }
+    },
     "Keyboard Shortcuts": {
       "localizations": {
         "vi": {
@@ -15148,6 +15528,96 @@
           "stringUnit": {
             "state": "translated",
             "value": "类型"
+          }
+        }
+      }
+    },
+    "LAN & Discovery": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网邻机与广播"
+          }
+        }
+      }
+    },
+    "LAN Broadcast / Multicast": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "其他局域网广播 / 组播"
+          }
+        }
+      }
+    },
+    "LAN Gateway": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网网关"
+          }
+        }
+      }
+    },
+    "LAN · Bonjour": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网 · Bonjour"
+          }
+        }
+      }
+    },
+    "LAN · DHCP": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网 · DHCP"
+          }
+        }
+      }
+    },
+    "LAN · Multicast": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网 · 广播组播"
+          }
+        }
+      }
+    },
+    "LAN · Naming": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网 · 命名广播"
+          }
+        }
+      }
+    },
+    "LAN · Peer ARP": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网 · 邻机 ARP"
+          }
+        }
+      }
+    },
+    "LAN · SSDP": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网 · SSDP"
           }
         }
       }
@@ -15345,6 +15815,16 @@
         }
       }
     },
+    "Late RST, FIN-ACK or TIME_WAIT handled by macOS kernel": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Socket 关闭后由内核代回的 RST / TIME_WAIT 帧"
+          }
+        }
+      }
+    },
     "Latency": {
       "localizations": {
         "vi": {
@@ -15357,6 +15837,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "延迟"
+          }
+        }
+      }
+    },
+    "Launched by %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "由 %@ 启动"
+          }
+        }
+      }
+    },
+    "Layer-2 MAC lookup between other LAN devices": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网其他设备间的二层 MAC 寻址"
           }
         }
       }
@@ -15841,6 +16341,16 @@
         }
       }
     },
+    "Local Mac & gateway Layer-2 MAC resolution": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机与网关/邻机的二层 MAC 寻址"
+          }
+        }
+      }
+    },
     "Local Project": {
       "localizations": {
         "vi": {
@@ -15890,6 +16400,16 @@
         }
       }
     },
+    "Local network service discovery (UDP 5353)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网设备服务发现广播 (UDP 5353)"
+          }
+        }
+      }
+    },
     "Locate “%@”. Tracexy checks that the file matches the capture this item refers to.": {
       "localizations": {
         "vi": {
@@ -15934,6 +16454,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "位置"
+          }
+        }
+      }
+    },
+    "Location & Maps service": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "定位与地图服务"
           }
         }
       }
@@ -16753,6 +17283,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "在当前范围内引用的数据帧之间测得"
+          }
+        }
+      }
+    },
+    "Media, smart-device & router discovery (UDP 1900)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "智能家居 / 投屏 / 路由器发现 (UDP 1900)"
           }
         }
       }
@@ -17781,6 +18321,16 @@
         }
       }
     },
+    "NetBIOS / LLMNR": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NetBIOS / LLMNR"
+          }
+        }
+      }
+    },
     "Netfilter (iptables)": {
       "localizations": {
         "vi": {
@@ -17841,6 +18391,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "网络地址（IPv4、IPv6）或带端口的地址（TCP、UDP）"
+          }
+        }
+      }
+    },
+    "Network configuration & diagnostics": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "系统网络配置与连通性诊断"
+          }
+        }
+      }
+    },
+    "Network time synchronization": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "系统网络时间同步 (NTP)"
           }
         }
       }
@@ -19735,6 +20305,16 @@
         }
       }
     },
+    "No visible sources": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无可见来源"
+          }
+        }
+      }
+    },
     "No.": {
       "localizations": {
         "vi": {
@@ -21536,6 +22116,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "峰值速率"
+          }
+        }
+      }
+    },
+    "Peer ARP Resolution": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "邻机 ARP 寻址"
           }
         }
       }
@@ -24244,6 +24834,46 @@
         }
       }
     },
+    "Restore Hidden Apps": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "恢复已隐藏应用"
+          }
+        }
+      }
+    },
+    "Restore Hidden Domains": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "恢复已隐藏域名"
+          }
+        }
+      }
+    },
+    "Restore Hidden IP Addresses": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "恢复已隐藏 IP 地址"
+          }
+        }
+      }
+    },
+    "Restore Hidden Sources": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "恢复已隐藏来源"
+          }
+        }
+      }
+    },
     "Restore Removed Sessions": {
       "localizations": {
         "vi": {
@@ -24675,6 +25305,16 @@
         }
       }
     },
+    "Root Background Daemon": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Root 后台守护服务"
+          }
+        }
+      }
+    },
     "Row connector": {
       "localizations": {
         "vi": {
@@ -24960,6 +25600,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "SMB 文件"
+          }
+        }
+      }
+    },
+    "SSDP / UPnP": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SSDP / UPnP"
           }
         }
       }
@@ -28624,6 +29274,16 @@
         }
       }
     },
+    "Spotlight & Siri suggestions": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spotlight 搜索与建议服务"
+          }
+        }
+      }
+    },
     "Stack": {
       "localizations": {
         "vi": {
@@ -29500,6 +30160,26 @@
         }
       }
     },
+    "System CLI": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "系统命令行工具"
+          }
+        }
+      }
+    },
+    "System DNS & Bonjour resolver": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "系统 DNS 与 Bonjour 解析"
+          }
+        }
+      }
+    },
     "System Default": {
       "localizations": {
         "vi": {
@@ -29512,6 +30192,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "跟随系统"
+          }
+        }
+      }
+    },
+    "System Network Extension": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "系统网络扩展 (SystemExtension)"
+          }
+        }
+      }
+    },
+    "System Services": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "系统服务"
           }
         }
       }
@@ -29545,6 +30245,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "TFTP"
+          }
+        }
+      }
+    },
+    "TLS certificate trust & revocation": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "TLS 证书信任与吊销校验"
           }
         }
       }
@@ -29609,6 +30319,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "带标签的命令与响应；从不显示凭据"
+          }
+        }
+      }
+    },
+    "Terminal CLI": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "终端命令行"
           }
         }
       }
@@ -30571,6 +31291,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "这些保护措施适用于 .tracexysession 文档。“掩码处理 IP 地址”同样适用于“导出调查”文件和已保存的历史记录。原始 pcap 和 pcapng 导出会保留捕获的原始字节，因此在启用任何保护措施时始终需要确认。"
+          }
+        }
+      }
+    },
+    "Third-Party Services": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "第三方服务"
           }
         }
       }
@@ -31871,6 +32601,16 @@
         }
       }
     },
+    "Unattributed": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未归属"
+          }
+        }
+      }
+    },
     "Unavailable evidence stays unknown, including under negation.": {
       "localizations": {
         "vi": {
@@ -32230,6 +32970,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "取消置顶会话"
+          }
+        }
+      }
+    },
+    "Unsolicited packet to a closed local port": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "外部发往本机未开放监听端口的报文"
           }
         }
       }
@@ -32936,6 +33686,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "为什么要安装？"
+          }
+        }
+      }
+    },
+    "Widget & System Extension": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "桌面小组件与系统扩展"
+          }
+        }
+      }
+    },
+    "Windows & NAS local name broadcast": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Windows / NAS 局域网名称广播"
           }
         }
       }
@@ -33725,6 +34495,36 @@
         }
       }
     },
+    "iCloud sync & background transfer": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iCloud 同步与后台传输"
+          }
+        }
+      }
+    },
+    "iMessage & FaceTime identity": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iMessage 与 FaceTime 身份服务"
+          }
+        }
+      }
+    },
+    "iOS device wireless & USB mux": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iOS 设备无线连接与调试"
+          }
+        }
+      }
+    },
     "kbit/s": {
       "localizations": {
         "vi": {
@@ -33785,6 +34585,56 @@
           "stringUnit": {
             "state": "translated",
             "value": "实时抓包"
+          }
+        }
+      }
+    },
+    "macOS %@ service": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS %@ 系统服务"
+          }
+        }
+      }
+    },
+    "macOS Control Center": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS 控制中心"
+          }
+        }
+      }
+    },
+    "macOS Software Update service": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS 系统软件更新服务"
+          }
+        }
+      }
+    },
+    "macOS System Service": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS 系统后台服务"
+          }
+        }
+      }
+    },
+    "macOS Window & Login session": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS 窗口与登录会话服务"
           }
         }
       }
@@ -34153,6 +35003,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "无限制"
+          }
+        }
+      }
+    },
+    "via %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "经由 %@"
           }
         }
       }
