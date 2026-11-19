@@ -15,10 +15,12 @@ final class ProcessResolver {
         populateImmediately: Bool = true,
         localIPsProvider: @escaping @Sendable () -> Set<String> = { ProcessResolver.discoverLocalIPs() },
         appNameResolver: (@Sendable (Int32, String) -> String)? = nil,
-        provenanceResolver: (@Sendable (Int32, String, String) -> ProcessProvenance)? = nil
+        provenanceResolver: (@Sendable (Int32, String, String) -> ProcessProvenance)? = nil,
+        nowProvider: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.socketTableProvider = socketTableProvider
         self.localIPsProvider = localIPsProvider
+        self.nowProvider = nowProvider
         let combinedResolver: @Sendable (Int32, String) -> (appName: String, provenance: ProcessProvenance) = { pid, command in
             if appNameResolver == nil, provenanceResolver == nil {
                 return ProcessResolver.resolveProcessAttribution(pid: pid, command: command)
@@ -33,7 +35,9 @@ final class ProcessResolver {
         attributionResolver = combinedResolver
         localIPs = ProcessResolver.normalizeLocalIPs(localIPsProvider())
         if populateImmediately {
-            resolvedTable = Self.resolveEntries(socketTableProvider(), using: combinedResolver)
+            let initial = Self.resolveEntries(socketTableProvider(), using: combinedResolver)
+            resolvedTable = initial
+            recordRecentEphemeralAttributions(from: initial, observedAt: nowProvider())
         }
     }
 
@@ -41,14 +45,16 @@ final class ProcessResolver {
         netstatRunner: @escaping @Sendable () -> String,
         localIPsProvider: @escaping @Sendable () -> Set<String> = { ProcessResolver.discoverLocalIPs() },
         appNameResolver: (@Sendable (Int32, String) -> String)? = nil,
-        provenanceResolver: (@Sendable (Int32, String, String) -> ProcessProvenance)? = nil
+        provenanceResolver: (@Sendable (Int32, String, String) -> ProcessProvenance)? = nil,
+        nowProvider: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.init(
             socketTableProvider: { ProcessResolver.parseNetstat(netstatRunner()) },
             populateImmediately: false,
             localIPsProvider: localIPsProvider,
             appNameResolver: appNameResolver,
-            provenanceResolver: provenanceResolver
+            provenanceResolver: provenanceResolver,
+            nowProvider: nowProvider
         )
     }
 
@@ -199,7 +205,15 @@ final class ProcessResolver {
     }
 
     static let shared = ProcessResolver()
-    static let refreshThrottleInterval: TimeInterval = 0.4
+    static let refreshThrottleInterval: TimeInterval = 0.15
+    static let ephemeralRetentionInterval: TimeInterval = 5.0
+    static let maxRecentEphemeralEntries = 1_024
+
+    /// Whether `port` is an ephemeral non-server client port eligible for short-lived
+    /// rolling attribution retention across live capture snapshots.
+    nonisolated static func isCacheableEphemeralPort(_ port: UInt16) -> Bool {
+        port >= 1_024 && !SessionAccumulator.isLikelyServerPort(port)
+    }
 
     // MARK: - Live Darwin libproc Socket Enumeration & Netstat Parsing
 
@@ -669,33 +683,51 @@ final class ProcessResolver {
         localIPs
     }
 
+    /// Number of recently observed non-server ephemeral socket attributions retained.
+    var recentEphemeralAttributionCount: Int {
+        recentEphemeralAttributions.count
+    }
+
+    /// Clears the bounded rolling ephemeral-socket attribution cache.
+    func clearRecentEphemeralAttributions() {
+        recentEphemeralAttributions.removeAll()
+    }
+
     /// The app owning a session, found by matching either endpoint's local `(ip, port)`
-    /// (with wildcard `*.port` fallback only when the endpoint IP belongs to this Mac).
+    /// (with wildcard `*.port` fallback only when the endpoint IP belongs to this Mac,
+    /// followed by a bounded 5s rolling cache of recently observed ephemeral client ports).
     func appName(forEndpoints source: String, _ destination: String) -> String? {
-        resolvedTable.appName(
+        if let live = resolvedTable.appName(
             forEndpoints: source,
             destination,
             normalizedLocalIPs: localIPs
-        )
+        ) {
+            return live
+        }
+        return recentEphemeralAttribution(forEndpoints: source, destination)?.appName
     }
 
     /// Full `(appName, provenance)` owning a session, found by matching either
     /// endpoint's local `(ip, port)` (with wildcard `*.port` fallback only when
-    /// the endpoint IP belongs to this Mac).
+    /// the endpoint IP belongs to this Mac, followed by a bounded 5s rolling
+    /// cache of recently observed ephemeral client ports).
     func attribution(
         forEndpoints source: String,
         _ destination: String
     )
         -> (appName: String, provenance: ProcessProvenance)?
     {
-        resolvedTable.attribution(
+        if let live = resolvedTable.attribution(
             forEndpoints: source,
             destination,
             normalizedLocalIPs: localIPs
-        )
+        ) {
+            return live
+        }
+        return recentEphemeralAttribution(forEndpoints: source, destination)
     }
 
-    /// Refreshes the socket→app table (throttled to 0.4s). Socket enumeration and
+    /// Refreshes the socket→app table (throttled to 0.15s). Socket enumeration and
     /// `getifaddrs` run off-main; the resolved table updates on the main actor when done.
     func refresh(force: Bool = false) {
         if isRefreshing {
@@ -704,7 +736,7 @@ final class ProcessResolver {
             }
             return
         }
-        let now = Date()
+        let now = nowProvider()
         guard force || now.timeIntervalSince(lastRefresh) >= Self.refreshThrottleInterval else {
             return
         }
@@ -718,8 +750,10 @@ final class ProcessResolver {
             let discoveredIPs = Self.normalizeLocalIPs(ipProvider())
             let resolved = Self.resolveEntries(parsed, using: resolver)
             await MainActor.run {
+                let observedAt = self.nowProvider()
                 self.localIPs = discoveredIPs
                 self.resolvedTable = resolved
+                self.recordRecentEphemeralAttributions(from: resolved, observedAt: observedAt)
                 self.isRefreshing = false
                 if self.pendingForcedRefresh {
                     self.pendingForcedRefresh = false
@@ -730,6 +764,12 @@ final class ProcessResolver {
     }
 
     // MARK: Private
+
+    private struct RecentEphemeralAttribution {
+        let appName: String
+        let provenance: ProcessProvenance
+        let observedAt: Date
+    }
 
     nonisolated private enum NetstatAddress: Equatable {
         case specific(SocketEndpoint)
@@ -750,7 +790,9 @@ final class ProcessResolver {
     private let socketTableProvider: @Sendable () -> SocketTable
     private let localIPsProvider: @Sendable () -> Set<String>
     private let attributionResolver: @Sendable (Int32, String) -> (appName: String, provenance: ProcessProvenance)
+    private let nowProvider: @Sendable () -> Date
     private var resolvedTable = ResolvedSocketTable()
+    private var recentEphemeralAttributions: [SocketEndpoint: RecentEphemeralAttribution] = [:]
     private var localIPs: Set<String> {
         didSet {
             if localIPs != oldValue {
@@ -761,6 +803,79 @@ final class ProcessResolver {
     private var lastRefresh = Date.distantPast
     private var isRefreshing = false
     private var pendingForcedRefresh = false
+
+    private func recordRecentEphemeralAttributions(from table: ResolvedSocketTable, observedAt now: Date) {
+        if !recentEphemeralAttributions.isEmpty {
+            recentEphemeralAttributions = recentEphemeralAttributions.filter { _, entry in
+                let age = now.timeIntervalSince(entry.observedAt)
+                return age >= 0 && age <= Self.ephemeralRetentionInterval
+            }
+        }
+        for (endpoint, appName) in table.specific {
+            guard Self.isCacheableEphemeralPort(endpoint.port), !appName.isEmpty else {
+                continue
+            }
+            let provenance = table.specificProvenance[endpoint] ?? ProcessProvenance()
+            recentEphemeralAttributions[endpoint] = RecentEphemeralAttribution(
+                appName: appName,
+                provenance: provenance,
+                observedAt: now
+            )
+        }
+        let excess = recentEphemeralAttributions.count - Self.maxRecentEphemeralEntries
+        if excess > 0 {
+            let oldestKeys = recentEphemeralAttributions
+                .sorted { lhs, rhs in
+                    if lhs.value.observedAt != rhs.value.observedAt {
+                        return lhs.value.observedAt < rhs.value.observedAt
+                    }
+                    if lhs.key.ip != rhs.key.ip {
+                        return lhs.key.ip < rhs.key.ip
+                    }
+                    return lhs.key.port < rhs.key.port
+                }
+                .prefix(excess)
+                .map(\.key)
+            for key in oldestKeys {
+                recentEphemeralAttributions.removeValue(forKey: key)
+            }
+        }
+    }
+
+    private func recentEphemeralAttribution(
+        forEndpoints source: String,
+        _ destination: String
+    )
+        -> (appName: String, provenance: ProcessProvenance)?
+    {
+        guard !recentEphemeralAttributions.isEmpty else {
+            return nil
+        }
+        let now = nowProvider()
+        return lookupRecentEphemeral(endpoint: source, now: now)
+            ?? lookupRecentEphemeral(endpoint: destination, now: now)
+    }
+
+    private func lookupRecentEphemeral(
+        endpoint rawEndpoint: String,
+        now: Date
+    )
+        -> (appName: String, provenance: ProcessProvenance)?
+    {
+        guard let endpoint = Self.parseEndpoint(rawEndpoint),
+              Self.isCacheableEphemeralPort(endpoint.port),
+              localIPs.contains(endpoint.ip),
+              let cached = recentEphemeralAttributions[endpoint] else
+        {
+            return nil
+        }
+        let age = now.timeIntervalSince(cached.observedAt)
+        guard age >= 0, age <= Self.ephemeralRetentionInterval else {
+            recentEphemeralAttributions.removeValue(forKey: endpoint)
+            return nil
+        }
+        return (appName: cached.appName, provenance: cached.provenance)
+    }
 
     nonisolated private static func extractSocketLocalIP(insi: in_sockinfo, family: Int32) -> String? {
         let hasIPv4 = (insi.insi_vflag & UInt8(INI_IPV4)) != 0

@@ -289,8 +289,8 @@ struct ProcessResolverTests {
 
     @Test
     @MainActor
-    func refreshesThrottledAt400msAndResolvesEndpointsOnMainActor() async throws {
-        #expect(ProcessResolver.refreshThrottleInterval == 0.4)
+    func refreshesThrottledAt150msAndResolvesEndpointsOnMainActor() async throws {
+        #expect(ProcessResolver.refreshThrottleInterval == 0.15)
 
         let callCount = OSAllocatedUnfairLock(initialState: 0)
         let netstatFixture = [
@@ -327,7 +327,7 @@ struct ProcessResolverTests {
         #expect(resolver.appName(forEndpoints: "192.168.0.99:5353", "224.0.0.251:5353") == nil)
         #expect(callCount.withLock { $0 } == 1)
 
-        // Immediate unforced refresh within 0.4s throttle window must be suppressed.
+        // Immediate unforced refresh within 0.15s throttle window must be suppressed.
         resolver.refresh()
         try await Task.sleep(nanoseconds: 30_000_000)
         #expect(callCount.withLock { $0 } == 1)

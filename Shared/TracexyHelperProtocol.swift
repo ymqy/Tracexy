@@ -174,6 +174,187 @@ nonisolated enum PktapHeader {
         }
     }
 
+    /// Resolves pure-inbound packets (`pth_pid < 0` before XNU socket demux) to
+    /// their local owning process via a cached `InboundSocketPortMap` plus a
+    /// bounded short-TTL recent ephemeral socket cache.
+    ///
+    /// - Cache hits in the live `portMap` or bounded `2s` recent ephemeral cache
+    ///   return immediately in O(1) with zero syscalls.
+    /// - Live `portMap` is always consulted before `recentResolved` so port reuse
+    ///   immediately overrides any prior ephemeral owner.
+    /// - Cache misses on unknown unicast `(proto, ip, port)` refresh `portMap`
+    ///   at most once every `missRefreshIntervalNanoseconds` (`25ms` default),
+    ///   catching back-to-back short-lived UDP/DNS ephemeral sockets without
+    ///   polling on every packet.
+    struct InboundSocketResolver {
+        // MARK: Lifecycle
+
+        init(
+            nowNanoseconds: @escaping () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
+            portMapProvider: @escaping () -> InboundSocketPortMap = { PktapHeader.collectInboundSocketPortMap() },
+            missRefreshIntervalNanoseconds: UInt64 = defaultMissRefreshIntervalNanoseconds,
+            recentTTLNanoseconds: UInt64 = defaultRecentTTLNanoseconds,
+            maxRecentEntries: Int = defaultMaxRecentEntries
+        ) {
+            self.nowNanoseconds = nowNanoseconds
+            self.portMapProvider = portMapProvider
+            self.missRefreshIntervalNanoseconds = missRefreshIntervalNanoseconds
+            self.recentTTLNanoseconds = recentTTLNanoseconds
+            self.maxRecentEntries = max(1, maxRecentEntries)
+        }
+
+        // MARK: Internal
+
+        static let defaultMissRefreshIntervalNanoseconds: UInt64 = 25_000_000
+        static let defaultRecentTTLNanoseconds: UInt64 = 2_000_000_000
+        static let defaultMaxRecentEntries = 512
+        static let minimumEphemeralPort: UInt16 = 1_024
+
+        let missRefreshIntervalNanoseconds: UInt64
+        let recentTTLNanoseconds: UInt64
+        let maxRecentEntries: Int
+
+        var recentCacheCount: Int { recentResolved.count }
+
+        mutating func resolveOwner(innerBytes: [UInt8], innerDLT: UInt32) -> (pid: Int32, command: String)? {
+            guard let target = PktapHeader.parseInboundTarget(innerBytes: innerBytes, innerDLT: innerDLT) else {
+                return nil
+            }
+            return resolveOwner(target: target)
+        }
+
+        mutating func resolveOwner(target: InboundPacketTarget) -> (pid: Int32, command: String)? {
+            guard !target.destinationIP.isMulticastOrBroadcast else {
+                return nil
+            }
+            let now = nowNanoseconds()
+            let specificKey = InboundSocketPortMap.SpecificKey(
+                proto: target.proto,
+                ip: target.destinationIP,
+                port: target.destinationPort
+            )
+
+            if hasLoaded {
+                // 1. Live `portMap` always takes precedence so port reuse
+                //    immediately overrides older recent ephemeral entries.
+                if let liveHit = portMap.lookup(target: target) {
+                    recordRecentIfEphemeral(
+                        key: specificKey,
+                        hit: liveHit,
+                        verifiedAt: lastRefreshNanoseconds,
+                        now: now
+                    )
+                    return liveHit
+                }
+                // 2. Bounded recent ephemeral cache hit (0 syscalls).
+                if target.destinationPort >= Self.minimumEphemeralPort,
+                   portMap.localIPs.contains(target.destinationIP),
+                   let recent = recentResolved[specificKey]
+                {
+                    if now >= recent.verifiedAtNanoseconds,
+                       now - recent.verifiedAtNanoseconds < recentTTLNanoseconds
+                    {
+                        return (pid: recent.pid, command: recent.command)
+                    }
+                    recentResolved.removeValue(forKey: specificKey)
+                }
+            }
+
+            // 3. Cache miss: refresh `portMap` if unloaded or throttle elapsed.
+            guard !hasLoaded || (now >= lastRefreshNanoseconds && now - lastRefreshNanoseconds >= missRefreshIntervalNanoseconds) else {
+                return nil
+            }
+            portMap = portMapProvider()
+            hasLoaded = true
+            lastRefreshNanoseconds = now
+            syncRecentEntriesWithLivePortMap(now: now)
+
+            if let freshHit = portMap.lookup(target: target) {
+                recordRecentIfEphemeral(
+                    key: specificKey,
+                    hit: freshHit,
+                    verifiedAt: now,
+                    now: now
+                )
+                return freshHit
+            }
+            return nil
+        }
+
+        // MARK: Private
+
+        private struct RecentEntry {
+            let pid: Int32
+            let command: String
+            let verifiedAtNanoseconds: UInt64
+        }
+
+        private let nowNanoseconds: () -> UInt64
+        private let portMapProvider: () -> InboundSocketPortMap
+
+        private var portMap = InboundSocketPortMap()
+        private var hasLoaded = false
+        private var lastRefreshNanoseconds: UInt64 = 0
+        private var recentResolved: [InboundSocketPortMap.SpecificKey: RecentEntry] = [:]
+
+        private mutating func recordRecentIfEphemeral(
+            key: InboundSocketPortMap.SpecificKey,
+            hit: (pid: Int32, command: String),
+            verifiedAt: UInt64,
+            now: UInt64
+        ) {
+            guard key.port >= Self.minimumEphemeralPort, hit.pid > 0 else {
+                return
+            }
+            if recentResolved[key] == nil, recentResolved.count >= maxRecentEntries {
+                pruneExpiredRecent(now: now)
+                if recentResolved.count >= maxRecentEntries,
+                   let oldestKey = recentResolved.min(by: {
+                       $0.value.verifiedAtNanoseconds < $1.value.verifiedAtNanoseconds
+                   })?.key
+                {
+                    recentResolved.removeValue(forKey: oldestKey)
+                }
+            }
+            recentResolved[key] = RecentEntry(
+                pid: hit.pid,
+                command: hit.command,
+                verifiedAtNanoseconds: verifiedAt
+            )
+        }
+
+        private mutating func syncRecentEntriesWithLivePortMap(now: UInt64) {
+            var expiredKeys: [InboundSocketPortMap.SpecificKey] = []
+            for (key, entry) in recentResolved {
+                let target = InboundPacketTarget(
+                    proto: key.proto,
+                    destinationIP: key.ip,
+                    destinationPort: key.port
+                )
+                if let liveHit = portMap.lookup(target: target) {
+                    recentResolved[key] = RecentEntry(
+                        pid: liveHit.pid,
+                        command: liveHit.command,
+                        verifiedAtNanoseconds: now
+                    )
+                } else if now < entry.verifiedAtNanoseconds
+                    || now - entry.verifiedAtNanoseconds >= recentTTLNanoseconds
+                {
+                    expiredKeys.append(key)
+                }
+            }
+            for key in expiredKeys {
+                recentResolved.removeValue(forKey: key)
+            }
+        }
+
+        private mutating func pruneExpiredRecent(now: UInt64) {
+            recentResolved = recentResolved.filter { _, entry in
+                now >= entry.verifiedAtNanoseconds && now - entry.verifiedAtNanoseconds < recentTTLNanoseconds
+            }
+        }
+    }
+
     /// Standard pcap/pcapng `LINKTYPE_PKTAP` value (258).
     static let dlt: UInt32 = 258
     /// Darwin `<net/bpf.h>` runtime `DLT_PKTAP` (`DLT_USER2 = 149`) used by live

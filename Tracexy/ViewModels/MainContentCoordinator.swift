@@ -2453,6 +2453,17 @@ extension MainContentCoordinator {
         appendRetainedFrames(frames)
         pendingChartBytes += frames.reduce(0) { $0 + $1.originalLength }
 
+        // Kick off an immediate non-blocking off-main socket table refresh (throttled
+        // at 150ms) as soon as a live batch contains any frame without `pktap` process
+        // attribution, so ephemeral UDP/DNS sockets are captured into `ProcessResolver`'s
+        // rolling 5s history before closing ahead of the 800ms `publishLiveDetailed` tick.
+        if !isHistoryDemoMode,
+           !isViewingSavedCapture,
+           frames.contains(where: { ($0.processName ?? "").isEmpty })
+        {
+            ProcessResolver.shared.refresh()
+        }
+
         // Coalesce UI refreshes to ~1.2×/sec, but decode/group *every* batch off
         // the main actor so each frame is folded exactly once.
         let now = Date()

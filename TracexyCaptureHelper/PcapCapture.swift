@@ -35,7 +35,9 @@ final class PcapCapture: @unchecked Sendable {
         // evaluation (`pcap_compile` fails directly on `DLT_PKTAP = 258`).
         createHandle = try? PcapCapture.symbol(library, "pcap_create", as: CreateFn.self)
         setSnaplen = try? PcapCapture.symbol(library, "pcap_set_snaplen", as: SetIntOptionFn.self)
+        setPromisc = try? PcapCapture.symbol(library, "pcap_set_promisc", as: SetIntOptionFn.self)
         setTimeout = try? PcapCapture.symbol(library, "pcap_set_timeout", as: SetIntOptionFn.self)
+        setBufferSize = try? PcapCapture.symbol(library, "pcap_set_buffer_size", as: SetIntOptionFn.self)
         setWantPktap = try? PcapCapture.symbol(library, "pcap_set_want_pktap", as: SetIntOptionFn.self)
         setDataLink = try? PcapCapture.symbol(library, "pcap_set_datalink", as: SetIntOptionFn.self)
         dataLinkNameToVal = try? PcapCapture.symbol(library, "pcap_datalink_name_to_val", as: DataLinkNameToValFn.self)
@@ -45,6 +47,11 @@ final class PcapCapture: @unchecked Sendable {
     }
 
     // MARK: Internal
+
+    /// Requested kernel BPF ring buffer size (`16 MB`) applied before `pcap_activate`
+    /// so high-rate `pktap` captures (carrying 108–256-byte outer headers) and live
+    /// BPF handles avoid dropping outbound packets before read-loop drain.
+    static let defaultKernelBufferSize: Int32 = 16 * 1024 * 1024
 
     struct Failure: Error { let message: String }
 
@@ -105,6 +112,12 @@ final class PcapCapture: @unchecked Sendable {
         let handle: OpaquePointer
         if let pktapHandle = openPktapHandle(interface: config.interface, snaplen: snaplen, promisc: promisc) {
             handle = pktapHandle
+        } else if let bufferedLiveHandle = openLiveHandle(
+            interface: config.interface,
+            snaplen: snaplen,
+            promisc: promisc
+        ) {
+            handle = bufferedLiveHandle
         } else {
             var errbuf = [CChar](repeating: 0, count: 256)
             guard let liveHandle = config.interface.withCString({ name in
@@ -199,33 +212,6 @@ final class PcapCapture: @unchecked Sendable {
         case rejected
     }
 
-    private struct InboundSocketFallbackState {
-        static let refreshIntervalNanoseconds: UInt64 = 500_000_000
-
-        var portMap = PktapHeader.InboundSocketPortMap()
-        var hasLoaded = false
-        var lastRefreshNanoseconds: UInt64 = 0
-
-        mutating func resolveOwner(innerBytes: [UInt8], innerDLT: UInt32) -> (pid: Int32, command: String)? {
-            guard let target = PktapHeader.parseInboundTarget(innerBytes: innerBytes, innerDLT: innerDLT),
-                  !target.destinationIP.isMulticastOrBroadcast else
-            {
-                return nil
-            }
-            if hasLoaded, let hit = portMap.lookup(target: target) {
-                return hit
-            }
-            let now = DispatchTime.now().uptimeNanoseconds
-            guard !hasLoaded || now &- lastRefreshNanoseconds >= Self.refreshIntervalNanoseconds else {
-                return nil
-            }
-            portMap = PktapHeader.collectInboundSocketPortMap()
-            hasLoaded = true
-            lastRefreshNanoseconds = now
-            return portMap.lookup(target: target)
-        }
-    }
-
     private typealias OpenLiveFn = @convention(c) (
         UnsafePointer<CChar>?,
         Int32,
@@ -260,7 +246,7 @@ final class PcapCapture: @unchecked Sendable {
         UnsafeMutablePointer<CChar>?
     )
         -> OpaquePointer?
-    /// `int pcap_set_{snaplen,promisc,timeout,want_pktap,datalink}(pcap_t*, int)`.
+    /// `int pcap_set_{snaplen,promisc,timeout,buffer_size,want_pktap,datalink}(pcap_t*, int)`.
     private typealias SetIntOptionFn = @convention(c) (OpaquePointer?, Int32) -> Int32
     /// `int pcap_datalink_name_to_val(const char *)`.
     private typealias DataLinkNameToValFn = @convention(c) (UnsafePointer<CChar>?) -> Int32
@@ -302,7 +288,9 @@ final class PcapCapture: @unchecked Sendable {
     private let getError: GetErrFn?
     private let createHandle: CreateFn?
     private let setSnaplen: SetIntOptionFn?
+    private let setPromisc: SetIntOptionFn?
     private let setTimeout: SetIntOptionFn?
+    private let setBufferSize: SetIntOptionFn?
     private let setWantPktap: SetIntOptionFn?
     private let setDataLink: SetIntOptionFn?
     private let dataLinkNameToVal: DataLinkNameToValFn?
@@ -372,6 +360,9 @@ final class PcapCapture: @unchecked Sendable {
             closeHandle(handle)
             return nil
         }
+        // Request a 16 MB kernel BPF ring buffer before `pcap_activate`; ignore
+        // any non-zero return so an OS/device clamp never prevents capture start.
+        _ = setBufferSize?(handle, Self.defaultKernelBufferSize)
         _ = setWantPktap?(handle, 1)
         guard activateHandle(handle) >= 0 else {
             closeHandle(handle)
@@ -383,6 +374,39 @@ final class PcapCapture: @unchecked Sendable {
             _ = setDataLink?(handle, targetDLT)
         }
         guard PktapHeader.isPktapDLT(UInt32(bitPattern: dataLink(handle))) else {
+            closeHandle(handle)
+            return nil
+        }
+        return handle
+    }
+
+    /// Opens a plain BPF live handle via `pcap_create` so `pcap_set_buffer_size`
+    /// (`16 MB`) applies before `pcap_activate` even when `pktap` is bypassed
+    /// (for example in promiscuous mode). Returns `nil` to fall back to
+    /// `pcap_open_live` when unavailable or if activation fails.
+    private func openLiveHandle(interface: String, snaplen: Int32, promisc: Int32) -> OpaquePointer? {
+        guard !interface.contains("/"),
+              let createHandle,
+              let setSnaplen,
+              let setPromisc,
+              let setTimeout,
+              let activateHandle else
+        {
+            return nil
+        }
+        var errbuf = [CChar](repeating: 0, count: 256)
+        guard let handle = interface.withCString({ name in createHandle(name, &errbuf) }) else {
+            return nil
+        }
+        guard setSnaplen(handle, snaplen) == 0,
+              setPromisc(handle, promisc) == 0,
+              setTimeout(handle, 100) == 0 else
+        {
+            closeHandle(handle)
+            return nil
+        }
+        _ = setBufferSize?(handle, Self.defaultKernelBufferSize)
+        guard activateHandle(handle) >= 0 else {
             closeHandle(handle)
             return nil
         }
@@ -580,7 +604,7 @@ final class PcapCapture: @unchecked Sendable {
         bpfOptimizerFlag: Int32,
         innerFilterCache: inout [UInt32: CachedInnerFilter],
         attributionCache: inout PktapHeader.AttributionCache,
-        inboundSocketFallback: inout InboundSocketFallbackState
+        inboundSocketFallback: inout PktapHeader.InboundSocketResolver
     )
         -> CapturedFrameMessage?
     {
@@ -725,7 +749,7 @@ final class PcapCapture: @unchecked Sendable {
         var batch: [CapturedFrameMessage] = []
         var innerFilterCache: [UInt32: CachedInnerFilter] = [:]
         var attributionCache = PktapHeader.AttributionCache()
-        var inboundSocketFallback = InboundSocketFallbackState()
+        var inboundSocketFallback = PktapHeader.InboundSocketResolver()
         defer {
             releaseInnerFilterCache(&innerFilterCache)
         }

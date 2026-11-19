@@ -912,7 +912,7 @@ extension MainContentCoordinator {
         var built = snapshot.sessions
         var nextProcessesToApply: [UUID: String]?
         var nextProvenancesToApply: [UUID: ProcessProvenance]?
-        if !isHistoryDemoMode {
+        if !isHistoryDemoMode, !isViewingSavedCapture {
             let seededProcessesFromStaged = stagedAttributedProcesses?.generation == expectedGeneration
             let seededProvenancesFromStaged = stagedAttributedProvenances?.generation == expectedGeneration
             var nextProcesses = seededProcessesFromStaged
