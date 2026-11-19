@@ -800,6 +800,7 @@ nonisolated enum PktapHeader {
         init(
             nowNanoseconds: @escaping () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
             ttlNanoseconds: UInt64 = defaultTTLNanoseconds,
+            reverifyIntervalNanoseconds: UInt64 = defaultReverifyIntervalNanoseconds,
             maxEntries: Int = defaultMaxEntries,
             executablePathLookup: @escaping (Int32) -> String? = PktapHeader.executablePath(forPID:),
             bsdSnapshotLookup: @escaping (Int32) -> BSDProcessSnapshot? = PktapHeader.inspectBSDProcessSnapshot(pid:),
@@ -809,6 +810,7 @@ nonisolated enum PktapHeader {
         ) {
             self.nowNanoseconds = nowNanoseconds
             self.ttlNanoseconds = ttlNanoseconds
+            self.reverifyIntervalNanoseconds = reverifyIntervalNanoseconds
             self.maxEntries = max(1, maxEntries)
             self.executablePathLookup = executablePathLookup
             self.bsdSnapshotLookup = bsdSnapshotLookup
@@ -825,9 +827,11 @@ nonisolated enum PktapHeader {
         }
 
         static let defaultTTLNanoseconds: UInt64 = 10_000_000_000
+        static let defaultReverifyIntervalNanoseconds: UInt64 = 250_000_000
         static let defaultMaxEntries = 2_048
 
         let ttlNanoseconds: UInt64
+        let reverifyIntervalNanoseconds: UInt64
         let maxEntries: Int
 
         var pairCacheCount: Int { pidPairCache.count }
@@ -849,8 +853,16 @@ nonisolated enum PktapHeader {
             )
 
             if hasLiveCandidatePID, let cached = pidPairCache[pair] {
-                if isPairEntryValid(cached, for: pair, now: now) {
-                    return cached.result
+                if now &- cached.capturedAtNanoseconds < ttlNanoseconds {
+                    if reverifyIntervalNanoseconds > 0,
+                       now &- cached.lastVerifiedAtNanoseconds < reverifyIntervalNanoseconds
+                    {
+                        return cached.result
+                    }
+                    if matchesLeafStartTimes(cached, for: pair) {
+                        pidPairCache[pair]?.lastVerifiedAtNanoseconds = now
+                        return cached.result
+                    }
                 }
                 pidPairCache.removeValue(forKey: pair)
             }
@@ -924,6 +936,7 @@ nonisolated enum PktapHeader {
                 pidPairCache[pair] = CachedAttributionEntry(
                     result: result,
                     capturedAtNanoseconds: now,
+                    lastVerifiedAtNanoseconds: now,
                     pidStartTime: directMeta?.startTime,
                     effectivePIDStartTime: effectiveMeta?.startTime
                 )
@@ -948,6 +961,7 @@ nonisolated enum PktapHeader {
         private struct CachedAttributionEntry {
             let result: Result
             let capturedAtNanoseconds: UInt64
+            var lastVerifiedAtNanoseconds: UInt64
             let pidStartTime: ProcessStartTime?
             let effectivePIDStartTime: ProcessStartTime?
         }
@@ -959,6 +973,7 @@ nonisolated enum PktapHeader {
             let outerMainExecutable: String?
             var bsdSnapshot: BSDProcessSnapshot?
             let capturedAtNanoseconds: UInt64
+            var lastVerifiedAtNanoseconds: UInt64
 
             var startTime: ProcessStartTime? {
                 bsdSnapshot.map { ProcessStartTime(sec: $0.startTimeSec, usec: $0.startTimeUsec) }
@@ -975,16 +990,7 @@ nonisolated enum PktapHeader {
         private var pidPairCache: [PIDPair: CachedAttributionEntry] = [:]
         private var pidMetadataCache: [Int32: CachedPIDMetadata] = [:]
 
-        private func isPairEntryValid(
-            _ entry: CachedAttributionEntry,
-            for pair: PIDPair,
-            now: UInt64
-        )
-            -> Bool
-        {
-            guard now &- entry.capturedAtNanoseconds < ttlNanoseconds else {
-                return false
-            }
+        private func matchesLeafStartTimes(_ entry: CachedAttributionEntry, for pair: PIDPair) -> Bool {
             if pair.effectivePID > 0,
                !matchesLeafStartTime(pid: pair.effectivePID, recorded: entry.effectivePIDStartTime)
             {
@@ -1029,6 +1035,12 @@ nonisolated enum PktapHeader {
 
             if let existing = pidMetadataCache[pid] {
                 if now &- existing.capturedAtNanoseconds < ttlNanoseconds {
+                    if reverifyIntervalNanoseconds > 0,
+                       now &- existing.lastVerifiedAtNanoseconds < reverifyIntervalNanoseconds
+                    {
+                        return existing
+                    }
+
                     let liveSnapshot = bsdSnapshotLookup(pid)
                     probedSnapshot = liveSnapshot
                     hasProbedSnapshot = true
@@ -1038,17 +1050,18 @@ nonisolated enum PktapHeader {
                            ProcessStartTime(sec: liveSnapshot.startTimeSec, usec: liveSnapshot.startTimeUsec)
                                == existingStartTime
                         {
-                            if liveSnapshot == existing.bsdSnapshot {
-                                return existing
-                            }
                             var updated = existing
                             updated.bsdSnapshot = liveSnapshot
+                            updated.lastVerifiedAtNanoseconds = now
                             pidMetadataCache[pid] = updated
                             return updated
                         }
                         pidMetadataCache.removeValue(forKey: pid)
                     } else if liveSnapshot == nil {
-                        return existing
+                        var updated = existing
+                        updated.lastVerifiedAtNanoseconds = now
+                        pidMetadataCache[pid] = updated
+                        return updated
                     } else {
                         pidMetadataCache.removeValue(forKey: pid)
                     }
@@ -1076,7 +1089,8 @@ nonisolated enum PktapHeader {
                 bundleIdentifier: bundleIdentifier,
                 outerMainExecutable: outerMainExecutable,
                 bsdSnapshot: bsdSnapshot,
-                capturedAtNanoseconds: now
+                capturedAtNanoseconds: now,
+                lastVerifiedAtNanoseconds: now
             )
             if pidMetadataCache.count >= maxEntries {
                 pidMetadataCache.removeAll(keepingCapacity: true)

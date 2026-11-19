@@ -1336,6 +1336,351 @@ struct PktapTests {
     }
 
     @Test
+    func attributionCacheDebouncesSysctlReverificationDuringHighThroughputBurst() throws {
+        let inner = [UInt8](repeating: 0x55, count: 40)
+        let leafPID: Int32 = 8_500
+        let siblingPID: Int32 = 8_501
+        let shellPID: Int32 = 8_400
+        let terminalPID: Int32 = 8_300
+        let startClock: UInt64 = 10_000_000_000
+        var clock = startClock
+        var execLookupCount = 0
+        var bsdLookupCounts: [Int32: Int] = [:]
+
+        let itermExec = "/Applications/iTerm.app/Contents/MacOS/iTerm2"
+        let execByPID: [Int32: String] = [
+            leafPID: "/usr/bin/curl",
+            siblingPID: "/usr/bin/git",
+            shellPID: "/bin/zsh",
+            terminalPID: itermExec,
+        ]
+        let bsdByPID: [Int32: PktapHeader.BSDProcessSnapshot] = [
+            leafPID: PktapHeader.BSDProcessSnapshot(
+                ppid: shellPID, uid: 501, hasTTY: true, startTimeSec: 1_700_010_000, startTimeUsec: 100
+            ),
+            siblingPID: PktapHeader.BSDProcessSnapshot(
+                ppid: shellPID, uid: 501, hasTTY: true, startTimeSec: 1_700_010_001, startTimeUsec: 200
+            ),
+            shellPID: PktapHeader.BSDProcessSnapshot(
+                ppid: terminalPID, uid: 501, hasTTY: true, startTimeSec: 1_700_009_000, startTimeUsec: 300
+            ),
+            terminalPID: PktapHeader.BSDProcessSnapshot(
+                ppid: 1, uid: 501, hasTTY: false, startTimeSec: 1_700_000_100, startTimeUsec: 400
+            ),
+        ]
+
+        var cache = PktapHeader.AttributionCache(
+            nowNanoseconds: { clock },
+            ttlNanoseconds: 10_000_000_000,
+            executablePathLookup: { pid in
+                execLookupCount += 1
+                return execByPID[pid]
+            },
+            bsdSnapshotLookup: { pid in
+                bsdLookupCounts[pid, default: 0] += 1
+                return bsdByPID[pid]
+            },
+            displayNameFromPath: { path in
+                path == itermExec ? "iTerm2" : PktapHeader.displayName(fromExecutablePath: path)
+            },
+            bundleIdentifierFromPath: { path in
+                path == itermExec ? "com.googlecode.iterm2" : nil
+            },
+            outerMainExecutableFromAppPath: { appPath in
+                appPath == "/Applications/iTerm.app" ? "iTerm2" : nil
+            }
+        )
+        #expect(cache.reverifyIntervalNanoseconds == 250_000_000)
+
+        let curlPacket = makePktapPacket(
+            process: "curl",
+            pid: Int(leafPID),
+            epid: Int(leafPID),
+            effectiveProcess: "curl",
+            typeNext: PktapHeader.typeNextPacket,
+            interface: "en0",
+            innerDLT: 1,
+            frame: inner
+        )
+        let parsedCurl = try #require(PktapHeader.parse(curlPacket))
+
+        // 1. Burst of 10,000 packets spanning 199.98ms (< 250ms): each unique PID in the
+        //    3-hop chain is probed via `bsdSnapshotLookup` at most once (NOT 10,000 times).
+        let expectedFirst = cache.resolve(parsed: parsedCurl)
+        #expect(expectedFirst.processName == "curl")
+        #expect(expectedFirst.provenance?.parentProcessName == "iTerm2")
+        #expect(expectedFirst.provenance?.viaShellName == "zsh")
+        #expect(expectedFirst.provenance?.callerKind == .terminal)
+        for _ in 1 ..< 10_000 {
+            clock += 20_000
+            let hit = cache.resolve(parsed: parsedCurl)
+            #expect(hit == expectedFirst)
+        }
+        #expect(clock - startClock < 250_000_000)
+        #expect(execLookupCount == 3)
+        #expect(bsdLookupCounts[leafPID] == 1)
+        #expect(bsdLookupCounts[shellPID] == 1)
+        #expect(bsdLookupCounts[terminalPID] == 1)
+        #expect(bsdLookupCounts.values.reduce(0, +) == 3)
+
+        // 2. Sibling child spawned under the same ancestors within `< 250ms` reuses cached
+        //    ancestor metadata without extra `bsdSnapshotLookup` calls on `shellPID`/`terminalPID`.
+        let gitPacket = makePktapPacket(
+            process: "git",
+            pid: Int(siblingPID),
+            epid: Int(siblingPID),
+            effectiveProcess: "git",
+            typeNext: PktapHeader.typeNextPacket,
+            interface: "en0",
+            innerDLT: 1,
+            frame: inner
+        )
+        let parsedGit = try #require(PktapHeader.parse(gitPacket))
+        let gitResult = cache.resolve(parsed: parsedGit)
+        #expect(gitResult.processName == "git")
+        #expect(gitResult.provenance?.parentProcessName == "iTerm2")
+        #expect(gitResult.provenance?.viaShellName == "zsh")
+        #expect(bsdLookupCounts[siblingPID] == 1)
+        #expect(bsdLookupCounts[shellPID] == 1)
+        #expect(bsdLookupCounts[terminalPID] == 1)
+
+        // 3. Advancing clock to exactly `+250ms` triggers exactly 1 leaf re-verification probe
+        //    and resets the 250ms debounce window for the next 10,000-packet burst.
+        clock = startClock + 250_000_000
+        let reverified = cache.resolve(parsed: parsedCurl)
+        #expect(reverified == expectedFirst)
+        #expect(bsdLookupCounts[leafPID] == 2)
+        #expect(execLookupCount == 4)
+
+        let secondBurstStart = clock
+        for _ in 0 ..< 10_000 {
+            clock += 20_000
+            let hit = cache.resolve(parsed: parsedCurl)
+            #expect(hit == expectedFirst)
+        }
+        #expect(clock - secondBurstStart < 250_000_000)
+        #expect(bsdLookupCounts[leafPID] == 2)
+        #expect(bsdLookupCounts[shellPID] == 1)
+        #expect(bsdLookupCounts[terminalPID] == 1)
+    }
+
+    @Test
+    func attributionCacheInvalidatesReusedPIDAtReverifyBoundaryWithinTTL() throws {
+        let inner = [UInt8](repeating: 0x66, count: 40)
+        let leafPID: Int32 = 8_600
+        let itermPID: Int32 = 8_601
+        let idePID: Int32 = 8_602
+        var clock: UInt64 = 15_000_000_000
+        var bsdLookupCount = 0
+
+        let itermExec = "/Applications/iTerm.app/Contents/MacOS/iTerm2"
+        let ideExec = "/Applications/Antigravity.app/Contents/MacOS/Antigravity"
+
+        var execByPID: [Int32: String] = [
+            leafPID: "/usr/bin/curl",
+            itermPID: itermExec,
+            idePID: ideExec,
+        ]
+        var bsdByPID: [Int32: PktapHeader.BSDProcessSnapshot] = [
+            leafPID: PktapHeader.BSDProcessSnapshot(
+                ppid: itermPID, uid: 501, hasTTY: true, startTimeSec: 1_700_020_000, startTimeUsec: 100
+            ),
+            itermPID: PktapHeader.BSDProcessSnapshot(
+                ppid: 1, uid: 501, hasTTY: false, startTimeSec: 1_700_000_100, startTimeUsec: 10
+            ),
+            idePID: PktapHeader.BSDProcessSnapshot(
+                ppid: 1, uid: 501, hasTTY: false, startTimeSec: 1_700_000_200, startTimeUsec: 20
+            ),
+        ]
+
+        var cache = PktapHeader.AttributionCache(
+            nowNanoseconds: { clock },
+            ttlNanoseconds: 10_000_000_000,
+            executablePathLookup: { execByPID[$0] },
+            bsdSnapshotLookup: { pid in
+                bsdLookupCount += 1
+                return bsdByPID[pid]
+            },
+            displayNameFromPath: { path in
+                switch path {
+                case itermExec: "iTerm2"
+                case ideExec: "Antigravity"
+                default: PktapHeader.displayName(fromExecutablePath: path)
+                }
+            },
+            bundleIdentifierFromPath: { path in
+                switch path {
+                case itermExec: "com.googlecode.iterm2"
+                case ideExec: "com.amunx.antigravity"
+                default: nil
+                }
+            },
+            outerMainExecutableFromAppPath: { appPath in
+                switch appPath {
+                case "/Applications/iTerm.app": "iTerm2"
+                case "/Applications/Antigravity.app": "Antigravity"
+                default: nil
+                }
+            }
+        )
+
+        let curlPacket = makePktapPacket(
+            process: "curl",
+            pid: Int(leafPID),
+            epid: Int(leafPID),
+            effectiveProcess: "curl",
+            typeNext: PktapHeader.typeNextPacket,
+            interface: "en0",
+            innerDLT: 1,
+            frame: inner
+        )
+        let parsedCurl = try #require(PktapHeader.parse(curlPacket))
+
+        let initial = cache.resolve(parsed: parsedCurl)
+        #expect(initial.processName == "curl")
+        #expect(initial.provenance?.executablePath == "/usr/bin/curl")
+        #expect(initial.provenance?.callerKind == .terminal)
+        #expect(initial.provenance?.parentProcessName == "iTerm2")
+        #expect(bsdLookupCount == 2)
+
+        // Advance by +300ms (>= 250ms debounce window, well within 10s TTL) and simulate
+        // PID reuse with a different start time and parent while keeping the same comm.
+        clock += 300_000_000
+        execByPID[leafPID] = "/opt/homebrew/bin/curl"
+        bsdByPID[leafPID] = PktapHeader.BSDProcessSnapshot(
+            ppid: idePID, uid: 501, hasTTY: false, startTimeSec: 1_700_020_001, startTimeUsec: 555
+        )
+
+        let recycled = cache.resolve(parsed: parsedCurl)
+        #expect(recycled.processName == "curl")
+        #expect(recycled.provenance?.executablePath == "/opt/homebrew/bin/curl")
+        #expect(recycled.provenance?.callerKind == .app)
+        #expect(recycled.provenance?.hostAppName == "Antigravity")
+        #expect(recycled.provenance?.hasControllingTTY == false)
+
+        // Setting `reverifyIntervalNanoseconds: 0` probes on every hit, catching same-tick reuse.
+        var unthrottled = PktapHeader.AttributionCache(
+            nowNanoseconds: { clock },
+            ttlNanoseconds: 10_000_000_000,
+            reverifyIntervalNanoseconds: 0,
+            executablePathLookup: { execByPID[$0] },
+            bsdSnapshotLookup: { bsdByPID[$0] },
+            displayNameFromPath: { path in
+                switch path {
+                case itermExec: "iTerm2"
+                case ideExec: "Antigravity"
+                default: PktapHeader.displayName(fromExecutablePath: path)
+                }
+            },
+            bundleIdentifierFromPath: { _ in nil },
+            outerMainExecutableFromAppPath: { _ in nil }
+        )
+        let beforeReuse = unthrottled.resolve(parsed: parsedCurl)
+        #expect(beforeReuse.provenance?.executablePath == "/opt/homebrew/bin/curl")
+        execByPID[leafPID] = "/usr/local/bin/curl"
+        bsdByPID[leafPID] = PktapHeader.BSDProcessSnapshot(
+            ppid: itermPID, uid: 501, hasTTY: true, startTimeSec: 1_700_020_002, startTimeUsec: 777
+        )
+        let afterImmediateReuse = unthrottled.resolve(parsed: parsedCurl)
+        #expect(afterImmediateReuse.provenance?.executablePath == "/usr/local/bin/curl")
+        #expect(afterImmediateReuse.provenance?.parentProcessName == "iTerm2")
+    }
+
+    @Test
+    func attributionCacheInvalidatesSamePIDExecveWithinDebounceWindow() throws {
+        let inner = [UInt8](repeating: 0x77, count: 40)
+        let pid: Int32 = 8_700
+        let terminalPID: Int32 = 8_701
+        let sameStartSec: Int64 = 1_700_030_000
+        let sameStartUsec: Int32 = 12_345
+        var clock: UInt64 = 20_000_000_000
+        var bsdLookupCounts: [Int32: Int] = [:]
+
+        let itermExec = "/Applications/iTerm.app/Contents/MacOS/iTerm2"
+        var execByPID: [Int32: String] = [
+            pid: "/bin/zsh",
+            terminalPID: itermExec,
+        ]
+        let bsdByPID: [Int32: PktapHeader.BSDProcessSnapshot] = [
+            pid: PktapHeader.BSDProcessSnapshot(
+                ppid: terminalPID,
+                uid: 501,
+                hasTTY: true,
+                startTimeSec: sameStartSec,
+                startTimeUsec: sameStartUsec
+            ),
+            terminalPID: PktapHeader.BSDProcessSnapshot(
+                ppid: 1,
+                uid: 501,
+                hasTTY: false,
+                startTimeSec: 1_700_000_100,
+                startTimeUsec: 10
+            ),
+        ]
+
+        var cache = PktapHeader.AttributionCache(
+            nowNanoseconds: { clock },
+            ttlNanoseconds: 10_000_000_000,
+            executablePathLookup: { execByPID[$0] },
+            bsdSnapshotLookup: { targetPID in
+                bsdLookupCounts[targetPID, default: 0] += 1
+                return bsdByPID[targetPID]
+            },
+            displayNameFromPath: { path in
+                path == itermExec ? "iTerm2" : PktapHeader.displayName(fromExecutablePath: path)
+            },
+            bundleIdentifierFromPath: { path in
+                path == itermExec ? "com.googlecode.iterm2" : nil
+            },
+            outerMainExecutableFromAppPath: { _ in "iTerm2" }
+        )
+
+        let zshPacket = makePktapPacket(
+            process: "zsh",
+            pid: Int(pid),
+            epid: Int(pid),
+            effectiveProcess: "zsh",
+            typeNext: PktapHeader.typeNextPacket,
+            interface: "en0",
+            innerDLT: 1,
+            frame: inner
+        )
+        let parsedZsh = try #require(PktapHeader.parse(zshPacket))
+        let zshResult = cache.resolve(parsed: parsedZsh)
+        #expect(zshResult.processName == "zsh")
+        #expect(zshResult.provenance?.executablePath == "/bin/zsh")
+        #expect(zshResult.provenance?.parentProcessName == "iTerm2")
+        #expect(bsdLookupCounts[pid] == 1)
+        #expect(bsdLookupCounts[terminalPID] == 1)
+
+        // Only +1ms later (well inside the 250ms debounce window), `zsh` calls `execve` to `curl`.
+        // Because `PIDPair.process` changed, `pidPairCache` misses and leaf `pid` is evicted
+        // immediately while ancestor `terminalPID` stays debounced.
+        clock += 1_000_000
+        execByPID[pid] = "/usr/bin/curl"
+
+        let curlPacket = makePktapPacket(
+            process: "curl",
+            pid: Int(pid),
+            epid: Int(pid),
+            effectiveProcess: "curl",
+            typeNext: PktapHeader.typeNextPacket,
+            interface: "en0",
+            innerDLT: 1,
+            frame: inner
+        )
+        let parsedCurl = try #require(PktapHeader.parse(curlPacket))
+        let curlResult = cache.resolve(parsed: parsedCurl)
+        #expect(curlResult.processName == "curl")
+        #expect(curlResult.provenance?.executablePath == "/usr/bin/curl")
+        #expect(curlResult.provenance?.originProcessName == "curl")
+        #expect(curlResult.provenance?.callerKind == .terminal)
+        #expect(curlResult.provenance?.parentProcessName == "iTerm2")
+        #expect(bsdLookupCounts[pid] == 2)
+        #expect(bsdLookupCounts[terminalPID] == 1)
+    }
+
+    @Test
     func parsesInboundTargetsAcrossLinkTypesAndResolvesLiveSocketPortMap() throws {
         // 1. Ethernet IPv4 TCP (`93.184.216.34:443 -> 192.168.1.10:54321`)
         let ethIPv4TCP = makeEthernetIPv4Packet(
