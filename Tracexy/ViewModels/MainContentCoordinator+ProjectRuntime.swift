@@ -160,6 +160,7 @@ extension MainContentCoordinator {
     /// The bucket keeps the *actual* store/spool/workspace instances, so nothing is
     /// re-derived from portable configuration when the Project comes back.
     func parkActiveProjectRuntime() {
+        resetLiveScrollCoalescing()
         let runtime = activeRuntime
         runtime.sessions = sessions
         runtime.investigationSnapshot = investigationSnapshot
@@ -220,6 +221,7 @@ extension MainContentCoordinator {
 
     /// Make `runtime` the coordinator's live state.
     func adoptProjectRuntime(_ runtime: ProjectRuntimeState) {
+        resetLiveScrollCoalescing()
         activeRuntime = runtime
         workspaces = runtime.workspaces
         layoutPreferences = runtime.layoutPreferences

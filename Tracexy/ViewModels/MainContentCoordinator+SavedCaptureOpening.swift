@@ -688,6 +688,7 @@ extension MainContentCoordinator {
         // Retire late live publication only at the atomic adoption boundary. If
         // loading fails, the fully drained live snapshot remains eligible instead
         // of losing its final helper batch merely because an open was attempted.
+        resetLiveScrollCoalescing()
         startGeneration &+= 1
         let frameReload: (shouldReload: Bool, firstOrdinal: Int)? = if request.preservesCaptureLocalState {
             retireCaptureLocalToolsForTimeShift(
@@ -906,28 +907,53 @@ extension MainContentCoordinator {
         {
             return Task {}
         }
+        livePublicationSequence &+= 1
+        let publicationSeq = livePublicationSequence
         var built = snapshot.sessions
+        var nextProcessesToApply: [UUID: String]?
+        var nextProvenancesToApply: [UUID: ProcessProvenance]?
         if !isHistoryDemoMode {
+            let seededProcessesFromStaged = stagedAttributedProcesses?.generation == expectedGeneration
+            let seededProvenancesFromStaged = stagedAttributedProvenances?.generation == expectedGeneration
+            var nextProcesses = seededProcessesFromStaged
+                ? (stagedAttributedProcesses?.map ?? attributedProcessesBySessionID)
+                : attributedProcessesBySessionID
+            var nextProvenances = seededProvenancesFromStaged
+                ? (stagedAttributedProvenances?.map ?? attributedProvenancesBySessionID)
+                : attributedProvenancesBySessionID
+            var didChangeProcesses = false
+            var didChangeProvenances = false
+
             for index in built.indices {
                 let sessionID = built[index].id
                 if let name = built[index].processName, !name.isEmpty {
-                    if let previousName = attributedProcessesBySessionID[sessionID],
+                    if let previousName = nextProcesses[sessionID],
                        previousName != name,
-                       built[index].processProvenance == nil
+                       built[index].processProvenance == nil,
+                       nextProvenances.removeValue(forKey: sessionID) != nil
                     {
-                        attributedProvenancesBySessionID.removeValue(forKey: sessionID)
+                        didChangeProvenances = true
                     }
-                    attributedProcessesBySessionID[sessionID] = name
+                    if nextProcesses[sessionID] != name {
+                        nextProcesses[sessionID] = name
+                        didChangeProcesses = true
+                    }
                     if let provenance = built[index].processProvenance {
-                        attributedProvenancesBySessionID[sessionID] = provenance
-                    } else if let cachedProvenance = attributedProvenancesBySessionID[sessionID] {
+                        if nextProvenances[sessionID] != provenance {
+                            nextProvenances[sessionID] = provenance
+                            didChangeProvenances = true
+                        }
+                    } else if let cachedProvenance = nextProvenances[sessionID] {
                         built[index].processProvenance = cachedProvenance
                     }
-                } else if let cached = attributedProcessesBySessionID[sessionID] {
+                } else if let cached = nextProcesses[sessionID] {
                     built[index].processName = cached
                     if let provenance = built[index].processProvenance {
-                        attributedProvenancesBySessionID[sessionID] = provenance
-                    } else if let cachedProvenance = attributedProvenancesBySessionID[sessionID] {
+                        if nextProvenances[sessionID] != provenance {
+                            nextProvenances[sessionID] = provenance
+                            didChangeProvenances = true
+                        }
+                    } else if let cachedProvenance = nextProvenances[sessionID] {
                         built[index].processProvenance = cachedProvenance
                     }
                 } else if let hit = ProcessResolver.shared.attribution(
@@ -935,13 +961,38 @@ extension MainContentCoordinator {
                 ), !hit.appName.isEmpty {
                     built[index].processName = hit.appName
                     built[index].processProvenance = hit.provenance
-                    attributedProcessesBySessionID[sessionID] = hit.appName
-                    attributedProvenancesBySessionID[sessionID] = hit.provenance
+                    if nextProcesses[sessionID] != hit.appName {
+                        nextProcesses[sessionID] = hit.appName
+                        didChangeProcesses = true
+                    }
+                    if nextProvenances[sessionID] != hit.provenance {
+                        nextProvenances[sessionID] = hit.provenance
+                        didChangeProvenances = true
+                    }
                 } else if let provenance = built[index].processProvenance {
-                    attributedProvenancesBySessionID[sessionID] = provenance
-                } else if let cachedProvenance = attributedProvenancesBySessionID[sessionID] {
+                    if nextProvenances[sessionID] != provenance {
+                        nextProvenances[sessionID] = provenance
+                        didChangeProvenances = true
+                    }
+                } else if let cachedProvenance = nextProvenances[sessionID] {
                     built[index].processProvenance = cachedProvenance
                 }
+            }
+            if didChangeProcesses || seededProcessesFromStaged {
+                stagedAttributedProcesses = (
+                    generation: expectedGeneration,
+                    sequence: publicationSeq,
+                    map: nextProcesses
+                )
+                nextProcessesToApply = nextProcesses
+            }
+            if didChangeProvenances || seededProvenancesFromStaged {
+                stagedAttributedProvenances = (
+                    generation: expectedGeneration,
+                    sequence: publicationSeq,
+                    map: nextProvenances
+                )
+                nextProvenancesToApply = nextProvenances
             }
             if built.contains(where: { ($0.processName ?? "").isEmpty }) {
                 ProcessResolver.shared.refresh()
@@ -949,6 +1000,36 @@ extension MainContentCoordinator {
         }
         let applied = built
         let publishedSnapshot = snapshot.replacingSessions(with: applied)
+        let shouldPrecomputeActivitiesOffMain =
+            expectedCaptureState && applied.count > Self.offMainCorrelationSessionThreshold
+        let removedSnapshot = shouldPrecomputeActivitiesOffMain ? removedSessionIDs : []
+
+        if shouldPrecomputeActivitiesOffMain {
+            return Task { @MainActor in
+                let precomputed = await Task.detached(priority: .userInitiated) {
+                    Self.computeActivities(from: applied, removedSnapshot: removedSnapshot)
+                }.value
+                guard self.startGeneration == expectedGeneration,
+                      self.isCapturing == expectedCaptureState,
+                      publicationSeq >= self.lastAdoptedLivePublicationSequence else
+                {
+                    return
+                }
+                self.deliverOrDeferLiveDetailedPublication(
+                    applied: applied,
+                    publishedSnapshot: publishedSnapshot,
+                    expectedGeneration: expectedGeneration,
+                    isCapturing: true,
+                    stoppedSourceHasFrames: false,
+                    terminalHistoryCompleteness: terminalHistoryCompleteness,
+                    precomputedActivities: precomputed,
+                    nextProcesses: nextProcessesToApply,
+                    nextProvenances: nextProvenancesToApply,
+                    publicationSequence: publicationSeq
+                )
+            }
+        }
+
         return Task { @MainActor in
             let stoppedSourceHasFrames = expectedCaptureState ? false : await self.liveCaptureSpool.hasFrames()
             guard self.startGeneration == expectedGeneration,
@@ -956,23 +1037,204 @@ extension MainContentCoordinator {
             {
                 return
             }
-            let previousIDs = Set(self.sessions.map(\.id))
-            self.sessions = applied
-            self.adoptInvestigation(publishedSnapshot)
-            self.stoppedCaptureReadyGeneration = stoppedSourceHasFrames ? expectedGeneration : nil
-            let acceptedSessionIDs = Set(applied.lazy.map(\.id).filter { !previousIDs.contains($0) })
-            self.followLatestVisibleSession(acceptedSessionIDs: acceptedSessionIDs)
-            // The single live History write hook: only after the accepted immutable
-            // terminal (`isCapturing: false`) adoption, never on coalesced live
-            // publications. Duplicate/stale terminal callbacks are suppressed inside.
-            if !expectedCaptureState {
-                self.persistTerminalLiveHistory(
-                    sessions: applied,
-                    stoppedGeneration: expectedGeneration,
-                    completeness: terminalHistoryCompleteness ?? .incomplete
-                )
-                self.finishLiveFileSet()
+            if expectedCaptureState, publicationSeq < self.lastAdoptedLivePublicationSequence {
+                return
             }
+            self.deliverOrDeferLiveDetailedPublication(
+                applied: applied,
+                publishedSnapshot: publishedSnapshot,
+                expectedGeneration: expectedGeneration,
+                isCapturing: expectedCaptureState,
+                stoppedSourceHasFrames: stoppedSourceHasFrames,
+                terminalHistoryCompleteness: terminalHistoryCompleteness,
+                precomputedActivities: nil,
+                nextProcesses: nextProcessesToApply,
+                nextProvenances: nextProvenancesToApply,
+                publicationSequence: publicationSeq
+            )
+        }
+    }
+
+    func flushDeferredLiveScrollPublicationIfValid() {
+        guard let deferred = deferredLiveScrollPublication else {
+            return
+        }
+        deferredLiveScrollPublication = nil
+        guard startGeneration == deferred.expectedGeneration,
+              isCapturing,
+              deferred.publicationSequence >= lastAdoptedLivePublicationSequence else
+        {
+            return
+        }
+        lastAdoptedLivePublicationSequence = max(
+            lastAdoptedLivePublicationSequence,
+            deferred.publicationSequence
+        )
+        adoptLiveDetailedPublication(
+            applied: deferred.applied,
+            publishedSnapshot: deferred.publishedSnapshot,
+            expectedGeneration: deferred.expectedGeneration,
+            isCapturing: true,
+            stoppedSourceHasFrames: false,
+            terminalHistoryCompleteness: nil,
+            precomputedActivities: deferred.precomputedActivities,
+            nextProcesses: deferred.nextProcesses,
+            nextProvenances: deferred.nextProvenances,
+            publicationSequence: deferred.publicationSequence
+        )
+    }
+
+    func deliverOrDeferLiveDetailedPublication(
+        applied: [SessionSummary],
+        publishedSnapshot: InvestigationSnapshot,
+        expectedGeneration: Int,
+        isCapturing expectedCaptureState: Bool,
+        stoppedSourceHasFrames: Bool,
+        terminalHistoryCompleteness: HistoryCompleteness?,
+        precomputedActivities: PrecomputedActivities?,
+        nextProcesses: [UUID: String]?,
+        nextProvenances: [UUID: ProcessProvenance]?,
+        publicationSequence: UInt64
+    ) {
+        if !expectedCaptureState {
+            // Terminal stop/drain publication MUST NEVER be deferred and discards
+            // any stale buffered live-scroll publication.
+            resetLiveScrollCoalescing()
+            adoptLiveDetailedPublication(
+                applied: applied,
+                publishedSnapshot: publishedSnapshot,
+                expectedGeneration: expectedGeneration,
+                isCapturing: false,
+                stoppedSourceHasFrames: stoppedSourceHasFrames,
+                terminalHistoryCompleteness: terminalHistoryCompleteness,
+                precomputedActivities: precomputedActivities,
+                nextProcesses: nextProcesses,
+                nextProvenances: nextProvenances,
+                publicationSequence: publicationSequence
+            )
+            return
+        }
+
+        guard publicationSequence >= lastAdoptedLivePublicationSequence else {
+            return
+        }
+
+        if isUserLiveScrolling {
+            let startedAt = liveScrollStartedAt ?? ContinuousClock.now
+            liveScrollStartedAt = startedAt
+            let elapsed = ContinuousClock.now - startedAt
+            if elapsed < maxLiveScrollDeferralDuration {
+                if let existing = deferredLiveScrollPublication,
+                   existing.expectedGeneration == expectedGeneration,
+                   publicationSequence < existing.publicationSequence
+                {
+                    return
+                }
+                deferredLiveScrollPublication = DeferredLiveScrollPublication(
+                    expectedGeneration: expectedGeneration,
+                    publicationSequence: publicationSequence,
+                    applied: applied,
+                    publishedSnapshot: publishedSnapshot,
+                    precomputedActivities: precomputedActivities,
+                    nextProcesses: nextProcesses,
+                    nextProvenances: nextProvenances
+                )
+                return
+            }
+            // Safety valve: continuous scroll exceeded `maxLiveScrollDeferralDuration`.
+            // Flush immediately with the newest snapshot (preferring an already-stashed
+            // higher sequence if an older detached task finished out of order) and
+            // advance the deferral window.
+            let existing = deferredLiveScrollPublication
+            deferredLiveScrollPublication = nil
+            liveScrollStartedAt = ContinuousClock.now
+            if let existing,
+               existing.expectedGeneration == expectedGeneration,
+               existing.publicationSequence > publicationSequence
+            {
+                lastAdoptedLivePublicationSequence = max(
+                    lastAdoptedLivePublicationSequence,
+                    existing.publicationSequence
+                )
+                adoptLiveDetailedPublication(
+                    applied: existing.applied,
+                    publishedSnapshot: existing.publishedSnapshot,
+                    expectedGeneration: existing.expectedGeneration,
+                    isCapturing: true,
+                    stoppedSourceHasFrames: false,
+                    terminalHistoryCompleteness: nil,
+                    precomputedActivities: existing.precomputedActivities,
+                    nextProcesses: existing.nextProcesses,
+                    nextProvenances: existing.nextProvenances,
+                    publicationSequence: existing.publicationSequence
+                )
+                return
+            }
+        }
+
+        lastAdoptedLivePublicationSequence = max(lastAdoptedLivePublicationSequence, publicationSequence)
+        adoptLiveDetailedPublication(
+            applied: applied,
+            publishedSnapshot: publishedSnapshot,
+            expectedGeneration: expectedGeneration,
+            isCapturing: true,
+            stoppedSourceHasFrames: false,
+            terminalHistoryCompleteness: terminalHistoryCompleteness,
+            precomputedActivities: precomputedActivities,
+            nextProcesses: nextProcesses,
+            nextProvenances: nextProvenances,
+            publicationSequence: publicationSequence
+        )
+    }
+
+    private func adoptLiveDetailedPublication(
+        applied: [SessionSummary],
+        publishedSnapshot: InvestigationSnapshot,
+        expectedGeneration: Int,
+        isCapturing expectedCaptureState: Bool,
+        stoppedSourceHasFrames: Bool,
+        terminalHistoryCompleteness: HistoryCompleteness?,
+        precomputedActivities: PrecomputedActivities?,
+        nextProcesses: [UUID: String]?,
+        nextProvenances: [UUID: ProcessProvenance]?,
+        publicationSequence: UInt64
+    ) {
+        if let nextProcesses, nextProcesses != attributedProcessesBySessionID {
+            attributedProcessesBySessionID = nextProcesses
+        }
+        if let nextProvenances, nextProvenances != attributedProvenancesBySessionID {
+            attributedProvenancesBySessionID = nextProvenances
+        }
+        if let staged = stagedAttributedProcesses,
+           staged.generation == expectedGeneration,
+           staged.sequence <= publicationSequence
+        {
+            stagedAttributedProcesses = nil
+        }
+        if let staged = stagedAttributedProvenances,
+           staged.generation == expectedGeneration,
+           staged.sequence <= publicationSequence
+        {
+            stagedAttributedProvenances = nil
+        }
+        let previousIDs = Set(sessions.map(\.id))
+        precomputedActivitiesForNextAssignment = precomputedActivities
+        sessions = applied
+        precomputedActivitiesForNextAssignment = nil
+        adoptInvestigation(publishedSnapshot)
+        stoppedCaptureReadyGeneration = stoppedSourceHasFrames ? expectedGeneration : nil
+        let acceptedSessionIDs = Set(applied.lazy.map(\.id).filter { !previousIDs.contains($0) })
+        followLatestVisibleSession(acceptedSessionIDs: acceptedSessionIDs)
+        // The single live History write hook: only after the accepted immutable
+        // terminal (`isCapturing: false`) adoption, never on coalesced live
+        // publications. Duplicate/stale terminal callbacks are suppressed inside.
+        if !expectedCaptureState {
+            persistTerminalLiveHistory(
+                sessions: applied,
+                stoppedGeneration: expectedGeneration,
+                completeness: terminalHistoryCompleteness ?? .incomplete
+            )
+            finishLiveFileSet()
         }
     }
 }

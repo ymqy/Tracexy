@@ -286,7 +286,14 @@ final class AddressNameBook {
         }
 
         for session in sessions {
-            if !session.dnsResolvedBindings.isEmpty {
+            let hasDNSBindings = !session.dnsResolvedBindings.isEmpty
+            let hasDNSQueryAnswers = !hasDNSBindings && session.dnsQuery != nil && !session.dnsAnswers.isEmpty
+            let rawSNI = session.sni
+            guard hasDNSBindings || hasDNSQueryAnswers || rawSNI != nil else {
+                continue
+            }
+
+            if hasDNSBindings {
                 for binding in session.dnsResolvedBindings {
                     if let parsed = DNSNameSanitizer.sanitizedUnicastIP(binding.ip),
                        let domain = DNSNameSanitizer.sanitizedHostname(binding.hostname)
@@ -294,7 +301,8 @@ final class AddressNameBook {
                         record(parsed, domain: domain)
                     }
                 }
-            } else if let rawQuery = session.dnsQuery,
+            } else if hasDNSQueryAnswers,
+                      let rawQuery = session.dnsQuery,
                       let query = DNSNameSanitizer.sanitizedHostname(rawQuery)
             {
                 for answer in session.dnsAnswers {
@@ -304,21 +312,34 @@ final class AddressNameBook {
                 }
             }
 
-            if let rawSNI = session.sni,
-               let sni = DNSNameSanitizer.sanitizedHostname(rawSNI)
-            {
+            if let rawSNI {
+                let maybeDestFake = Self.mayBeFakeIPEndpoint(
+                    session.destinationEndpointValue,
+                    fallback: session.destinationEndpoint
+                )
+                let maybeSrcFake = Self.mayBeFakeIPEndpoint(
+                    session.sourceEndpointValue,
+                    fallback: session.sourceEndpoint
+                )
+                guard maybeDestFake || maybeSrcFake else {
+                    continue
+                }
                 let destination = Self.parsedEndpoint(
                     session.destinationEndpointValue,
                     fallback: session.destinationEndpoint
                 )
-                let source = Self.parsedEndpoint(
-                    session.sourceEndpointValue,
-                    fallback: session.sourceEndpoint
-                )
                 if let destination, Self.isFakeIP(destination.ip) {
-                    record(destination.ip, domain: sni)
-                } else if let source, Self.isFakeIP(source.ip),
-                          Self.canTreatSourceAsFakeIPResponder(source: source, destination: destination)
+                    if let sni = DNSNameSanitizer.sanitizedHostname(rawSNI) {
+                        record(destination.ip, domain: sni)
+                    }
+                } else if maybeSrcFake,
+                          let source = Self.parsedEndpoint(
+                              session.sourceEndpointValue,
+                              fallback: session.sourceEndpoint
+                          ),
+                          Self.isFakeIP(source.ip),
+                          Self.canTreatSourceAsFakeIPResponder(source: source, destination: destination),
+                          let sni = DNSNameSanitizer.sanitizedHostname(rawSNI)
                 {
                     record(source.ip, domain: sni)
                 }
@@ -449,6 +470,59 @@ final class AddressNameBook {
         if let data = try? JSONEncoder().encode(entries) {
             defaults?.set(data, forKey: ProjectScopedSettingsKeys.learnedAddressNames)
         }
+    }
+
+    /// Fast UTF-8 prefix prefilter rejecting non-Fake-IP addresses (public IPv4/IPv6,
+    /// LAN `192.168.*`, `10.*`, `172.*`, `fe80::*`, `2001:*`, etc.) in ~2ns before
+    /// calling `IPAddressValue(parsing:)` or `DNSNameSanitizer.sanitizedHostname(_:)`.
+    /// Conservative: returns `true` for every string that ``isFakeIP(_:)`` can accept.
+    private static func mayBeFakeIPText(_ text: String) -> Bool {
+        let utf8 = text.utf8
+        guard var index = utf8.indices.first else {
+            return false
+        }
+        var first = utf8[index]
+        if first == 0x5B { // '[' for bracketed IPv6
+            index = utf8.index(after: index)
+            guard index < utf8.endIndex else {
+                return false
+            }
+            first = utf8[index]
+        }
+        if first <= 0x20 {
+            return true
+        }
+        // IPv4 Fake-IP pools: 198.18.0.0/15 ("198.") and 100.64.0.0/10 ("100.")
+        if first == 0x31 { // '1'
+            let i1 = utf8.index(after: index)
+            guard i1 < utf8.endIndex else { return false }
+            let b1 = utf8[i1]
+            let i2 = utf8.index(after: i1)
+            guard i2 < utf8.endIndex else { return false }
+            let b2 = utf8[i2]
+            let i3 = utf8.index(after: i2)
+            guard i3 < utf8.endIndex else { return false }
+            let b3 = utf8[i3]
+            if b3 == 0x2E { // '.'
+                return (b1 == 0x39 && b2 == 0x38) || (b1 == 0x30 && b2 == 0x30)
+            }
+            return false
+        }
+        // IPv6 Fake-IP pools: fc00::/18 ("fc"/"FC") and fdfe:dcba:9876::/48 ("fd"/"FD")
+        if first == 0x66 || first == 0x46 { // 'f' or 'F'
+            let i1 = utf8.index(after: index)
+            guard i1 < utf8.endIndex else { return false }
+            let b1 = utf8[i1]
+            return b1 == 0x63 || b1 == 0x43 || b1 == 0x64 || b1 == 0x44
+        }
+        return false
+    }
+
+    private static func mayBeFakeIPEndpoint(_ endpoint: IPEndpoint?, fallback text: String) -> Bool {
+        if let endpoint, mayBeFakeIPText(endpoint.ip) {
+            return true
+        }
+        return mayBeFakeIPText(text)
     }
 
     /// Router / TUN Fake-IP pools where each virtual address maps 1-to-1 to a domain:

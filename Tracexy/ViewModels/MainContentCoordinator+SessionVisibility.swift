@@ -164,11 +164,20 @@ extension MainContentCoordinator {
     /// Overview protocol mix) reads this once per render instead of re-filtering
     /// the whole session list once per protocol on every live refresh.
     var visibleProtocolCounts: [ProtocolKind: Int] {
+        let workspace = activeWorkspace
+        let (key, canCache) = currentWorkspaceVisibilityCacheKey(for: workspace)
+        if canCache, let cached = visibleProtocolCountsCache, cached.key == key {
+            return cached.counts
+        }
+        let visible = visibleSessions(in: workspace, precomputedKey: key, canCache: canCache)
         var totals: [ProtocolKind: Int] = [:]
-        for session in visibleSessions {
+        for session in visible {
             for proto in Set(session.protocolStack) {
                 totals[proto, default: 0] += 1
             }
+        }
+        if canCache {
+            visibleProtocolCountsCache = (key: key, counts: totals)
         }
         return totals
     }
@@ -210,40 +219,138 @@ extension MainContentCoordinator {
         Self.categoryMatches(session, category: category, findingSessionIDs: findingSessionIDs)
     }
 
+    /// Builds the memoization key for `visibleSessions`, `visibleProtocolCounts`,
+    /// and `sessionRows` AFTER reading every tracked `@Observable` dependency so
+    /// SwiftUI views always register exact observation edges even on cache hits.
+    func currentWorkspaceVisibilityCacheKey(
+        for workspace: WorkspaceState
+    )
+        -> (key: WorkspaceVisibilityCacheKey, canCache: Bool)
+    {
+        // Touch tracked `@Observable` coordinator properties first so cache hits
+        // never drop SwiftUI invalidation subscriptions.
+        _ = sessions.count
+        _ = removedSessionIDs.count
+        let viewingSaved = isViewingSavedCapture
+        let currentMutedHosts = mutedHosts
+        let currentMutedProtocols = mutedProtocols
+
+        let protocolFilter = workspace.sidebarSelection.protocolFilter
+        let categories = workspace.categoryFilters
+        let searchActive = workspace.isSearchActive
+        let filterText = searchActive ? workspace.filterText : ""
+        let searchField = workspace.searchField
+        let hostFilter = workspace.hostFilter
+        let processFilter = workspace.processFilter
+        if processFilter != nil {
+            _ = attributedProvenancesBySessionID.isEmpty
+        }
+        let ipFilter = workspace.ipFilter
+        let aggregateDestinationFilter = workspace.aggregateDestinationFilter
+        let aggregateProtocolFilters = workspace.aggregateProtocolFilters
+        let aggregateRequiresFindings = workspace.aggregateRequiresFindings
+        let activeFilterRules = workspace.activeFilterRules
+        let hasAcceptedInvestigation = workspace.acceptedInvestigationDraft != nil
+        let investigationMatchedSessionIDs = hasAcceptedInvestigation
+            ? workspace.investigationMatchedSessionIDs
+            : []
+
+        let needsFindingMembership = aggregateRequiresFindings || categories.contains(.security)
+        let findingRevision: Int?
+        let canCache: Bool
+        if needsFindingMembership {
+            // Track `@Observable` evidence revision; bypass cache when an external
+            // `FindingContributing` plugin is installed because its findings can
+            // vary independently of `assistantEvidenceRevision`.
+            findingRevision = assistantEvidenceRevision
+            canCache = FindingContributors.installed == nil
+        } else {
+            findingRevision = nil
+            canCache = true
+        }
+
+        let filterKey = WorkspaceFilterKey(
+            protocolFilter: protocolFilter,
+            categoryFilters: categories,
+            isSearchActive: searchActive,
+            filterText: filterText,
+            searchField: searchField,
+            hostFilter: hostFilter,
+            processFilter: processFilter,
+            ipFilter: ipFilter,
+            aggregateDestinationFilter: aggregateDestinationFilter,
+            aggregateProtocolFilters: aggregateProtocolFilters,
+            aggregateRequiresFindings: aggregateRequiresFindings,
+            activeFilterRules: activeFilterRules,
+            hasAcceptedInvestigation: hasAcceptedInvestigation,
+            investigationMatchedSessionIDs: investigationMatchedSessionIDs
+        )
+        let key = WorkspaceVisibilityCacheKey(
+            processContextGeneration: processContextGeneration,
+            workspaceID: ObjectIdentifier(workspace),
+            isViewingSavedCapture: viewingSaved,
+            workspaceFilterKey: filterKey,
+            mutedHosts: currentMutedHosts,
+            mutedProtocols: currentMutedProtocols,
+            addressNamesRevision: addressNames.revision,
+            localIPsRevision: ProcessResolver.shared.localIPsRevision,
+            bundlePath: AppLanguage.currentLocalizedBundle().bundlePath,
+            findingRevision: findingRevision
+        )
+        return (key: key, canCache: canCache)
+    }
+
     /// Sessions visible in an arbitrary workspace. Live following uses this seam
     /// for inactive workspaces too, so a batch never applies the active tab's
     /// filters to another tab's selection.
     func visibleSessions(in workspace: WorkspaceState) -> [SessionSummary] {
-        let protocolFilter = workspace.sidebarSelection.protocolFilter
-        let categories = workspace.categoryFilters
-        let query = workspace.isSearchActive
-            ? workspace.filterText.trimmingCharacters(in: .whitespaces).lowercased()
+        let (key, canCache) = currentWorkspaceVisibilityCacheKey(for: workspace)
+        return visibleSessions(in: workspace, precomputedKey: key, canCache: canCache)
+    }
+
+    func visibleSessions(
+        in workspace: WorkspaceState,
+        precomputedKey key: WorkspaceVisibilityCacheKey,
+        canCache: Bool
+    )
+        -> [SessionSummary]
+    {
+        if canCache, let cached = visibleSessionsCache, cached.key == key {
+            return cached.sessions
+        }
+        let filterKey = key.workspaceFilterKey
+        let protocolFilter = filterKey.protocolFilter
+        let categories = filterKey.categoryFilters
+        let query = filterKey.isSearchActive
+            ? filterKey.filterText.trimmingCharacters(in: .whitespaces).lowercased()
             : ""
-        let searchField = workspace.searchField
-        let scopedAddress = workspace.ipFilter.flatMap(IPAddressValue.init(parsing:))
-        let scopedDestination = workspace.aggregateDestinationFilter.flatMap(IPAddressValue.init(parsing:))
-        let aggregateProtocols = workspace.aggregateProtocolFilters
-        let advancedRules = workspace.activeFilterRules
+        let searchField = filterKey.searchField
+        let scopedAddress = filterKey.ipFilter.flatMap(IPAddressValue.init(parsing:))
+        let scopedDestination = filterKey.aggregateDestinationFilter.flatMap(IPAddressValue.init(parsing:))
+        let aggregateProtocols = filterKey.aggregateProtocolFilters
+        let advancedRules = filterKey.activeFilterRules
         let preparedRules = SessionFilterRuleEvaluator.prepared(advancedRules)
         // Projecting findings hashes every analysis tuple, so only pay for it
         // when a filter actually reads membership: the Security chip or an
         // aggregate Findings drill-in. Every other scope leaves it empty.
-        let needsFindingMembership = workspace.aggregateRequiresFindings || categories.contains(.security)
+        let needsFindingMembership = filterKey.aggregateRequiresFindings || categories.contains(.security)
         let findingIDs = needsFindingMembership ? findingSessionIDs : []
-        let investigationIDs = workspace.acceptedInvestigationDraft == nil
-            ? nil
-            : workspace.investigationMatchedSessionIDs
-        let processMatcher: ((SessionSummary, SessionProcessContext?) -> Bool)? = workspace.processFilter.map { filterKey in
+        let investigationIDs: Set<UUID>? = filterKey.hasAcceptedInvestigation
+            ? filterKey.investigationMatchedSessionIDs
+            : nil
+        let processMatcher: ((SessionSummary, SessionProcessContext?) -> Bool)? = filterKey.processFilter.map {
             SessionSourceClassifier.makeFilterMatcher(
-                for: filterKey,
+                for: $0,
                 localIPs: ProcessResolver.shared.currentLocalIPs,
-                isViewingSavedCapture: isViewingSavedCapture
+                isViewingSavedCapture: key.isViewingSavedCapture
             )
         }
+        let currentMutedHosts = key.mutedHosts
+        let currentMutedProtocols = key.mutedProtocols
 
-        return presentedSessions.filter { session in
-            if mutedHosts.contains(session.host)
-                || mutedProtocols.contains(session.primaryProtocol)
+        let filtered = cachedPresentedSessions().filter { session in
+            if currentMutedHosts.contains(session.host)
+                || currentMutedProtocols.contains(session.primaryProtocol)
             {
                 return false
             }
@@ -257,7 +364,7 @@ extension MainContentCoordinator {
             ) {
                 return false
             }
-            if let host = workspace.hostFilter, session.host != host {
+            if let host = filterKey.hostFilter, session.host != host {
                 return false
             }
             if let processMatcher,
@@ -265,14 +372,14 @@ extension MainContentCoordinator {
             {
                 return false
             }
-            if workspace.ipFilter != nil,
+            if filterKey.ipFilter != nil,
                !Self.session(session, matchesAddress: scopedAddress)
             {
                 return false
             }
             // Conjunctive, unlike the OR-ed category group: an aggregate drill-in
             // may only ever narrow what was already on screen.
-            if workspace.aggregateRequiresFindings, !findingIDs.contains(session.id) {
+            if filterKey.aggregateRequiresFindings, !findingIDs.contains(session.id) {
                 return false
             }
             if !aggregateProtocols.isEmpty,
@@ -280,7 +387,7 @@ extension MainContentCoordinator {
             {
                 return false
             }
-            if workspace.aggregateDestinationFilter != nil,
+            if filterKey.aggregateDestinationFilter != nil,
                !Self.session(session, matchesDestinationAddress: scopedDestination)
             {
                 return false
@@ -293,6 +400,10 @@ extension MainContentCoordinator {
             }
             return advancedRules.isEmpty || preparedRules.matches(session)
         }
+        if canCache, workspace === activeWorkspace {
+            visibleSessionsCache = (key: key, sessions: filtered)
+        }
+        return filtered
     }
 
     /// A sidebar IP is one address, never a substring of a rendered endpoint.

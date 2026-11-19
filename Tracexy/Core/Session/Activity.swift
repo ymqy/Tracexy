@@ -9,7 +9,7 @@ import Foundation
 /// reported with the strength of the claim behind it. A tool that guesses
 /// silently is worse than one that does not guess: the user can work around a
 /// visible "weak", but cannot detect a confident lie.
-enum ConfidenceTier: Int, Comparable, Hashable, Sendable {
+nonisolated enum ConfidenceTier: Int, Comparable, Hashable, Sendable {
     /// Suggestive only. Never sufficient on its own to group anything.
     case weak = 0
     /// Consistent identifiers, but no observed causal step.
@@ -37,7 +37,7 @@ enum ConfidenceTier: Int, Comparable, Hashable, Sendable {
 
 /// One reason a set of sessions was grouped. Stored rather than recomputed so
 /// the UI can show *why* — and so a wrong grouping can be argued with.
-enum ActivityEvidence: Hashable, Sendable {
+nonisolated enum ActivityEvidence: Hashable, Sendable {
     /// A DNS answer named the address the next connection dialled.
     case dnsAnswerToConnection(name: String, address: String)
     /// The same process owned every session at connect time.
@@ -87,7 +87,7 @@ enum ActivityEvidence: Hashable, Sendable {
 /// one conversation and one protocol, and never joins conversations of different
 /// protocols, so "follow one stream at a time" is a property of its data model
 /// rather than of its UI.
-struct Activity: Identifiable, Hashable, Sendable {
+nonisolated struct Activity: Identifiable, Hashable, Sendable {
     // MARK: Lifecycle
 
     init(id: UUID? = nil, sessions: [SessionSummary], evidence: [ActivityEvidence], competingNames: [String] = []) {

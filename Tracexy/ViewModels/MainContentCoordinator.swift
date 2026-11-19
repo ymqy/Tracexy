@@ -150,7 +150,13 @@ final class MainContentCoordinator {
 
     /// Most recent sessions considered for correlation. Keeps grouping cost
     /// bounded on a long-running capture.
-    static let maxCorrelatedSessions = 5_000
+    nonisolated static let maxCorrelatedSessions = 5_000
+
+    /// Minimum live session count before `publishLiveDetailed` offloads
+    /// `ActivityBuilder.build(from:)` to a detached background task. Smaller
+    /// batches stay on a single `@MainActor` hop so deterministic unit tests
+    /// keep single-yield scheduling.
+    nonisolated static let offMainCorrelationSessionThreshold = 64
 
     /// How many recent raw frames are retained for immediate UI inspection.
     ///
@@ -684,6 +690,96 @@ final class MainContentCoordinator {
     var ingestChain: Task<Void, Never>?
     /// Number of off-main live-ingest worker tasks spawned since the last capture boundary.
     @ObservationIgnored private(set) var liveIngestDrainTaskCount = 0
+    nonisolated struct PrecomputedActivities: Sendable {
+        let forSessionCount: Int
+        let firstSessionID: UUID?
+        let lastSessionID: UUID?
+        let removedSnapshot: Set<UUID>
+        let activities: [Activity]
+        let index: [UUID: Activity]
+    }
+
+    struct DeferredLiveScrollPublication {
+        let expectedGeneration: Int
+        let publicationSequence: UInt64
+        let applied: [SessionSummary]
+        let publishedSnapshot: InvestigationSnapshot
+        let precomputedActivities: PrecomputedActivities?
+        let nextProcesses: [UUID: String]?
+        let nextProvenances: [UUID: ProcessProvenance]?
+    }
+
+    struct WorkspaceFilterKey: Equatable {
+        let protocolFilter: ProtocolKind?
+        let categoryFilters: Set<SessionFilterCategory>
+        let isSearchActive: Bool
+        let filterText: String
+        let searchField: SessionSearchField
+        let hostFilter: String?
+        let processFilter: String?
+        let ipFilter: String?
+        let aggregateDestinationFilter: String?
+        let aggregateProtocolFilters: Set<ProtocolKind>
+        let aggregateRequiresFindings: Bool
+        let activeFilterRules: [SessionFilterRule]
+        let hasAcceptedInvestigation: Bool
+        let investigationMatchedSessionIDs: Set<UUID>
+    }
+
+    struct WorkspaceVisibilityCacheKey: Equatable {
+        let processContextGeneration: UInt64
+        let workspaceID: ObjectIdentifier
+        let isViewingSavedCapture: Bool
+        let workspaceFilterKey: WorkspaceFilterKey
+        let mutedHosts: Set<String>
+        let mutedProtocols: Set<ProtocolKind>
+        let addressNamesRevision: UInt64
+        let localIPsRevision: UInt64
+        let bundlePath: String
+        let findingRevision: Int?
+    }
+
+    struct SessionRowsCacheKey: Equatable {
+        let visibilityKey: WorkspaceVisibilityCacheKey
+        let sessionGrouping: SessionGrouping
+        let activityIndexGeneration: UInt64
+    }
+
+    /// True while the user is actively trackpad/wheel scrolling the session table.
+    /// Live capture publications (`isCapturing == true`) coalesce in the background
+    /// until scrolling ends or ``maxLiveScrollDeferralDuration`` elapses.
+    @ObservationIgnored private(set) var isUserLiveScrolling = false
+    /// Maximum continuous deferral window while live-scrolling before flushing
+    /// the latest live snapshot onto the UI. Configurable for unit tests.
+    @ObservationIgnored var maxLiveScrollDeferralDuration: Duration = .milliseconds(2500)
+    /// Safety auto-end timeout after the most recent `beginUserLiveScroll()` in
+    /// case AppKit omits `didEndLiveScrollNotification` on window teardown.
+    @ObservationIgnored var liveScrollAutoEndWatchdogDuration: Duration = .seconds(3)
+    @ObservationIgnored var liveScrollStartedAt: ContinuousClock.Instant?
+    @ObservationIgnored var liveScrollWatchdogGeneration: UInt64 = 0
+    @ObservationIgnored var liveScrollWatchdogTask: Task<Void, Never>?
+    @ObservationIgnored var deferredLiveScrollPublication: DeferredLiveScrollPublication?
+    @ObservationIgnored var stagedAttributedProcesses: (generation: Int, sequence: UInt64, map: [UUID: String])?
+    @ObservationIgnored var stagedAttributedProvenances: (generation: Int, sequence: UInt64, map: [UUID: ProcessProvenance])?
+    @ObservationIgnored var livePublicationSequence: UInt64 = 0
+    @ObservationIgnored var lastAdoptedLivePublicationSequence: UInt64 = 0
+    @ObservationIgnored var precomputedActivitiesForNextAssignment: PrecomputedActivities?
+    @ObservationIgnored private(set) var precomputedActivitiesAdoptionCount = 0
+    @ObservationIgnored private(set) var processContextGeneration: UInt64 = 0
+    @ObservationIgnored private(set) var activityIndexGeneration: UInt64 = 0
+    @ObservationIgnored var visibleSessionsCache: (
+        key: WorkspaceVisibilityCacheKey,
+        sessions: [SessionSummary]
+    )?
+    @ObservationIgnored var visibleProtocolCountsCache: (
+        key: WorkspaceVisibilityCacheKey,
+        counts: [ProtocolKind: Int]
+    )?
+    @ObservationIgnored var sessionRowsCache: (
+        key: SessionRowsCacheKey,
+        rows: [SessionRow]
+    )?
+
     /// Most recent coalescing queue created for live `ingest` batches (for telemetry).
     @ObservationIgnored private(set) var lastLiveIngestQueue: LiveIngestBatchQueue?
     @ObservationIgnored private var activeLiveIngestQueue: LiveIngestBatchQueue?
@@ -1184,44 +1280,65 @@ final class MainContentCoordinator {
     /// some sessions filtered still shows, carrying only the sessions that
     /// survived — the list must never imply a filter matched more than it did.
     var sessionRows: [SessionRow] {
-        let visible = visibleSessions
-        switch activeWorkspace.sessionGrouping {
-        case .none:
-            return visible.map(SessionRow.session)
-        case .host:
-            return observedGroups(visible, kind: .host) { $0.host }
-        case .process:
-            return observedGroups(visible, kind: .process) { $0.processName }
-        case .action:
-            break
+        let workspace = activeWorkspace
+        let grouping = workspace.sessionGrouping
+        if grouping == .action {
+            // Register `@Observable` tracking on `activityIndex` before checking the cache.
+            _ = activityIndex.isEmpty
         }
-        let visibleIDs = Set(visible.map(\.id))
-        var rows: [SessionRow] = []
-        var emitted: Set<UUID> = []
+        let (visibilityKey, canCache) = currentWorkspaceVisibilityCacheKey(for: workspace)
+        let cacheKey = SessionRowsCacheKey(
+            visibilityKey: visibilityKey,
+            sessionGrouping: grouping,
+            activityIndexGeneration: grouping == .action ? activityIndexGeneration : 0
+        )
+        if canCache, let cached = sessionRowsCache, cached.key == cacheKey {
+            return cached.rows
+        }
 
-        for session in visible {
-            if emitted.contains(session.id) {
-                continue
+        let visible = visibleSessions(in: workspace, precomputedKey: visibilityKey, canCache: canCache)
+        let rows: [SessionRow]
+        switch grouping {
+        case .none:
+            rows = visible.map(SessionRow.session)
+        case .host:
+            rows = observedGroups(visible, kind: .host) { $0.host }
+        case .process:
+            rows = observedGroups(visible, kind: .process) { $0.processName }
+        case .action:
+            let visibleIDs = Set(visible.map(\.id))
+            var actionRows: [SessionRow] = []
+            var emitted: Set<UUID> = []
+
+            for session in visible {
+                if emitted.contains(session.id) {
+                    continue
+                }
+                guard let activity = activityIndex[session.id] else {
+                    actionRows.append(.session(session))
+                    emitted.insert(session.id)
+                    continue
+                }
+                let survivors = activity.sessions.filter { visibleIDs.contains($0.id) }
+                survivors.forEach { emitted.insert($0.id) }
+                // A lone survivor is not an action any more — showing a disclosure
+                // triangle over one child would overstate what is there.
+                if survivors.count > 1 {
+                    actionRows.append(.action(Activity(
+                        id: activity.id,
+                        sessions: survivors,
+                        evidence: activity.evidence,
+                        competingNames: activity.competingNames
+                    )))
+                } else if let only = survivors.first {
+                    actionRows.append(.session(only))
+                }
             }
-            guard let activity = activityIndex[session.id] else {
-                rows.append(.session(session))
-                emitted.insert(session.id)
-                continue
-            }
-            let survivors = activity.sessions.filter { visibleIDs.contains($0.id) }
-            survivors.forEach { emitted.insert($0.id) }
-            // A lone survivor is not an action any more — showing a disclosure
-            // triangle over one child would overstate what is there.
-            if survivors.count > 1 {
-                rows.append(.action(Activity(
-                    id: activity.id,
-                    sessions: survivors,
-                    evidence: activity.evidence,
-                    competingNames: activity.competingNames
-                )))
-            } else if let only = survivors.first {
-                rows.append(.session(only))
-            }
+            rows = actionRows
+        }
+
+        if canCache {
+            sessionRowsCache = (key: cacheKey, rows: rows)
         }
         return rows
     }
@@ -1329,6 +1446,7 @@ final class MainContentCoordinator {
         }
         cancelFollowStream(clearResult: true)
         cancelSavedCaptureOpen(clearPublishedEvidence: true)
+        resetLiveScrollCoalescing()
         // Supersede any in-flight engine work so a late snapshot can't repopulate
         // the list after a clear, and zero the accounting counters.
         startGeneration &+= 1
@@ -1419,6 +1537,7 @@ final class MainContentCoordinator {
         }
         activeCaptureConfiguration = configuration
         captureError = nil
+        resetLiveScrollCoalescing()
         isStarting = true
         startGeneration &+= 1
         isViewingSavedCapture = false
@@ -1512,6 +1631,7 @@ final class MainContentCoordinator {
         guard isCapturing || isStarting else {
             return
         }
+        resetLiveScrollCoalescing()
         pollTimer?.invalidate()
         pollTimer = nil
         // A fetch destructively drains the helper buffer. Let the one outstanding
@@ -1641,7 +1761,6 @@ final class MainContentCoordinator {
     @ObservationIgnored private var domainGroupsCache: (key: RollupCacheKey, value: [DomainGroup])?
     @ObservationIgnored private var localDiscoveryGroupsCache: (key: RollupCacheKey, value: [LocalDiscoveryGroup])?
     @ObservationIgnored private var ipHostsCache: (key: RollupCacheKey, value: [(name: String, count: Int)])?
-    @ObservationIgnored private var processContextGeneration: UInt64 = 0
 
     private let live = try? LiveCapture()
     private var lastSessionsUpdate = Date.distantPast
@@ -1686,7 +1805,7 @@ final class MainContentCoordinator {
         return parsed.compressedText
     }
 
-    private func cachedPresentedSessions() -> [SessionSummary] {
+    func cachedPresentedSessions() -> [SessionSummary] {
         let generation = processContextGeneration
         if let cached = presentedSessionsCache, cached.generation == generation {
             return cached.sessions
@@ -1694,6 +1813,86 @@ final class MainContentCoordinator {
         let result = presentedSessions
         presentedSessionsCache = (generation: generation, sessions: result)
         return result
+    }
+
+    nonisolated static func computeActivities(
+        from sessions: [SessionSummary],
+        removedSnapshot: Set<UUID>
+    ) -> PrecomputedActivities {
+        let slice = sessions.count > maxCorrelatedSessions
+            ? Array(sessions.suffix(maxCorrelatedSessions))
+            : sessions
+        let result = ActivityBuilder.build(from: slice)
+        var index: [UUID: Activity] = [:]
+        index.reserveCapacity(result.activities.reduce(0) { $0 + $1.sessions.count })
+        for activity in result.activities {
+            for session in activity.sessions {
+                index[session.id] = activity
+            }
+        }
+        return PrecomputedActivities(
+            forSessionCount: sessions.count,
+            firstSessionID: sessions.first?.id,
+            lastSessionID: sessions.last?.id,
+            removedSnapshot: removedSnapshot,
+            activities: result.activities,
+            index: index
+        )
+    }
+
+    /// Marks the start of an active trackpad/wheel scroll gesture on the session
+    /// table so incoming live capture snapshots coalesce off-screen instead of
+    /// mutating `@Observable` table state mid-scroll.
+    func beginUserLiveScroll() {
+        if !isUserLiveScrolling {
+            isUserLiveScrolling = true
+            liveScrollStartedAt = ContinuousClock.now
+        }
+        armLiveScrollAutoEndWatchdog()
+    }
+
+    /// Marks the end of an active trackpad/wheel scroll gesture and immediately
+    /// flushes any buffered live snapshot that still belongs to the active capture.
+    func endUserLiveScroll() {
+        isUserLiveScrolling = false
+        liveScrollStartedAt = nil
+        liveScrollWatchdogGeneration &+= 1
+        liveScrollWatchdogTask?.cancel()
+        liveScrollWatchdogTask = nil
+        flushDeferredLiveScrollPublicationIfValid()
+    }
+
+    /// Capture / Project boundary cleanup: discards any buffered live-scroll
+    /// publication and staged attribution maps so stale live state can never
+    /// overwrite a stopped capture, cleared session list, opened savefile, or
+    /// another Project.
+    func resetLiveScrollCoalescing() {
+        isUserLiveScrolling = false
+        liveScrollStartedAt = nil
+        liveScrollWatchdogGeneration &+= 1
+        liveScrollWatchdogTask?.cancel()
+        liveScrollWatchdogTask = nil
+        deferredLiveScrollPublication = nil
+        stagedAttributedProcesses = nil
+        stagedAttributedProvenances = nil
+    }
+
+    private func armLiveScrollAutoEndWatchdog() {
+        liveScrollWatchdogTask?.cancel()
+        liveScrollWatchdogGeneration &+= 1
+        let generation = liveScrollWatchdogGeneration
+        let timeout = liveScrollAutoEndWatchdogDuration
+        liveScrollWatchdogTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: timeout)
+            guard let self,
+                  !Task.isCancelled,
+                  self.liveScrollWatchdogGeneration == generation,
+                  self.isUserLiveScrolling else
+            {
+                return
+            }
+            self.endUserLiveScroll()
+        }
     }
 
     private func cachedProcessContextFallbacks() -> [String: SessionProcessContext] {
@@ -1808,6 +2007,7 @@ final class MainContentCoordinator {
     /// at all already does — reporting the accepted prefix as unconfirmed rather
     /// than claiming the tail drained.
     private func performStopCapture(canAwaitHelperReply: Bool = true) {
+        resetLiveScrollCoalescing()
         helperStopRequested = false
         let captureToken = startGeneration
         // Invalidate any in-flight start attempt so its watchdog/reply is ignored.
@@ -1949,22 +2149,36 @@ final class MainContentCoordinator {
     }
 
     private func rebuildActivities() {
+        if let precomputed = precomputedActivitiesForNextAssignment {
+            precomputedActivitiesForNextAssignment = nil
+            if precomputed.forSessionCount == sessions.count,
+               precomputed.firstSessionID == sessions.first?.id,
+               precomputed.lastSessionID == sessions.last?.id,
+               precomputed.removedSnapshot == removedSessionIDs
+            {
+                if !(activities.isEmpty && precomputed.activities.isEmpty) {
+                    activities = precomputed.activities
+                }
+                if !(activityIndex.isEmpty && precomputed.index.isEmpty) {
+                    activityIndex = precomputed.index
+                }
+                activityIndexGeneration &+= 1
+                precomputedActivitiesAdoptionCount &+= 1
+                return
+            }
+        }
         // Bounded on purpose. Correlation is a convenience over the recent past,
         // and a causal window of tens of seconds cannot reach the far end of a
         // long capture anyway — so paying O(capture) on every ingest to group
         // sessions nobody is looking at would be waste, not thoroughness.
-        let slice = sessions.count > Self.maxCorrelatedSessions
-            ? Array(sessions.suffix(Self.maxCorrelatedSessions))
-            : sessions
-        let result = ActivityBuilder.build(from: slice)
-        activities = result.activities
-        var index: [UUID: Activity] = [:]
-        for activity in result.activities {
-            for session in activity.sessions {
-                index[session.id] = activity
-            }
+        let computed = Self.computeActivities(from: sessions, removedSnapshot: removedSessionIDs)
+        if !(activities.isEmpty && computed.activities.isEmpty) {
+            activities = computed.activities
         }
-        activityIndex = index
+        if !(activityIndex.isEmpty && computed.index.isEmpty) {
+            activityIndex = computed.index
+        }
+        activityIndexGeneration &+= 1
     }
 }
 
@@ -2140,6 +2354,7 @@ extension MainContentCoordinator {
     func failActiveHelperCapture(_ detail: String) {
         // A failed drain/validation path must not leave the privileged helper
         // capturing unattended after the app has moved to an error state.
+        resetLiveScrollCoalescing()
         if let proxy = try? currentHelperProxy() {
             proxy.stopCapture { _ in }
         }
@@ -2514,6 +2729,7 @@ extension MainContentCoordinator {
     }
 
     func handleCaptureError(_ message: String) {
+        resetLiveScrollCoalescing()
         pollTimer?.invalidate()
         pollTimer = nil
         helperFetchGeneration &+= 1

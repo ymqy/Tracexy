@@ -10,7 +10,7 @@ import Foundation
 /// grouping key fails on everything that is not TLS, loses DNS entirely, and
 /// cannot express doubt. Here each link carries the reason it was made, and
 /// contested attributions stay contested.
-enum ActivityBuilder {
+nonisolated enum ActivityBuilder {
     // MARK: Internal
 
     struct Result: Sendable {
