@@ -236,7 +236,10 @@ struct OverviewView: View {
     }
 
     private var identitySubtitle: String {
-        let linkLayerType = String(localized: "Link-layer type: \(linkTypeName)")
+        let linkLayerType = String(
+            localized: "Link-layer type: \(linkTypeName)",
+            bundle: AppLanguage.currentLocalizedBundle()
+        )
         if isSaved {
             return "\(savedFormat) file • \(linkLayerType)"
         }
@@ -1217,10 +1220,11 @@ struct OverviewView: View {
     }
 
     private func severityTitle(_ severity: Finding.Severity) -> String {
-        switch severity {
-        case .error: String(localized: "Errors")
-        case .warning: String(localized: "Warnings")
-        case .note: String(localized: "Notes")
+        let bundle = AppLanguage.currentLocalizedBundle()
+        return switch severity {
+        case .error: String(localized: "Errors", bundle: bundle)
+        case .warning: String(localized: "Warnings", bundle: bundle)
+        case .note: String(localized: "Notes", bundle: bundle)
         }
     }
 }

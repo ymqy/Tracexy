@@ -126,7 +126,7 @@ struct SettingsView: View {
         guard let activeProjectName, isProjectScopedPane else {
             return ""
         }
-        return String(localized: "Project: \(activeProjectName)")
+        return String(localized: "Project: \(activeProjectName)", bundle: AppLanguage.currentLocalizedBundle())
     }
 
     private var isProjectScopedPane: Bool {

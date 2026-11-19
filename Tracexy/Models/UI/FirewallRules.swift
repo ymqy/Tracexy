@@ -19,13 +19,14 @@ enum FirewallProduct: String, CaseIterable, Identifiable {
     }
 
     var title: String {
-        switch self {
-        case .pf: String(localized: "Packet Filter (pf)")
-        case .iptables: String(localized: "Netfilter (iptables)")
-        case .nftables: String(localized: "Netfilter (nftables)")
-        case .ipfw: String(localized: "IPFirewall (ipfw)")
-        case .ciscoACL: String(localized: "Cisco IOS access list")
-        case .windows: String(localized: "Windows Firewall (netsh)")
+        let bundle = AppLanguage.currentLocalizedBundle()
+        return switch self {
+        case .pf: String(localized: "Packet Filter (pf)", bundle: bundle)
+        case .iptables: String(localized: "Netfilter (iptables)", bundle: bundle)
+        case .nftables: String(localized: "Netfilter (nftables)", bundle: bundle)
+        case .ipfw: String(localized: "IPFirewall (ipfw)", bundle: bundle)
+        case .ciscoACL: String(localized: "Cisco IOS access list", bundle: bundle)
+        case .windows: String(localized: "Windows Firewall (netsh)", bundle: bundle)
         }
     }
 }
@@ -46,11 +47,12 @@ enum FirewallRuleScope: String, CaseIterable, Identifiable {
     }
 
     var title: String {
-        switch self {
-        case .sourceAddress: String(localized: "Source address")
-        case .destinationAddress: String(localized: "Destination address")
-        case .destinationPort: String(localized: "Destination port")
-        case .conversation: String(localized: "Both addresses and the port")
+        let bundle = AppLanguage.currentLocalizedBundle()
+        return switch self {
+        case .sourceAddress: String(localized: "Source address", bundle: bundle)
+        case .destinationAddress: String(localized: "Destination address", bundle: bundle)
+        case .destinationPort: String(localized: "Destination port", bundle: bundle)
+        case .conversation: String(localized: "Both addresses and the port", bundle: bundle)
         }
     }
 

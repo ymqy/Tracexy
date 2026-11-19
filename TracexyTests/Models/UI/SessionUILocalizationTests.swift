@@ -563,6 +563,100 @@ struct SessionUILocalizationTests {
         #expect(AppLanguage.currentLocalizedBundle() == .main)
     }
 
+    @Test("Switching from custom language override back to System Default resolves host system localization live")
+    @MainActor
+    func customOverrideToSystemDefaultResolvesHostLanguageLive() throws {
+        let bundles = try makeCatalogBundles()
+        defer { bundles.teardown() }
+
+        AppLanguage.withTemporaryLanguageForTesting("en", baseBundle: bundles.root) {
+            #expect(AppLanguage.currentLocalizedBundle() == bundles.en)
+            #expect(AppLanguage.english.localeOverride?.identifier == "en")
+            #expect(AppLanguage.system.title == "System Default")
+
+            // Switching from custom `"en"` back to `"system"` under a Chinese host OS
+            // must resolve both the `.lproj` bundle and SwiftUI `localeOverride` to `zh-Hans`.
+            AppLanguage.withTemporaryLanguageForTesting(
+                "system",
+                baseBundle: bundles.root,
+                systemLanguages: ["zh-Hans-CN", "en-US"]
+            ) {
+                #expect(AppLanguage.currentLocalizedBundle() == bundles.zhHans)
+                #expect(AppLanguage.system.localeOverride?.identifier == "zh-Hans")
+                #expect(AppLanguage.currentLocaleOverride()?.identifier == "zh-Hans")
+                #expect(AppLanguage.system.title == "跟随系统")
+                #expect(SidebarItem.sessions.title == "会话")
+            }
+
+            // Switching to `"system"` under a Vietnamese host OS must resolve to `vi`.
+            AppLanguage.withTemporaryLanguageForTesting(
+                "system",
+                baseBundle: bundles.root,
+                systemLanguages: ["vi-VN"]
+            ) {
+                #expect(AppLanguage.currentLocalizedBundle() == bundles.vi)
+                #expect(AppLanguage.system.localeOverride?.identifier == "vi")
+                #expect(AppLanguage.currentLocaleOverride()?.identifier == "vi")
+                #expect(AppLanguage.system.title == "Mặc định hệ thống")
+                #expect(SidebarItem.sessions.title == "Phiên")
+            }
+
+            // Nested scope exit restores outer `"en"` state cleanly.
+            #expect(AppLanguage.currentLocalizedBundle() == bundles.en)
+            #expect(AppLanguage.system.localeOverride == nil)
+        }
+
+        // Outer scope exit restores test-safe defaults cleanly.
+        #expect(AppLanguage.currentLocalizedBundle() == .main)
+        #expect(AppLanguage.system.localeOverride == nil)
+        #expect(AppLanguage.currentLocaleOverride() == nil)
+    }
+
+    @Test("Firewall rules, checksum validation, and tool models switch languages dynamically without restart")
+    @MainActor
+    func toolModelsDynamicLanguageSwitching() throws {
+        let bundles = try makeCatalogBundles()
+        defer { bundles.teardown() }
+
+        AppLanguage.withTemporaryLanguageForTesting("en", baseBundle: bundles.root) {
+            #expect(FirewallProduct.pf.title == "Packet Filter (pf)")
+            #expect(FirewallProduct.ciscoACL.title == "Cisco IOS access list")
+            #expect(FirewallProduct.windows.title == "Windows Firewall (netsh)")
+            #expect(FirewallRuleScope.allCases.map(\.title) == [
+                "Source address",
+                "Destination address",
+                "Destination port",
+                "Both addresses and the port",
+            ])
+            #expect(ChecksumStatus.correct.note == "[correct]")
+            #expect(ChecksumStatus.partial.note == "[partial, likely checksum offload]")
+            #expect(ChecksumStatus.incorrect(expected: 0x1A2B).note == "[incorrect, should be 0x1a2b]")
+            #expect(ChecksumStatus.incorrect32(expected: 0x1234_5678).note == "[incorrect, should be 0x12345678]")
+            #expect(ChecksumStatus.notPresent.note == "[not present]")
+            #expect(ChecksumStatus.unverified.note == "[unverified, not fully captured]")
+        }
+
+        AppLanguage.withTemporaryLanguageForTesting("zh-Hans", baseBundle: bundles.root) {
+            #expect(FirewallProduct.pf.title == "Packet Filter (pf)")
+            #expect(FirewallProduct.ciscoACL.title == "Cisco IOS 访问控制列表")
+            #expect(FirewallProduct.windows.title == "Windows 防火墙 (netsh)")
+            #expect(FirewallRuleScope.allCases.map(\.title) == [
+                "源地址",
+                "目标地址",
+                "目标端口",
+                "双方地址与端口",
+            ])
+            #expect(ChecksumStatus.correct.note == "[正确]")
+            #expect(ChecksumStatus.partial.note == "[不完整，可能启用了校验和卸载]")
+            #expect(ChecksumStatus.incorrect(expected: 0x1A2B).note == "[错误，应为 0x1a2b]")
+            #expect(ChecksumStatus.incorrect32(expected: 0x1234_5678).note == "[错误，应为 0x12345678]")
+            #expect(ChecksumStatus.notPresent.note == "[不存在]")
+            #expect(ChecksumStatus.unverified.note == "[未验证，未完整捕获]")
+        }
+
+        #expect(AppLanguage.currentLocalizedBundle() == .main)
+    }
+
     @Test("Hosted split views and main scene synchronize language changes live")
     func hostedSplitViewsPropagateLanguageOverride() throws {
         let app = try readProjectFile("Tracexy/TracexyApp.swift")
@@ -591,6 +685,7 @@ struct SessionUILocalizationTests {
         let root: Bundle
         let en: Bundle
         let zhHans: Bundle
+        let vi: Bundle
         let teardown: () -> Void
     }
 
@@ -609,7 +704,7 @@ struct SessionUILocalizationTests {
             .appendingPathComponent("tracexy-i18n-tests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
-        for language in ["en", "zh-Hans"] {
+        for language in ["en", "zh-Hans", "vi"] {
             var dict: [String: String] = [:]
             for (key, entry) in stringsMap {
                 if let locs = entry["localizations"] as? [String: Any],
@@ -636,7 +731,8 @@ struct SessionUILocalizationTests {
 
         guard let rootBundle = Bundle(url: tempDir),
               let enBundle = Bundle(url: tempDir.appendingPathComponent("en.lproj", isDirectory: true)),
-              let zhBundle = Bundle(url: tempDir.appendingPathComponent("zh-Hans.lproj", isDirectory: true)) else
+              let zhBundle = Bundle(url: tempDir.appendingPathComponent("zh-Hans.lproj", isDirectory: true)),
+              let viBundle = Bundle(url: tempDir.appendingPathComponent("vi.lproj", isDirectory: true)) else
         {
             try? FileManager.default.removeItem(at: tempDir)
             throw CatalogError.bundleCreationFailed
@@ -646,6 +742,7 @@ struct SessionUILocalizationTests {
             root: rootBundle,
             en: enBundle,
             zhHans: zhBundle,
+            vi: viBundle,
             teardown: { try? FileManager.default.removeItem(at: tempDir) }
         )
     }

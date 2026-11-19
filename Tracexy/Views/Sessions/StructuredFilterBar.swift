@@ -265,25 +265,31 @@ struct StructuredFilterBar: View {
 
 /// A named, ready-made set of filter rows offered in the Presets menu.
 struct StructuredFilterPreset: Identifiable {
-    static let builtIns: [StructuredFilterPreset] = [
-        StructuredFilterPreset(
-            name: String(localized: "Errors Only"),
-            symbol: "exclamationmark.triangle",
-            rules: [SessionFilterRule(field: .status, filterOperator: .is, value: "Error")]
-        ),
-        StructuredFilterPreset(
-            name: String(localized: "Secure (TLS)"),
-            symbol: "lock",
-            rules: [SessionFilterRule(field: .proto, filterOperator: .contains, value: "TLS")]
-        ),
-        StructuredFilterPreset(
-            name: String(localized: "DNS Lookups"),
-            symbol: "magnifyingglass",
-            rules: [SessionFilterRule(field: .proto, filterOperator: .contains, value: "DNS")]
-        ),
-    ]
+    static var builtIns: [StructuredFilterPreset] {
+        let bundle = AppLanguage.currentLocalizedBundle()
+        return [
+            StructuredFilterPreset(
+                id: "errors-only",
+                name: String(localized: "Errors Only", bundle: bundle),
+                symbol: "exclamationmark.triangle",
+                rules: [SessionFilterRule(field: .status, filterOperator: .is, value: "Error")]
+            ),
+            StructuredFilterPreset(
+                id: "secure-tls",
+                name: String(localized: "Secure (TLS)", bundle: bundle),
+                symbol: "lock",
+                rules: [SessionFilterRule(field: .proto, filterOperator: .contains, value: "TLS")]
+            ),
+            StructuredFilterPreset(
+                id: "dns-lookups",
+                name: String(localized: "DNS Lookups", bundle: bundle),
+                symbol: "magnifyingglass",
+                rules: [SessionFilterRule(field: .proto, filterOperator: .contains, value: "DNS")]
+            ),
+        ]
+    }
 
-    let id = UUID()
+    let id: String
     let name: String
     let symbol: String
     let rules: [SessionFilterRule]

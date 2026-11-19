@@ -622,7 +622,7 @@ struct SettingsThemeCard: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 16) {
-            Text(String(localized: "Appearance"))
+            Text(String(localized: "Appearance", bundle: AppLanguage.currentLocalizedBundle()))
                 .font(metrics.font(weight: .medium))
                 .frame(width: metrics.labelWidth, alignment: .leading)
 

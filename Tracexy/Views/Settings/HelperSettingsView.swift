@@ -81,14 +81,43 @@ struct HelperSettingsView: View {
     // MARK: Status
 
     private var statusAppearance: (String, Color, String) {
-        switch helper.status {
-        case .installedCompatible: (String(localized: "Installed & up to date"), .green, "checkmark.seal.fill")
-        case .installedOutdated: (String(localized: "Installed — update available"), .orange, "arrow.up.circle.fill")
-        case .installedIncompatible: (String(localized: "Installed — incompatible protocol"), .red, "exclamationmark.triangle.fill")
-        case .requiresApproval: (String(localized: "Awaiting approval in Login Items"), .orange, "hourglass")
-        case .notInstalled: (String(localized: "Not installed"), .secondary, "xmark.seal")
-        case .unreachable: (String(localized: "Registered but unreachable"), .red, "bolt.horizontal.circle")
-        case .signingMismatch: (String(localized: "Signing mismatch"), .red, "xmark.shield.fill")
+        let bundle = AppLanguage.currentLocalizedBundle()
+        return switch helper.status {
+        case .installedCompatible: (
+                String(localized: "Installed & up to date", bundle: bundle),
+                .green,
+                "checkmark.seal.fill"
+            )
+        case .installedOutdated: (
+                String(localized: "Installed — update available", bundle: bundle),
+                .orange,
+                "arrow.up.circle.fill"
+            )
+        case .installedIncompatible: (
+                String(localized: "Installed — incompatible protocol", bundle: bundle),
+                .red,
+                "exclamationmark.triangle.fill"
+            )
+        case .requiresApproval: (
+                String(localized: "Awaiting approval in Login Items", bundle: bundle),
+                .orange,
+                "hourglass"
+            )
+        case .notInstalled: (
+                String(localized: "Not installed", bundle: bundle),
+                .secondary,
+                "xmark.seal"
+            )
+        case .unreachable: (
+                String(localized: "Registered but unreachable", bundle: bundle),
+                .red,
+                "bolt.horizontal.circle"
+            )
+        case .signingMismatch: (
+                String(localized: "Signing mismatch", bundle: bundle),
+                .red,
+                "xmark.shield.fill"
+            )
         case let .failed(reason): (reason, .red, "exclamationmark.triangle.fill")
         }
     }

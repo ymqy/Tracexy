@@ -52,25 +52,16 @@ struct GeneralSettingsView: View {
                 SettingsDivider()
 
                 SettingsRow(label: "Language:") {
-                    HStack(spacing: 10) {
-                        Picker("Language", selection: $language) {
-                            ForEach(AppLanguage.allCases) { option in
-                                Text(option.title).tag(option.rawValue)
-                            }
+                    Picker("Language", selection: $language) {
+                        ForEach(AppLanguage.allCases) { option in
+                            Text(option.title).tag(option.rawValue)
                         }
-                        .labelsHidden()
-                        .frame(width: metrics.menuWidth(180))
-                        .frame(minHeight: metrics.controlHeight)
-                        .onChange(of: language) { _, newValue in
-                            AppLanguage.applyToAppleLanguages(newValue)
-                        }
-
-                        if language != AppLanguage.launchRawValue {
-                            Button("Restart Now") {
-                                AppLanguage.relaunchApplication()
-                            }
-                            .controlSize(.small)
-                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: metrics.menuWidth(180))
+                    .frame(minHeight: metrics.controlHeight)
+                    .onChange(of: language) { _, newValue in
+                        AppLanguage.applyToAppleLanguages(newValue)
                     }
                 }
             }

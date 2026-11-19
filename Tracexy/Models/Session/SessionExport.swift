@@ -137,21 +137,30 @@ nonisolated enum SessionExportError: LocalizedError {
     // MARK: Internal
 
     nonisolated var errorDescription: String? {
-        switch self {
+        let bundle = AppLanguage.currentLocalizedBundle()
+        return switch self {
         case .noRetainedFrames:
-            String(localized: "The packet frames for this session are no longer in the local export window.")
+            String(
+                localized: "The packet frames for this session are no longer in the local export window.",
+                bundle: bundle
+            )
         case .mixedLinkTypes:
             String(
-                localized: "Classic pcap cannot represent a session containing multiple link types. Use pcapng instead."
+                localized: "Classic pcap cannot represent a session containing multiple link types. Use pcapng instead.",
+                bundle: bundle
             )
         case .unsupportedLinkType:
-            String(localized: "The session contains a link type that cannot be represented by pcapng.")
+            String(
+                localized: "The session contains a link type that cannot be represented by pcapng.",
+                bundle: bundle
+            )
         case .rawExportRequiresAcknowledgement:
             String(
                 localized: """
                 Raw pcap/pcapng export cannot apply the active privacy protections. \
                 Explicitly acknowledge an unredacted raw export, or export the protected session document instead.
-                """
+                """,
+                bundle: bundle
             )
         case .untimedFramesRequirePcapng:
             String(
@@ -159,38 +168,46 @@ nonisolated enum SessionExportError: LocalizedError {
                 This session contains frames the capture file recorded without a time. \
                 Classic pcap requires a timestamp on every packet, so exporting it would invent one. \
                 Use pcapng to retain missing timestamps.
-                """
+                """,
+                bundle: bundle
             )
         case .timestampNotRepresentable:
             String(
-                localized: "This capture contains a time outside the range supported by this export format. Save the original capture to preserve it."
+                localized: "This capture contains a time outside the range supported by this export format. Save the original capture to preserve it.",
+                bundle: bundle
             )
         case .correctedTimeRequiresProvenanceFormat:
             String(
-                localized: "A time-corrected session needs the native session document or PCAPNG to preserve correction provenance."
+                localized: "A time-corrected session needs the native session document or PCAPNG to preserve correction provenance.",
+                bundle: bundle
             )
         case .untimedFrameNotRepresentable:
             String(
                 localized: """
                 This session contains an untimed frame whose captured length can’t be preserved in pcapng. \
                 Export the original capture file instead, which keeps its bytes untouched.
-                """
+                """,
+                bundle: bundle
             )
         case .untimedPacketIDNotRepresentable:
             String(
-                localized: "An untimed frame has a packet ID, but a pcapng Simple Packet Block cannot store it. Keep the original capture or supply real capture times."
+                localized: "An untimed frame has a packet ID, but a pcapng Simple Packet Block cannot store it. Keep the original capture or supply real capture times.",
+                bundle: bundle
             )
         case .untimedDirectionNotRepresentable:
             String(
-                localized: "An untimed frame has capture direction, but a pcapng Simple Packet Block cannot store that direction. Add real timestamps or keep the original capture."
+                localized: "An untimed frame has capture direction, but a pcapng Simple Packet Block cannot store that direction. Add real timestamps or keep the original capture.",
+                bundle: bundle
             )
         case .directionRequiresPcapng:
             String(
-                localized: "This capture includes interface direction, which classic pcap cannot represent. Use pcapng to preserve it."
+                localized: "This capture includes interface direction, which classic pcap cannot represent. Use pcapng to preserve it.",
+                bundle: bundle
             )
         case .packetIDRequiresPcapng:
             String(
-                localized: "This capture includes packet IDs, which classic pcap cannot represent. Use pcapng to preserve them."
+                localized: "This capture includes packet IDs, which classic pcap cannot represent. Use pcapng to preserve them.",
+                bundle: bundle
             )
         }
     }

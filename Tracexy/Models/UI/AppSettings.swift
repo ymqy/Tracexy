@@ -287,20 +287,79 @@ enum AppLanguage: String, CaseIterable, Identifiable {
         }
     }
 
-    var localeOverride: Locale? {
+    nonisolated var localeOverride: Locale? {
         switch self {
-        case .system: nil
+        case .system:
+            let (testingBaseBundle, testingSys) = Self.languageStateLock.withLock {
+                ($0.testingBaseBundle, $0.testingSystemLanguages)
+            }
+            if TracexyIdentity.isRunningTests, testingSys == nil {
+                return nil
+            }
+            // When the process launched with a custom language override (e.g. "en"),
+            // SwiftUI's default environment Locale is pinned to that launch override;
+            // supply the true host system localization so switching back to `.system`
+            // updates all SwiftUI `Text(...)` views immediately without restarting.
+            if testingSys != nil || Self.launchRawValue != AppLanguage.system.rawValue,
+               let sysLang = Self.resolvedSystemLocalization(
+                   in: testingBaseBundle ?? .main,
+                   preferredLanguages: testingSys
+               )
+            {
+                return Locale(identifier: sysLang)
+            }
+            return nil
         case .simplifiedChinese,
              .english,
              .vietnamese:
-            Locale(identifier: rawValue)
+            return Locale(identifier: rawValue)
         }
+    }
+
+    nonisolated static func hostSystemPreferredLanguages() -> [String] {
+        if let global = CFPreferencesCopyValue(
+            "AppleLanguages" as CFString,
+            kCFPreferencesAnyApplication,
+            kCFPreferencesCurrentUser,
+            kCFPreferencesAnyHost
+        ) as? [String], !global.isEmpty {
+            return global
+        }
+        return Locale.preferredLanguages
+    }
+
+    nonisolated static func resolvedSystemLocalization(
+        in base: Bundle = .main,
+        preferredLanguages: [String]? = nil
+    ) -> String? {
+        let prefs = preferredLanguages ?? hostSystemPreferredLanguages()
+        let candidates = base.localizations.filter { $0 != "Base" }
+        guard !candidates.isEmpty, !prefs.isEmpty else {
+            return nil
+        }
+        return Bundle.preferredLocalizations(from: candidates, forPreferences: prefs).first
     }
 
     nonisolated static func localizedBundle(for rawValue: String, in base: Bundle = .main) -> Bundle {
         let lang = AppLanguage(rawValue: rawValue) ?? .system
-        guard lang != .system else {
-            return base
+        if lang == .system {
+            let testingSys = languageStateLock.withLock(\.testingSystemLanguages)
+            if TracexyIdentity.isRunningTests, testingSys == nil {
+                return base
+            }
+            guard let sysLang = resolvedSystemLocalization(in: base, preferredLanguages: testingSys) else {
+                return base
+            }
+            let cacheKey = "\(base.bundlePath)|system|\(sysLang)"
+            return languageStateLock.withLock { state in
+                if let cached = state.cachedBundles[cacheKey] {
+                    return cached
+                }
+                let resolved = base.path(forResource: sysLang, ofType: "lproj")
+                    .flatMap(Bundle.init(path:)) ?? base
+                state.cachedBundles[cacheKey] = resolved
+                return resolved
+            }
         }
         let cacheKey = "\(base.bundlePath)|\(lang.rawValue)"
         return languageStateLock.withLock { state in
@@ -340,19 +399,22 @@ enum AppLanguage: String, CaseIterable, Identifiable {
     nonisolated static func withTemporaryLanguageForTesting<T>(
         _ rawValue: String,
         baseBundle: Bundle? = nil,
+        systemLanguages: [String]? = nil,
         perform body: () throws -> T
     ) rethrows -> T {
         let resolved = (AppLanguage(rawValue: rawValue) ?? .system).rawValue
-        let previous = languageStateLock.withLock { state -> (String, Bundle?) in
-            let old = (state.currentRawValue, state.testingBaseBundle)
+        let previous = languageStateLock.withLock { state -> (String, Bundle?, [String]?) in
+            let old = (state.currentRawValue, state.testingBaseBundle, state.testingSystemLanguages)
             state.currentRawValue = resolved
             state.testingBaseBundle = baseBundle
+            state.testingSystemLanguages = systemLanguages
             return old
         }
         defer {
             languageStateLock.withLock { state in
                 state.currentRawValue = previous.0
                 state.testingBaseBundle = previous.1
+                state.testingSystemLanguages = previous.2
                 if let baseBundle, previous.1?.bundlePath != baseBundle.bundlePath {
                     let prefix = "\(baseBundle.bundlePath)|"
                     state.cachedBundles = state.cachedBundles.filter { !$0.key.hasPrefix(prefix) }
@@ -403,6 +465,7 @@ enum AppLanguage: String, CaseIterable, Identifiable {
         var currentRawValue: String
         var cachedBundles: [String: Bundle] = [:]
         var testingBaseBundle: Bundle?
+        var testingSystemLanguages: [String]?
     }
 
     private nonisolated static let languageStateLock = OSAllocatedUnfairLock(

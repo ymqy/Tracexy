@@ -89,15 +89,17 @@ struct SessionCenterView: View {
     }
 
     static func waitingForPacketsMessage(interfaceID: String, hasCaptureFilter: Bool) -> String {
+        let bundle = AppLanguage.currentLocalizedBundle()
         if NetworkInterfaces.isSpecialPurposeWiFi(interfaceID) {
             return String(
-                localized: "This interface carries specialized Wi-Fi traffic. Choose your connected Wi-Fi or Ethernet interface for internet sessions."
+                localized: "This interface carries specialized Wi-Fi traffic. Choose your connected Wi-Fi or Ethernet interface for internet sessions.",
+                bundle: bundle
             )
         }
         if hasCaptureFilter {
-            return String(localized: "Waiting for packets matching the capture filter…")
+            return String(localized: "Waiting for packets matching the capture filter…", bundle: bundle)
         }
-        return String(localized: "Waiting for packets…")
+        return String(localized: "Waiting for packets…", bundle: bundle)
     }
 
     // MARK: Private
@@ -1062,18 +1064,25 @@ struct SessionCenterView: View {
     /// carries are offered, and each becomes a term the parser accepts.
     /// The session-expression terms this session's own facts support, with menu titles.
     private func likeThisTerms(_ session: SessionSummary) -> [(title: String, term: String)] {
+        let bundle = AppLanguage.currentLocalizedBundle()
         let terms: [(String, String?)] = [
-            (String(localized: "Same Host"), SessionExpressionTerm.sameHost(session.host)),
+            (String(localized: "Same Host", bundle: bundle), SessionExpressionTerm.sameHost(session.host)),
             (
-                String(localized: "Same Destination Address"),
+                String(localized: "Same Destination Address", bundle: bundle),
                 SessionExpressionTerm.sameDestinationIP(session.destinationEndpointValue)
             ),
             (
-                String(localized: "Same Destination Port"),
+                String(localized: "Same Destination Port", bundle: bundle),
                 SessionExpressionTerm.sameDestinationPort(session.destinationEndpointValue)
             ),
-            (String(localized: "Same Process"), SessionExpressionTerm.sameProcess(validProcessName(session.processName))),
-            (String(localized: "Same Protocol"), SessionExpressionTerm.sameProtocol(session.primaryProtocol)),
+            (
+                String(localized: "Same Process", bundle: bundle),
+                SessionExpressionTerm.sameProcess(validProcessName(session.processName))
+            ),
+            (
+                String(localized: "Same Protocol", bundle: bundle),
+                SessionExpressionTerm.sameProtocol(session.primaryProtocol)
+            ),
         ]
         return terms.compactMap { title, term in term.map { (title, $0) } }
     }

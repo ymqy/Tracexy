@@ -13,16 +13,18 @@ struct ProjectNameEditorContext: Identifiable, Equatable {
     let initialName: String
 
     var title: String {
-        switch mode {
-        case .create: String(localized: "New Project")
-        case .rename: String(localized: "Rename Project")
+        let bundle = AppLanguage.currentLocalizedBundle()
+        return switch mode {
+        case .create: String(localized: "New Project", bundle: bundle)
+        case .rename: String(localized: "Rename Project", bundle: bundle)
         }
     }
 
     var actionTitle: String {
-        switch mode {
-        case .create: String(localized: "Create")
-        case .rename: String(localized: "Rename")
+        let bundle = AppLanguage.currentLocalizedBundle()
+        return switch mode {
+        case .create: String(localized: "Create", bundle: bundle)
+        case .rename: String(localized: "Rename", bundle: bundle)
         }
     }
 }

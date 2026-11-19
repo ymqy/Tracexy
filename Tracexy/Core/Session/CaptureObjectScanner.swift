@@ -19,13 +19,14 @@ nonisolated enum CaptureObjectKind: String, CaseIterable, Identifiable, Sendable
     }
 
     var title: String {
-        switch self {
-        case .ftpData: String(localized: "FTP Data")
-        case .http: String(localized: "HTTP")
-        case .imf: String(localized: "Email (IMF)")
-        case .smb: String(localized: "SMB")
-        case .tftp: String(localized: "TFTP")
-        case .x509: String(localized: "X.509 Certificates")
+        let bundle = AppLanguage.currentLocalizedBundle()
+        return switch self {
+        case .ftpData: String(localized: "FTP Data", bundle: bundle)
+        case .http: String(localized: "HTTP", bundle: bundle)
+        case .imf: String(localized: "Email (IMF)", bundle: bundle)
+        case .smb: String(localized: "SMB", bundle: bundle)
+        case .tftp: String(localized: "TFTP", bundle: bundle)
+        case .x509: String(localized: "X.509 Certificates", bundle: bundle)
         }
     }
 

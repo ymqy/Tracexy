@@ -42,16 +42,17 @@ nonisolated struct TrafficIntervalAxis: Equatable, Sendable {
 
     /// A short label for an interval: "1 s", "5 min", "1 h".
     static func intervalTitle(_ interval: TimeInterval) -> String {
+        let bundle = AppLanguage.currentLocalizedBundle()
         if interval >= 3_600, interval.truncatingRemainder(dividingBy: 3_600) == 0 {
-            return String(localized: "\(Int(interval / 3_600)) h")
+            return String(localized: "\(Int(interval / 3_600)) h", bundle: bundle)
         }
         if interval >= 60, interval.truncatingRemainder(dividingBy: 60) == 0 {
-            return String(localized: "\(Int(interval / 60)) min")
+            return String(localized: "\(Int(interval / 60)) min", bundle: bundle)
         }
         if interval >= 1 {
-            return String(localized: "\(Int(interval)) s")
+            return String(localized: "\(Int(interval)) s", bundle: bundle)
         }
-        return String(localized: "\(Int((interval * 1_000).rounded())) ms")
+        return String(localized: "\(Int((interval * 1_000).rounded())) ms", bundle: bundle)
     }
 
     /// Plan the columns for `timeline` at the interval nearest `requested`, or `nil`

@@ -50,39 +50,42 @@ nonisolated enum GeoIPAddressScope: String, CaseIterable, Hashable, Sendable {
 
     /// Short label for a table cell.
     var label: String {
-        switch self {
-        case .privateNetwork: String(localized: "Private")
-        case .uniqueLocal: String(localized: "Unique local")
-        case .linkLocal: String(localized: "Link-local")
-        case .loopback: String(localized: "Loopback")
-        case .sharedAddressSpace: String(localized: "Shared (CGNAT)")
-        case .multicast: String(localized: "Multicast")
-        case .unspecified: String(localized: "Unspecified")
-        case .reserved: String(localized: "Reserved")
+        let bundle = AppLanguage.currentLocalizedBundle()
+        return switch self {
+        case .privateNetwork: String(localized: "Private", bundle: bundle)
+        case .uniqueLocal: String(localized: "Unique local", bundle: bundle)
+        case .linkLocal: String(localized: "Link-local", bundle: bundle)
+        case .loopback: String(localized: "Loopback", bundle: bundle)
+        case .sharedAddressSpace: String(localized: "Shared (CGNAT)", bundle: bundle)
+        case .multicast: String(localized: "Multicast", bundle: bundle)
+        case .unspecified: String(localized: "Unspecified", bundle: bundle)
+        case .reserved: String(localized: "Reserved", bundle: bundle)
         }
     }
 
     /// One sentence saying why the address was not looked up.
     var explanation: String {
-        switch self {
+        let bundle = AppLanguage.currentLocalizedBundle()
+        return switch self {
         case .privateNetwork:
-            String(localized: "A private address (RFC 1918). Tracexy never looks these up.")
+            String(localized: "A private address (RFC 1918). Tracexy never looks these up.", bundle: bundle)
         case .uniqueLocal:
-            String(localized: "A unique local IPv6 address. Tracexy never looks these up.")
+            String(localized: "A unique local IPv6 address. Tracexy never looks these up.", bundle: bundle)
         case .linkLocal:
-            String(localized: "A link-local address. Tracexy never looks these up.")
+            String(localized: "A link-local address. Tracexy never looks these up.", bundle: bundle)
         case .loopback:
-            String(localized: "A loopback address. Tracexy never looks these up.")
+            String(localized: "A loopback address. Tracexy never looks these up.", bundle: bundle)
         case .sharedAddressSpace:
-            String(localized: "A carrier-grade NAT address (RFC 6598). Tracexy never looks these up.")
+            String(localized: "A carrier-grade NAT address (RFC 6598). Tracexy never looks these up.", bundle: bundle)
         case .multicast:
             String(
-                localized: "A multicast address. It names a group, not a place, so it isn’t looked up."
+                localized: "A multicast address. It names a group, not a place, so it isn’t looked up.",
+                bundle: bundle
             )
         case .unspecified:
-            String(localized: "An unspecified address. It names no host, so it isn’t looked up.")
+            String(localized: "An unspecified address. It names no host, so it isn’t looked up.", bundle: bundle)
         case .reserved:
-            String(localized: "A reserved or broadcast address. It names no host, so it isn’t looked up.")
+            String(localized: "A reserved or broadcast address. It names no host, so it isn’t looked up.", bundle: bundle)
         }
     }
 

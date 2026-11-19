@@ -19,15 +19,16 @@ nonisolated enum ChecksumStatus: Equatable, Sendable {
 
     /// The bracketed note after the checksum value, as Wireshark writes it.
     var note: String {
-        switch self {
-        case .correct: String(localized: "[correct]")
-        case .partial: String(localized: "[partial, likely checksum offload]")
+        let bundle = AppLanguage.currentLocalizedBundle()
+        return switch self {
+        case .correct: String(localized: "[correct]", bundle: bundle)
+        case .partial: String(localized: "[partial, likely checksum offload]", bundle: bundle)
         case let .incorrect(expected):
-            String(localized: "[incorrect, should be \(PacketDecoder.hex(expected, digits: 4))]")
+            String(localized: "[incorrect, should be \(PacketDecoder.hex(expected, digits: 4))]", bundle: bundle)
         case let .incorrect32(expected):
-            String(localized: "[incorrect, should be \(PacketDecoder.hex(expected, digits: 8))]")
-        case .notPresent: String(localized: "[not present]")
-        case .unverified: String(localized: "[unverified, not fully captured]")
+            String(localized: "[incorrect, should be \(PacketDecoder.hex(expected, digits: 8))]", bundle: bundle)
+        case .notPresent: String(localized: "[not present]", bundle: bundle)
+        case .unverified: String(localized: "[unverified, not fully captured]", bundle: bundle)
         }
     }
 }
