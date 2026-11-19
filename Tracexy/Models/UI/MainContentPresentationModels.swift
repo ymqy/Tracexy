@@ -108,6 +108,22 @@ struct DomainGroup: Identifiable {
     }
 }
 
+// MARK: - LocalDiscoveryGroup
+
+nonisolated struct LocalDiscoveryGroup: Identifiable, Equatable, Sendable {
+    let name: String
+    let badgeTitle: String
+    let subtitle: String
+    let symbolName: String
+    let tooltip: String
+    let ips: [String]
+    let count: Int
+
+    var id: String {
+        name
+    }
+}
+
 // MARK: - AppGroup
 
 struct AppGroup: Identifiable {

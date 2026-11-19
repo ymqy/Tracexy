@@ -93,26 +93,43 @@ enum SessionSearchField: String, CaseIterable, Identifiable, Codable, Hashable {
     /// The lowercased text a free-text query is matched against for this scope.
     /// "All Fields" spans host, process, protocol labels, both endpoints, the
     /// info summary, and DNS answers — the same breadth the list already shows.
-    nonisolated func haystack(in session: SessionSummary) -> String {
+    /// Host and All Fields also include any semantic local-discovery annotation
+    /// (e.g. Bonjour service badge and detail) so localized searches match too.
+    nonisolated func haystack(in session: SessionSummary, bundle: Bundle = .main) -> String {
         switch self {
         case .allFields:
-            ([
+            let discoveryTerms: [String] = if let annotation = LocalDiscoveryNameClassifier.classify(
+                session.host,
+                bundle: bundle
+            ) {
+                [annotation.badgeTitle, annotation.detailTitle]
+            } else {
+                []
+            }
+            return ([
                 session.host,
                 session.processName ?? "",
                 session.sourceEndpoint,
                 session.destinationEndpoint,
                 session.infoSummary,
             ]
+                + discoveryTerms
                 + session.protocolStack.map(\.label)
                 + session.dnsAnswers)
                 .joined(separator: " ")
                 .lowercased()
-        case .host: session.host.lowercased()
-        case .client: (session.processName ?? "").lowercased()
-        case .proto: session.protocolStack.map(\.label).joined(separator: " ").lowercased()
-        case .source: session.sourceEndpoint.lowercased()
-        case .destination: session.destinationEndpoint.lowercased()
-        case .summary: session.infoSummary.lowercased()
+        case .host:
+            if let annotation = LocalDiscoveryNameClassifier.classify(session.host, bundle: bundle) {
+                return [session.host, annotation.badgeTitle, annotation.detailTitle]
+                    .joined(separator: " ")
+                    .lowercased()
+            }
+            return session.host.lowercased()
+        case .client: return (session.processName ?? "").lowercased()
+        case .proto: return session.protocolStack.map(\.label).joined(separator: " ").lowercased()
+        case .source: return session.sourceEndpoint.lowercased()
+        case .destination: return session.destinationEndpoint.lowercased()
+        case .summary: return session.infoSummary.lowercased()
         }
     }
 }

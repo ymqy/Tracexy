@@ -149,6 +149,7 @@ enum ProjectScopedSettingsKeys {
     static let mutedProtocols = key("noise.mutedProtocols")
     static let hiddenSourceApps = key("sources.hiddenApps")
     static let hiddenSourceDomains = key("sources.hiddenDomains")
+    static let hiddenSourceLocalNames = key("sources.hiddenLocalNames")
     static let hiddenSourceIPs = key("sources.hiddenIPs")
     static let inspectorLayout = key("workspace.inspectorLayout")
     static let contextDockVisible = key("workspace.contextDockVisible")

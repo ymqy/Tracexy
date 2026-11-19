@@ -12,12 +12,19 @@ extension MainContentCoordinator {
         hiddenSourceDomains.contains(domain)
     }
 
+    func isSourceLocalNameHidden(_ name: String) -> Bool {
+        hiddenSourceLocalNames.contains(name)
+    }
+
     func isSourceIPHidden(_ ip: String) -> Bool {
         hiddenSourceIPs.contains(ip)
     }
 
     func isSourceHostHidden(_ host: String) -> Bool {
-        Self.isDomainName(host) ? isSourceDomainHidden(host) : isSourceIPHidden(host)
+        if LocalDiscoveryNameClassifier.isLocalOrSpecialDiscoveryName(host) {
+            return isSourceLocalNameHidden(host)
+        }
+        return Self.isDomainName(host) ? isSourceDomainHidden(host) : isSourceIPHidden(host)
     }
 
     func hideSourceApp(_ app: String) {
@@ -42,6 +49,17 @@ extension MainContentCoordinator {
         persistHiddenSources()
     }
 
+    func hideSourceLocalName(_ name: String) {
+        guard !name.isEmpty else {
+            return
+        }
+        hiddenSourceLocalNames.insert(name)
+        if activeWorkspace.hostFilter == name {
+            selectSidebarItem(.sessions)
+        }
+        persistHiddenSources()
+    }
+
     func hideSourceIP(_ ip: String) {
         guard !ip.isEmpty else {
             return
@@ -57,7 +75,9 @@ extension MainContentCoordinator {
     }
 
     func hideSourceHost(_ host: String) {
-        if Self.isDomainName(host) {
+        if LocalDiscoveryNameClassifier.isLocalOrSpecialDiscoveryName(host) {
+            hideSourceLocalName(host)
+        } else if Self.isDomainName(host) {
             hideSourceDomain(host)
         } else {
             hideSourceIP(host)
@@ -74,6 +94,11 @@ extension MainContentCoordinator {
         persistHiddenSources()
     }
 
+    func restoreHiddenSourceLocalNames() {
+        hiddenSourceLocalNames.removeAll()
+        persistHiddenSources()
+    }
+
     func restoreHiddenSourceIPs() {
         hiddenSourceIPs.removeAll()
         persistHiddenSources()
@@ -83,6 +108,7 @@ extension MainContentCoordinator {
         SourceVisibilityPreferences.persist(
             apps: hiddenSourceApps,
             domains: hiddenSourceDomains,
+            localNames: hiddenSourceLocalNames,
             ips: hiddenSourceIPs,
             defaults: activeProjectDefaults
         )
@@ -104,6 +130,10 @@ enum SourceVisibilityPreferences {
         load(key: ProjectScopedSettingsKeys.hiddenSourceDomains, defaults: defaults)
     }
 
+    static func loadLocalNames(defaults: UserDefaults) -> Set<String> {
+        load(key: ProjectScopedSettingsKeys.hiddenSourceLocalNames, defaults: defaults)
+    }
+
     static func loadIPs(defaults: UserDefaults) -> Set<String> {
         load(key: ProjectScopedSettingsKeys.hiddenSourceIPs, defaults: defaults)
     }
@@ -111,11 +141,15 @@ enum SourceVisibilityPreferences {
     static func persist(
         apps: Set<String>,
         domains: Set<String>,
+        localNames: Set<String>? = nil,
         ips: Set<String>,
         defaults: UserDefaults
     ) {
         defaults.set(apps.sorted(), forKey: ProjectScopedSettingsKeys.hiddenSourceApps)
         defaults.set(domains.sorted(), forKey: ProjectScopedSettingsKeys.hiddenSourceDomains)
+        if let localNames {
+            defaults.set(localNames.sorted(), forKey: ProjectScopedSettingsKeys.hiddenSourceLocalNames)
+        }
         defaults.set(ips.sorted(), forKey: ProjectScopedSettingsKeys.hiddenSourceIPs)
     }
 

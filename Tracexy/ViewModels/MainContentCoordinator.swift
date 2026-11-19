@@ -100,6 +100,7 @@ final class MainContentCoordinator {
         mutedProtocols = bootRuntime.mutedProtocols
         hiddenSourceApps = bootRuntime.hiddenSourceApps
         hiddenSourceDomains = bootRuntime.hiddenSourceDomains
+        hiddenSourceLocalNames = SourceVisibilityPreferences.loadLocalNames(defaults: bootDefaults)
         hiddenSourceIPs = bootRuntime.hiddenSourceIPs
         investigationNotes.bind(to: bootDefaults)
         expressionLibrary.bind(to: bootDefaults)
@@ -191,7 +192,11 @@ final class MainContentCoordinator {
     /// The active Project's preferences suite. Every settings resolver call in the
     /// coordinator, readiness, saved loader, export, and History paths reads this
     /// rather than the shared domain.
-    var activeProjectDefaults: UserDefaults
+    var activeProjectDefaults: UserDefaults {
+        didSet {
+            hiddenSourceLocalNames = SourceVisibilityPreferences.loadLocalNames(defaults: activeProjectDefaults)
+        }
+    }
 
     /// The active Project's managed capture Library folder, or `nil` when it could
     /// not be prepared.
@@ -637,6 +642,7 @@ final class MainContentCoordinator {
     /// still be found from Sessions. Each category can restore its hidden rows.
     var hiddenSourceApps: Set<String> = []
     var hiddenSourceDomains: Set<String> = []
+    var hiddenSourceLocalNames: Set<String> = []
     var hiddenSourceIPs: Set<String> = []
 
     /// Session rows removed from the current capture's presentation. This is
@@ -877,11 +883,12 @@ final class MainContentCoordinator {
         Set(findings.map(\.sessionID))
     }
 
-    /// Domains grouped by name, each carrying the set of server IPs it resolved
-    /// to (the "sub-IPs"), for the sidebar "Domains" tree — sibling-app-style.
+    /// Public / unicast domains grouped by name, each carrying the set of server IPs
+    /// it resolved to (the "sub-IPs"), for the sidebar "Domains" tree. Excludes mDNS
+    /// (`.local`), DNS-SD, and special-use `.arpa` discovery names.
     var domainGroups: [DomainGroup] {
         var byDomain: [String: (ips: Set<String>, count: Int)] = [:]
-        for session in presentedSessions where Self.isDomainName(session.host) {
+        for session in presentedSessions where LocalDiscoveryNameClassifier.isPublicOrUnicastDomainName(session.host) {
             var entry = byDomain[session.host] ?? (ips: [], count: 0)
             entry.count += 1
             for answer in session.dnsAnswers where !answer.hasPrefix("CNAME") {
@@ -894,12 +901,61 @@ final class MainContentCoordinator {
         }
         return byDomain
             .map { DomainGroup(domain: $0.key, ips: $0.value.ips.sorted(), count: $0.value.count) }
-            .sorted { $0.count > $1.count }
+            .sorted { $0.count == $1.count ? $0.domain < $1.domain : $0.count > $1.count }
     }
 
-    /// Bare-IP hosts (no domain name resolved) with session counts.
+    /// Local-network discovery names (`.local`, Bonjour / DNS-SD services, and
+    /// special-use `.arpa` probes) grouped by host name with human-readable semantic
+    /// annotations and unicast peer IPs (excluding multicast `224.0.0.251` / `ff02::fb`).
+    var localDiscoveryGroups: [LocalDiscoveryGroup] {
+        var byName: [String: (annotation: LocalDiscoveryAnnotation, ips: Set<String>, count: Int)] = [:]
+        for session in presentedSessions {
+            guard let annotation = LocalDiscoveryNameClassifier.classify(session.host) else {
+                continue
+            }
+            var entry = byName[session.host] ?? (annotation: annotation, ips: [], count: 0)
+            entry.count += 1
+            for answer in session.dnsAnswers where !answer.hasPrefix("CNAME") {
+                if let ip = Self.validUnicastIP(from: answer) {
+                    entry.ips.insert(ip)
+                }
+            }
+            let destCandidate = session.destinationEndpointValue?.ip ?? Self.ipPart(session.destinationEndpoint)
+            if let destText = destCandidate.map(Self.stripIPv6Brackets),
+               let destParsed = IPAddressValue(parsing: destText)
+            {
+                if !Self.isMulticastOrUnspecified(destParsed) {
+                    entry.ips.insert(destText)
+                } else {
+                    let srcCandidate = session.sourceEndpointValue?.ip ?? Self.ipPart(session.sourceEndpoint)
+                    if let srcText = srcCandidate.map(Self.stripIPv6Brackets),
+                       let srcParsed = IPAddressValue(parsing: srcText),
+                       !Self.isMulticastOrUnspecified(srcParsed)
+                    {
+                        entry.ips.insert(srcText)
+                    }
+                }
+            }
+            byName[session.host] = entry
+        }
+        return byName
+            .map { name, entry in
+                LocalDiscoveryGroup(
+                    name: name,
+                    badgeTitle: entry.annotation.badgeTitle,
+                    subtitle: entry.annotation.detailTitle,
+                    symbolName: entry.annotation.symbolName,
+                    tooltip: entry.annotation.tooltip,
+                    ips: entry.ips.sorted(),
+                    count: entry.count
+                )
+            }
+            .sorted { $0.count == $1.count ? $0.name < $1.name : $0.count > $1.count }
+    }
+
+    /// Bare-IP hosts (valid IPv4/IPv6 literals only) with session counts.
     var ipHosts: [(name: String, count: Int)] {
-        groupCounts { $0.host }.filter { !Self.isDomainName($0.name) }
+        groupCounts { $0.host }.filter { IPAddressValue(parsing: $0.name) != nil }
     }
 
     /// Apps that originated traffic, each carrying the hosts/IPs it contacted
@@ -1103,7 +1159,7 @@ final class MainContentCoordinator {
     }
 
     /// A host is a domain name (not a bare IPv4/IPv6 literal).
-    static func isDomainName(_ host: String) -> Bool {
+    nonisolated static func isDomainName(_ host: String) -> Bool {
         if host.contains(":") {
             return false // IPv6 literal
         }
@@ -1475,6 +1531,38 @@ final class MainContentCoordinator {
             return endpoint
         }
         return comps.dropLast().joined(separator: ":")
+    }
+
+    private static func stripIPv6Brackets(_ text: String) -> String {
+        if text.hasPrefix("["), text.hasSuffix("]"), text.count >= 2 {
+            return String(text.dropFirst().dropLast())
+        }
+        return text
+    }
+
+    private static func validUnicastIP(from text: String) -> String? {
+        let stripped = stripIPv6Brackets(text)
+        guard let parsed = IPAddressValue(parsing: stripped),
+              !isMulticastOrUnspecified(parsed) else
+        {
+            return nil
+        }
+        return stripped
+    }
+
+    private static func isMulticastOrUnspecified(_ address: IPAddressValue) -> Bool {
+        switch address.family {
+        case .v4:
+            let first = address.bytes[0]
+            let isMulticast = (first & 0xF0) == 0xE0 // 224.0.0.0/4 (incl. 224.0.0.251)
+            let isUnspecified = address.bytes.allSatisfy { $0 == 0 } // 0.0.0.0
+            let isBroadcast = address.bytes.allSatisfy { $0 == 0xFF } // 255.255.255.255
+            return isMulticast || isUnspecified || isBroadcast
+        case .v6:
+            let isMulticast = address.bytes[0] == 0xFF // ff00::/8 (incl. ff02::fb)
+            let isUnspecified = address.bytes.allSatisfy { $0 == 0 } // ::
+            return isMulticast || isUnspecified
+        }
     }
 
     private func sealActiveLiveIngestQueue() {

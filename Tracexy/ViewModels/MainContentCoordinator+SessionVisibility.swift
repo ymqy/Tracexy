@@ -54,7 +54,7 @@ extension MainContentCoordinator {
 
     nonisolated static func sourceSummary(of scoped: [SessionSummary]) -> (apps: Int, domains: Int, addresses: Int) {
         let apps = Set(scoped.compactMap(\.processName).filter { !$0.isEmpty && $0 != "—" })
-        let domains = Set(scoped.map(\.host).filter(Self.isDomainName))
+        let domains = Set(scoped.map(\.host).filter(LocalDiscoveryNameClassifier.isPublicOrUnicastDomainName))
         var addresses = Set<IPAddressValue>()
         for session in scoped {
             let endpoints = [session.sourceEndpointValue, session.destinationEndpointValue].compactMap { $0?.ip }
