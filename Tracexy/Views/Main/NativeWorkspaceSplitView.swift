@@ -209,11 +209,27 @@ struct NativeWorkspaceSplitView<Sidebar: View, Workspace: View, Inspector: View>
 /// Evaluates a content builder inside the hosted SwiftUI hierarchy so Observation can
 /// invalidate the content in place while the AppKit split items keep stable identities.
 struct NativeWorkspaceDeferredContent<Content: View>: View {
+    // MARK: Lifecycle
+
+    init(content: @escaping () -> Content) {
+        self.content = content
+    }
+
+    // MARK: Internal
+
     let content: () -> Content
 
     var body: some View {
+        let locale = AppLanguage(rawValue: language)?.localeOverride
+        let _ = AppLanguage.syncCurrentLanguage(language)
         content()
+            .appLocaleOverride(locale)
     }
+
+    // MARK: Private
+
+    @AppStorage(SettingsKeys.language, store: TracexyIdentity.applicationDefaults)
+    private var language = AppLanguage.system.rawValue
 }
 
 // MARK: - NativeWorkspaceSplitLayout

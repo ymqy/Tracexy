@@ -564,6 +564,9 @@ struct TracexyApp: App {
                     // once at launch.
                     AppThemeApplier.apply(AppAppearance(rawValue: newValue) ?? .system)
                 }
+                .onChange(of: language, initial: true) { _, newValue in
+                    AppLanguage.syncCurrentLanguage(newValue)
+                }
                 .task {
                     appDelegate.attach(coordinator, applicationDefaults: Self.applicationDefaults)
                     updater.startIfConfigured()

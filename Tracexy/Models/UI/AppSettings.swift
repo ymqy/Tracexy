@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import os
 import SwiftUI
 
 // MARK: - SettingsKeys
@@ -181,13 +182,14 @@ enum SettingsTab: String, CaseIterable, Identifiable, Hashable {
     }
 
     var title: String {
-        switch self {
-        case .general: String(localized: "General")
-        case .capture: String(localized: "Capture")
-        case .helper: String(localized: "Helper")
-        case .privacy: String(localized: "Privacy")
-        case .mcp: String(localized: "MCP & Assistant")
-        case .updates: String(localized: "Updates")
+        let bundle = AppLanguage.currentLocalizedBundle()
+        return switch self {
+        case .general: String(localized: "General", bundle: bundle)
+        case .capture: String(localized: "Capture", bundle: bundle)
+        case .helper: String(localized: "Helper", bundle: bundle)
+        case .privacy: String(localized: "Privacy", bundle: bundle)
+        case .mcp: String(localized: "MCP & Assistant", bundle: bundle)
+        case .updates: String(localized: "Updates", bundle: bundle)
         }
     }
 
@@ -218,10 +220,11 @@ enum AppAppearance: String, CaseIterable, Identifiable {
     }
 
     var title: String {
-        switch self {
-        case .system: String(localized: "System")
-        case .light: String(localized: "Light")
-        case .dark: String(localized: "Dark")
+        let bundle = AppLanguage.currentLocalizedBundle()
+        return switch self {
+        case .system: String(localized: "System", bundle: bundle)
+        case .light: String(localized: "Light", bundle: bundle)
+        case .dark: String(localized: "Dark", bundle: bundle)
         }
     }
 
@@ -234,10 +237,11 @@ enum AppAppearance: String, CaseIterable, Identifiable {
     }
 
     var detail: String {
-        switch self {
-        case .system: String(localized: "Matches macOS")
-        case .light: String(localized: "Always light")
-        case .dark: String(localized: "Always dark")
+        let bundle = AppLanguage.currentLocalizedBundle()
+        return switch self {
+        case .system: String(localized: "Matches macOS", bundle: bundle)
+        case .light: String(localized: "Always light", bundle: bundle)
+        case .dark: String(localized: "Always dark", bundle: bundle)
         }
     }
 
@@ -276,7 +280,7 @@ enum AppLanguage: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .system: String(localized: "System Default")
+        case .system: String(localized: "System Default", bundle: AppLanguage.currentLocalizedBundle())
         case .simplifiedChinese: "简体中文"
         case .english: "English"
         case .vietnamese: "Tiếng Việt"
@@ -293,11 +297,76 @@ enum AppLanguage: String, CaseIterable, Identifiable {
         }
     }
 
+    nonisolated static func localizedBundle(for rawValue: String, in base: Bundle = .main) -> Bundle {
+        let lang = AppLanguage(rawValue: rawValue) ?? .system
+        guard lang != .system else {
+            return base
+        }
+        let cacheKey = "\(base.bundlePath)|\(lang.rawValue)"
+        return languageStateLock.withLock { state in
+            if let cached = state.cachedBundles[cacheKey] {
+                return cached
+            }
+            let resolved = base.path(forResource: lang.rawValue, ofType: "lproj")
+                .flatMap(Bundle.init(path:)) ?? base
+            state.cachedBundles[cacheKey] = resolved
+            return resolved
+        }
+    }
+
+    nonisolated static func currentLocalizedBundle(in base: Bundle? = nil) -> Bundle {
+        let (currentRawValue, testingBaseBundle) = languageStateLock.withLock {
+            ($0.currentRawValue, $0.testingBaseBundle)
+        }
+        let effectiveBase = base ?? testingBaseBundle ?? .main
+        return localizedBundle(for: currentRawValue, in: effectiveBase)
+    }
+
+    nonisolated static func syncCurrentLanguage(_ rawValue: String) {
+        guard !TracexyIdentity.isRunningTests else {
+            return
+        }
+        let resolved = (AppLanguage(rawValue: rawValue) ?? .system).rawValue
+        languageStateLock.withLock { state in
+            state.currentRawValue = resolved
+        }
+    }
+
+    nonisolated static func withTemporaryLanguageForTesting<T>(
+        _ rawValue: String,
+        baseBundle: Bundle? = nil,
+        perform body: () throws -> T
+    ) rethrows -> T {
+        let resolved = (AppLanguage(rawValue: rawValue) ?? .system).rawValue
+        let previous = languageStateLock.withLock { state -> (String, Bundle?) in
+            let old = (state.currentRawValue, state.testingBaseBundle)
+            state.currentRawValue = resolved
+            state.testingBaseBundle = baseBundle
+            return old
+        }
+        defer {
+            languageStateLock.withLock { state in
+                state.currentRawValue = previous.0
+                state.testingBaseBundle = previous.1
+                if let baseBundle, previous.1?.bundlePath != baseBundle.bundlePath {
+                    let prefix = "\(baseBundle.bundlePath)|"
+                    state.cachedBundles = state.cachedBundles.filter { !$0.key.hasPrefix(prefix) }
+                }
+            }
+        }
+        return try body()
+    }
+
     nonisolated static func applyToAppleLanguages(
         _ rawValue: String,
         defaults: UserDefaults = TracexyIdentity.applicationDefaults
     ) {
         let resolved = AppLanguage(rawValue: rawValue) ?? .system
+        if !TracexyIdentity.isRunningTests {
+            languageStateLock.withLock { state in
+                state.currentRawValue = resolved.rawValue
+            }
+        }
         switch resolved {
         case .system:
             defaults.removeObject(forKey: "AppleLanguages")
@@ -322,6 +391,18 @@ enum AppLanguage: String, CaseIterable, Identifiable {
             }
         }
     }
+
+    // MARK: Private
+
+    private nonisolated struct LanguageBundleState: @unchecked Sendable {
+        var currentRawValue: String
+        var cachedBundles: [String: Bundle] = [:]
+        var testingBaseBundle: Bundle?
+    }
+
+    private nonisolated static let languageStateLock = OSAllocatedUnfairLock(
+        initialState: LanguageBundleState(currentRawValue: launchRawValue)
+    )
 }
 
 // MARK: - DefaultView
@@ -338,9 +419,10 @@ enum DefaultView: String, CaseIterable, Identifiable {
     }
 
     var title: String {
-        switch self {
-        case .sessions: String(localized: "Sessions")
-        case .overview: String(localized: "Overview")
+        let bundle = AppLanguage.currentLocalizedBundle()
+        return switch self {
+        case .sessions: String(localized: "Sessions", bundle: bundle)
+        case .overview: String(localized: "Overview", bundle: bundle)
         }
     }
 
@@ -366,9 +448,10 @@ enum ByteUnits: String, CaseIterable, Identifiable {
     }
 
     var title: String {
-        switch self {
-        case .binary: String(localized: "Binary — KiB")
-        case .decimal: String(localized: "Decimal — KB")
+        let bundle = AppLanguage.currentLocalizedBundle()
+        return switch self {
+        case .binary: String(localized: "Binary — KiB", bundle: bundle)
+        case .decimal: String(localized: "Decimal — KB", bundle: bundle)
         }
     }
 
@@ -405,9 +488,10 @@ enum CaptureFilterMode: String, CaseIterable, Identifiable {
     }
 
     var title: String {
-        switch self {
-        case .all: String(localized: "All traffic")
-        case .custom: String(localized: "Custom (BPF)")
+        let bundle = AppLanguage.currentLocalizedBundle()
+        return switch self {
+        case .all: String(localized: "All traffic", bundle: bundle)
+        case .custom: String(localized: "Custom (BPF)", bundle: bundle)
         }
     }
 }
@@ -537,11 +621,12 @@ enum AutoClear: String, CaseIterable, Identifiable {
     }
 
     var title: String {
-        switch self {
-        case .never: String(localized: "Never")
-        case .minutes15: String(localized: "After 15 minutes")
-        case .hour1: String(localized: "After 1 hour")
-        case .hours24: String(localized: "After 24 hours")
+        let bundle = AppLanguage.currentLocalizedBundle()
+        return switch self {
+        case .never: String(localized: "Never", bundle: bundle)
+        case .minutes15: String(localized: "After 15 minutes", bundle: bundle)
+        case .hour1: String(localized: "After 1 hour", bundle: bundle)
+        case .hours24: String(localized: "After 24 hours", bundle: bundle)
         }
     }
 

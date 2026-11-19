@@ -12,11 +12,12 @@ enum CaptureDisplayState {
     // MARK: Internal
 
     var title: String {
-        switch self {
-        case .stopped: String(localized: "Stopped")
-        case .starting: String(localized: "Starting")
-        case .capturing: String(localized: "Capturing")
-        case .error: String(localized: "Error")
+        let bundle = AppLanguage.currentLocalizedBundle()
+        return switch self {
+        case .stopped: String(localized: "Stopped", bundle: bundle)
+        case .starting: String(localized: "Starting", bundle: bundle)
+        case .capturing: String(localized: "Capturing", bundle: bundle)
+        case .error: String(localized: "Error", bundle: bundle)
         }
     }
 }

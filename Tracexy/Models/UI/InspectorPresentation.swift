@@ -27,7 +27,7 @@ enum InspectorTab: String, CaseIterable, Identifiable, Hashable {
     }
 
     nonisolated var title: String {
-        title(in: .main)
+        title(in: AppLanguage.currentLocalizedBundle())
     }
 
     nonisolated func title(in bundle: Bundle) -> String {
@@ -160,7 +160,7 @@ enum ContextDockTab: String, CaseIterable, Identifiable, Hashable {
     }
 
     nonisolated var title: String {
-        title(in: .main)
+        title(in: AppLanguage.currentLocalizedBundle())
     }
 
     nonisolated func title(in bundle: Bundle) -> String {

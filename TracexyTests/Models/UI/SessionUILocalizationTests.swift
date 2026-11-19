@@ -295,6 +295,191 @@ struct SessionUILocalizationTests {
         }
     }
 
+    @Test("RFC 8375 home.arpa local discovery strings localize cleanly in English and Simplified Chinese")
+    func homeArpaLocalization() throws {
+        let bundles = try makeCatalogBundles()
+        defer { bundles.teardown() }
+
+        let expected: [(String.LocalizationValue, String, String)] = [
+            ("Home LAN", "Home LAN", "家庭局域网"),
+            (
+                "Residential home network domain (RFC 8375)",
+                "Residential home network domain (RFC 8375)",
+                "家庭局域网保留域 (RFC 8375)"
+            ),
+            (
+                "Home network device hostname (RFC 8375)",
+                "Home network device hostname (RFC 8375)",
+                "家庭局域网设备主机名 (RFC 8375)"
+            ),
+        ]
+
+        for (key, enExpected, zhExpected) in expected {
+            #expect(String(localized: key, bundle: bundles.en) == enExpected)
+            #expect(String(localized: key, bundle: bundles.zhHans) == zhExpected)
+        }
+    }
+
+    @Test("AppLanguage dynamic bundle switches UI model strings in-process without restart")
+    @MainActor
+    func zeroRestartDynamicLanguageSwitching() throws {
+        let bundles = try makeCatalogBundles()
+        defer { bundles.teardown() }
+
+        let loss = CaptureLoss(
+            hasStatistics: true,
+            totalDropped: 2,
+            isMaterialLoss: true,
+            helperDropCount: 1,
+            retentionEvictionCount: 5
+        )
+
+        AppLanguage.withTemporaryLanguageForTesting("en", baseBundle: bundles.root) {
+            #expect(InspectorTab.allCases.map(\.title) == [
+                "Timeline",
+                "Evidence",
+                "Ladder",
+                "Frames",
+                "Stream",
+                "Layers",
+                "Requests",
+                "Payload",
+                "Hex",
+            ])
+            #expect(ContextDockTab.allCases.map(\.title) == ["Details", "AI Assistant"])
+            #expect(SessionTimeFormat.allCases.map(\.columnTitle) == ["Time", "UTC", "Since Start"])
+            #expect(SessionTimeFormat.allCases.map(\.menuTitle) == [
+                "Time of Day",
+                "Time of Day (UTC)",
+                "Seconds Since Capture Start",
+            ])
+            #expect(FrameTimeFormat.sinceSessionStart.columnTitle == "Time")
+            #expect(FrameTimeFormat.sinceSessionStart.menuTitle == "Seconds Since Session Start")
+            #expect(FrameTimePrecision.seconds.title == "Seconds")
+            #expect(SidebarItem.overview.title == "Overview")
+            #expect(SidebarItem.sessions.title == "Sessions")
+            #expect(SidebarSection.monitor.title == "Monitor")
+            #expect(CaptureDisplayState.capturing.title == "Capturing")
+            #expect(AppLanguage.system.title == "System Default")
+            #expect(DefaultView.sessions.title == "Sessions")
+            #expect(ByteUnits.binary.title == "Binary — KiB")
+            #expect(CaptureFilterMode.all.title == "All traffic")
+            #expect(SessionScopeAction.resetTitle == "Reset Session Filters")
+
+            #expect(SessionStatusBarModel.statusText(
+                surface: .sessionList,
+                totalSessions: 5,
+                visibleCount: 3,
+                hasSelection: true
+            ) == "1 selected, 3 of 5 shown")
+
+            let enTelemetry = Dictionary(uniqueKeysWithValues: SessionStatusBarModel.telemetry(
+                isCapturing: true,
+                loss: loss,
+                errorCount: 2,
+                hasCaptureDuration: false,
+                liveBytesPerSecond: nil,
+                totalBytes: 0,
+                bytesUp: 0,
+                bytesDown: 0,
+                attribution: (known: 3, total: 4)
+            ).map { ($0.kind, $0.text) })
+            #expect(enTelemetry[.packetDrops] == "2 dropped")
+            #expect(enTelemetry[.helperDrops] == "1 helper drops")
+            #expect(enTelemetry[.sessionErrors] == "2 session errors")
+            #expect(enTelemetry[.attribution] == "Process 3 of 4")
+            #expect(enTelemetry[.retentionTruncation] == "5 outside memory window")
+
+            #expect(HistoryFooterModel.statusText(
+                captureCount: 1,
+                sessionCount: 1,
+                hasMore: false
+            ) == "1 capture, 1 session")
+        }
+
+        AppLanguage.withTemporaryLanguageForTesting("zh-Hans", baseBundle: bundles.root) {
+            #expect(InspectorTab.allCases.map(\.title) == [
+                "时间线",
+                "证据",
+                "时序图",
+                "数据帧",
+                "数据流",
+                "协议层",
+                "请求",
+                "载荷",
+                "Hex",
+            ])
+            #expect(ContextDockTab.allCases.map(\.title) == ["详情", "AI 助手"])
+            #expect(SessionTimeFormat.allCases.map(\.columnTitle) == ["时间", "UTC", "自开始以来"])
+            #expect(SessionTimeFormat.allCases.map(\.menuTitle) == [
+                "当日时间",
+                "当日时间 (UTC)",
+                "自抓包开始以来的秒数",
+            ])
+            #expect(FrameTimeFormat.sinceSessionStart.columnTitle == "时间")
+            #expect(FrameTimeFormat.sinceSessionStart.menuTitle == "自会话开始以来的秒数")
+            #expect(FrameTimePrecision.seconds.title == "秒")
+            #expect(SidebarItem.overview.title == "概览")
+            #expect(SidebarItem.sessions.title == "会话")
+            #expect(SidebarSection.monitor.title == "监控")
+            #expect(CaptureDisplayState.capturing.title == "正在抓包")
+            #expect(AppLanguage.system.title == "跟随系统")
+            #expect(DefaultView.sessions.title == "会话")
+            #expect(ByteUnits.binary.title == "二进制 — KiB")
+            #expect(CaptureFilterMode.all.title == "全部流量")
+            #expect(SessionScopeAction.resetTitle == "重置会话过滤器")
+
+            #expect(SessionStatusBarModel.statusText(
+                surface: .sessionList,
+                totalSessions: 5,
+                visibleCount: 3,
+                hasSelection: true
+            ) == "已选 1，显示 3 / 5")
+
+            let zhTelemetry = Dictionary(uniqueKeysWithValues: SessionStatusBarModel.telemetry(
+                isCapturing: true,
+                loss: loss,
+                errorCount: 2,
+                hasCaptureDuration: false,
+                liveBytesPerSecond: nil,
+                totalBytes: 0,
+                bytesUp: 0,
+                bytesDown: 0,
+                attribution: (known: 3, total: 4)
+            ).map { ($0.kind, $0.text) })
+            #expect(zhTelemetry[.packetDrops] == "已丢弃 2")
+            #expect(zhTelemetry[.helperDrops] == "助手丢弃 1")
+            #expect(zhTelemetry[.sessionErrors] == "2 个会话错误")
+            #expect(zhTelemetry[.attribution] == "进程已识别 3 / 4")
+            #expect(zhTelemetry[.retentionTruncation] == "内存窗口外 5")
+
+            #expect(HistoryFooterModel.statusText(
+                captureCount: 1,
+                sessionCount: 1,
+                hasMore: false
+            ) == "1 个抓包, 1 个会话")
+        }
+
+        // Restored after temporary testing scope exits so default test isolation holds.
+        #expect(AppLanguage.currentLocalizedBundle() == .main)
+    }
+
+    @Test("Hosted split views and main scene synchronize language changes live")
+    func hostedSplitViewsPropagateLanguageOverride() throws {
+        let app = try readProjectFile("Tracexy/TracexyApp.swift")
+        let workspaceSplit = try readProjectFile("Tracexy/Views/Main/NativeWorkspaceSplitView.swift")
+        let bottomSplit = try readProjectFile("Tracexy/Views/Main/NativeBottomInspectorSplitView.swift")
+
+        #expect(app.contains(".onChange(of: language, initial: true)"))
+        #expect(app.contains("AppLanguage.syncCurrentLanguage(newValue)"))
+
+        for source in [workspaceSplit, bottomSplit] {
+            #expect(source.contains("@AppStorage(SettingsKeys.language, store: TracexyIdentity.applicationDefaults)"))
+            #expect(source.contains("AppLanguage.syncCurrentLanguage(language)"))
+            #expect(source.contains(".appLocaleOverride(locale)"))
+        }
+    }
+
     // MARK: Private
 
     private enum CatalogError: Error {
@@ -304,6 +489,7 @@ struct SessionUILocalizationTests {
     }
 
     private struct CatalogBundles {
+        let root: Bundle
         let en: Bundle
         let zhHans: Bundle
         let teardown: () -> Void
@@ -349,7 +535,8 @@ struct SessionUILocalizationTests {
             try plistData.write(to: lprojURL.appendingPathComponent("Localizable.strings"))
         }
 
-        guard let enBundle = Bundle(url: tempDir.appendingPathComponent("en.lproj", isDirectory: true)),
+        guard let rootBundle = Bundle(url: tempDir),
+              let enBundle = Bundle(url: tempDir.appendingPathComponent("en.lproj", isDirectory: true)),
               let zhBundle = Bundle(url: tempDir.appendingPathComponent("zh-Hans.lproj", isDirectory: true)) else
         {
             try? FileManager.default.removeItem(at: tempDir)
@@ -357,6 +544,7 @@ struct SessionUILocalizationTests {
         }
 
         return CatalogBundles(
+            root: rootBundle,
             en: enBundle,
             zhHans: zhBundle,
             teardown: { try? FileManager.default.removeItem(at: tempDir) }

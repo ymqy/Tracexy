@@ -14346,6 +14346,38 @@
         }
       }
     },
+    "Home LAN": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Home LAN"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "家庭局域网"
+          }
+        }
+      }
+    },
+    "Home network device hostname (RFC 8375)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Home network device hostname (RFC 8375)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "家庭局域网设备主机名 (RFC 8375)"
+          }
+        }
+      }
+    },
     "HomeKit": {
       "localizations": {
         "zh-Hans": {
@@ -25537,6 +25569,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "重置…"
+          }
+        }
+      }
+    },
+    "Residential home network domain (RFC 8375)": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Residential home network domain (RFC 8375)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "家庭局域网保留域 (RFC 8375)"
           }
         }
       }

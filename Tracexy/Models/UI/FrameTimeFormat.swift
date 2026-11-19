@@ -27,26 +27,34 @@ nonisolated enum FrameTimeFormat: String, CaseIterable, Identifiable, Sendable {
     }
 
     var menuTitle: String {
-        switch self {
-        case .sinceSessionStart: String(localized: "Seconds Since Session Start")
-        case .sinceCaptureStart: String(localized: "Seconds Since Capture Start")
-        case .sincePreviousFrame: String(localized: "Seconds Since Previous Displayed Frame")
-        case .sincePreviousCapturedFrame: String(localized: "Seconds Since Previous Captured Frame")
-        case .timeOfDay: String(localized: "Date and Time of Day")
-        case .utc: String(localized: "UTC Date and Time of Day")
-        case .epoch: String(localized: "Seconds Since 1970 (Epoch)")
-        }
+        menuTitle(in: AppLanguage.currentLocalizedBundle())
     }
 
     var columnTitle: String {
+        columnTitle(in: AppLanguage.currentLocalizedBundle())
+    }
+
+    func menuTitle(in bundle: Bundle) -> String {
         switch self {
-        case .sinceSessionStart: String(localized: "Time")
-        case .sinceCaptureStart: String(localized: "Since Start")
-        case .sincePreviousFrame: String(localized: "Since Previous Displayed")
-        case .sincePreviousCapturedFrame: String(localized: "Since Previous Captured")
-        case .timeOfDay: String(localized: "Time of Day")
-        case .utc: String(localized: "UTC")
-        case .epoch: String(localized: "Epoch")
+        case .sinceSessionStart: String(localized: "Seconds Since Session Start", bundle: bundle)
+        case .sinceCaptureStart: String(localized: "Seconds Since Capture Start", bundle: bundle)
+        case .sincePreviousFrame: String(localized: "Seconds Since Previous Displayed Frame", bundle: bundle)
+        case .sincePreviousCapturedFrame: String(localized: "Seconds Since Previous Captured Frame", bundle: bundle)
+        case .timeOfDay: String(localized: "Date and Time of Day", bundle: bundle)
+        case .utc: String(localized: "UTC Date and Time of Day", bundle: bundle)
+        case .epoch: String(localized: "Seconds Since 1970 (Epoch)", bundle: bundle)
+        }
+    }
+
+    func columnTitle(in bundle: Bundle) -> String {
+        switch self {
+        case .sinceSessionStart: String(localized: "Time", bundle: bundle)
+        case .sinceCaptureStart: String(localized: "Since Start", bundle: bundle)
+        case .sincePreviousFrame: String(localized: "Since Previous Displayed", bundle: bundle)
+        case .sincePreviousCapturedFrame: String(localized: "Since Previous Captured", bundle: bundle)
+        case .timeOfDay: String(localized: "Time of Day", bundle: bundle)
+        case .utc: String(localized: "UTC", bundle: bundle)
+        case .epoch: String(localized: "Epoch", bundle: bundle)
         }
     }
 
@@ -205,10 +213,14 @@ nonisolated enum FrameTimePrecision: String, CaseIterable, Identifiable, Sendabl
     }
 
     var title: String {
+        title(in: AppLanguage.currentLocalizedBundle())
+    }
+
+    func title(in bundle: Bundle) -> String {
         switch self {
-        case .seconds: String(localized: "Seconds")
-        case .milliseconds: String(localized: "Milliseconds")
-        case .microseconds: String(localized: "Microseconds")
+        case .seconds: String(localized: "Seconds", bundle: bundle)
+        case .milliseconds: String(localized: "Milliseconds", bundle: bundle)
+        case .microseconds: String(localized: "Microseconds", bundle: bundle)
         }
     }
 

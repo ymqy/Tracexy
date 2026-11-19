@@ -87,17 +87,27 @@ enum SessionScopeEmptyClassification: Equatable {
 /// The one label/help pair for the single reset route, so the filter shelf and an
 /// empty state can never describe the same action differently.
 enum SessionScopeAction {
-    static let resetTitle = String(localized: "Reset Session Filters")
+    static var resetTitle: String {
+        String(localized: "Reset Session Filters", bundle: AppLanguage.currentLocalizedBundle())
+    }
+
     /// Used only where the full title genuinely cannot fit.
-    static let resetShortTitle = String(localized: "Reset Filters")
+    static var resetShortTitle: String {
+        String(localized: "Reset Filters", bundle: AppLanguage.currentLocalizedBundle())
+    }
+
     static let resetSystemImage = "arrow.clockwise"
-    static let resetHelp = String(
-        localized: """
-        Clears this workspace's search, categories, host/client/IP drill-down, Overview and Flow \
-        aggregate narrowing, advanced rules, Investigation query and sidebar protocol lens. Noise \
-        Control and sessions removed from view are not affected.
-        """
-    )
+
+    static var resetHelp: String {
+        String(
+            localized: """
+            Clears this workspace's search, categories, host/client/IP drill-down, Overview and Flow \
+            aggregate narrowing, advanced rules, Investigation query and sidebar protocol lens. Noise \
+            Control and sessions removed from view are not affected.
+            """,
+            bundle: AppLanguage.currentLocalizedBundle()
+        )
+    }
 }
 
 // MARK: - SessionScopeSummary
@@ -139,7 +149,10 @@ struct SessionScopeSummary: Equatable {
     }
 
     var countLine: String {
-        String(localized: "Showing \(shownCount.formatted()) of \(capturedCount.formatted()) sessions")
+        String(
+            localized: "Showing \(shownCount.formatted()) of \(capturedCount.formatted()) sessions",
+            bundle: AppLanguage.currentLocalizedBundle()
+        )
     }
 
     var scopeLine: String {
@@ -152,7 +165,12 @@ struct SessionScopeSummary: Equatable {
 
     /// One untruncated sentence for `help` and accessibility.
     var accessibilityLabel: String {
-        descriptors.isEmpty ? countLine : String(localized: "\(countLine). Active scope: \(fullScopeLine).")
+        descriptors.isEmpty
+            ? countLine
+            : String(
+                localized: "\(countLine). Active scope: \(fullScopeLine).",
+                bundle: AppLanguage.currentLocalizedBundle()
+            )
     }
 
     var emptyClassification: SessionScopeEmptyClassification {
@@ -176,7 +194,8 @@ struct SessionScopeSummary: Equatable {
         shownCount: Int,
         capturedCount: Int,
         removedCount: Int,
-        noiseRuleCount: Int
+        noiseRuleCount: Int,
+        bundle: Bundle = AppLanguage.currentLocalizedBundle()
     )
         -> SessionScopeSummary
     {
@@ -185,8 +204,8 @@ struct SessionScopeSummary: Equatable {
         if let proto = workspace.sidebarSelection.protocolFilter {
             descriptors.append(SessionScopeDescriptor(
                 kind: .protocolLens,
-                label: String(localized: "\(proto.label) lens"),
-                fullLabel: String(localized: "Sidebar protocol lens: \(proto.label)")
+                label: String(localized: "\(proto.label) lens", bundle: bundle),
+                fullLabel: String(localized: "Sidebar protocol lens: \(proto.label)", bundle: bundle)
             ))
         }
 
@@ -195,8 +214,8 @@ struct SessionScopeSummary: Equatable {
             let field = workspace.searchField.displayName
             descriptors.append(SessionScopeDescriptor(
                 kind: .search,
-                label: String(localized: "Search “\(bounded(query))” in \(field)"),
-                fullLabel: String(localized: "Search “\(query)” in \(field)")
+                label: String(localized: "Search “\(bounded(query))” in \(field)", bundle: bundle),
+                fullLabel: String(localized: "Search “\(query)” in \(field)", bundle: bundle)
             ))
         }
 
@@ -213,16 +232,16 @@ struct SessionScopeSummary: Equatable {
                 : shown.joined(separator: ", ")
             descriptors.append(SessionScopeDescriptor(
                 kind: .categories,
-                label: String(localized: "Categories: \(label)"),
-                fullLabel: String(localized: "Categories: \(names.joined(separator: ", "))")
+                label: String(localized: "Categories: \(label)", bundle: bundle),
+                fullLabel: String(localized: "Categories: \(names.joined(separator: ", "))", bundle: bundle)
             ))
         }
 
         if workspace.aggregateRequiresFindings {
             descriptors.append(SessionScopeDescriptor(
                 kind: .findingsIntersection,
-                label: String(localized: "With Findings"),
-                fullLabel: String(localized: "Sessions with typed findings")
+                label: String(localized: "With Findings", bundle: bundle),
+                fullLabel: String(localized: "Sessions with typed findings", bundle: bundle)
             ))
         }
         if !workspace.aggregateProtocolFilters.isEmpty {
@@ -233,34 +252,45 @@ struct SessionScopeSummary: Equatable {
             let joined = names.joined(separator: " + ")
             descriptors.append(SessionScopeDescriptor(
                 kind: .protocolIntersection,
-                label: String(localized: "Also \(bounded(joined))"),
-                fullLabel: String(localized: "Sessions that also carry \(joined)")
+                label: String(localized: "Also \(bounded(joined))", bundle: bundle),
+                fullLabel: String(localized: "Sessions that also carry \(joined)", bundle: bundle)
             ))
         }
 
         if let host = workspace.hostFilter {
-            descriptors.append(drillDown(kind: .host, title: String(localized: "Host"), value: host))
+            descriptors.append(drillDown(
+                kind: .host,
+                title: String(localized: "Host", bundle: bundle),
+                value: host,
+                bundle: bundle
+            ))
         }
         if let process = workspace.processFilter {
             let displayProcess = SessionSourceClassifier.displayTitle(forFilterKey: process)
-            descriptors.append(drillDown(kind: .process, title: String(localized: "Client"), value: displayProcess))
+            descriptors.append(drillDown(
+                kind: .process,
+                title: String(localized: "Client", bundle: bundle),
+                value: displayProcess,
+                bundle: bundle
+            ))
         }
         if let ip = workspace.ipFilter {
-            descriptors.append(drillDown(kind: .ip, title: "IP", value: ip))
+            descriptors.append(drillDown(kind: .ip, title: "IP", value: ip, bundle: bundle))
         }
         if let destination = workspace.aggregateDestinationFilter {
             descriptors.append(drillDown(
                 kind: .destination,
-                title: String(localized: "Destination"),
-                value: destination
+                title: String(localized: "Destination", bundle: bundle),
+                value: destination,
+                bundle: bundle
             ))
         }
 
         let ruleCount = workspace.activeFilterRules.count
         if ruleCount > 0 {
             let text = ruleCount == 1
-                ? String(localized: "1 advanced rule")
-                : String(localized: "\(ruleCount) advanced rules")
+                ? String(localized: "1 advanced rule", bundle: bundle)
+                : String(localized: "\(ruleCount) advanced rules", bundle: bundle)
             descriptors.append(SessionScopeDescriptor(kind: .rules, label: text, fullLabel: text))
         }
 
@@ -269,28 +299,28 @@ struct SessionScopeSummary: Equatable {
             // otherwise would credit the query with a narrowing it has not done.
             let isAccepted = workspace.hasActiveInvestigationQuery
             let text = isAccepted && !workspace.isEvaluatingInvestigationQuery
-                ? String(localized: "Investigation query")
+                ? String(localized: "Investigation query", bundle: bundle)
                 : (isAccepted
-                    ? String(localized: "Investigation query (updating)")
-                    : String(localized: "Investigation query (evaluating)"))
+                    ? String(localized: "Investigation query (updating)", bundle: bundle)
+                    : String(localized: "Investigation query (evaluating)", bundle: bundle))
             descriptors.append(SessionScopeDescriptor(kind: .query, label: text, fullLabel: text))
         }
 
         if noiseRuleCount > 0 {
             let text = noiseRuleCount == 1
-                ? String(localized: "Noise Control: 1 rule")
-                : String(localized: "Noise Control: \(noiseRuleCount) rules")
+                ? String(localized: "Noise Control: 1 rule", bundle: bundle)
+                : String(localized: "Noise Control: \(noiseRuleCount) rules", bundle: bundle)
             descriptors.append(SessionScopeDescriptor(
                 kind: .noise,
                 label: text,
-                fullLabel: String(localized: "\(text) (Project-wide)")
+                fullLabel: String(localized: "\(text) (Project-wide)", bundle: bundle)
             ))
         }
 
         if removedCount > 0 {
             let text = removedCount == 1
-                ? String(localized: "1 session removed from view")
-                : String(localized: "\(removedCount.formatted()) sessions removed from view")
+                ? String(localized: "1 session removed from view", bundle: bundle)
+                : String(localized: "\(removedCount.formatted()) sessions removed from view", bundle: bundle)
             descriptors.append(SessionScopeDescriptor(kind: .removed, label: text, fullLabel: text))
         }
 
@@ -311,14 +341,15 @@ struct SessionScopeSummary: Equatable {
     private static func drillDown(
         kind: SessionScopeDescriptor.Kind,
         title: String,
-        value: String
+        value: String,
+        bundle: Bundle
     )
         -> SessionScopeDescriptor
     {
         SessionScopeDescriptor(
             kind: kind,
-            label: String(localized: "\(title): \(bounded(value))"),
-            fullLabel: String(localized: "\(title): \(value)")
+            label: String(localized: "\(title): \(bounded(value))", bundle: bundle),
+            fullLabel: String(localized: "\(title): \(value)", bundle: bundle)
         )
     }
 

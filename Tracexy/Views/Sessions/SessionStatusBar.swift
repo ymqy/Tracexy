@@ -119,7 +119,7 @@ nonisolated enum SessionStatusBarModel {
         bytesUp: Int,
         bytesDown: Int,
         attribution: (known: Int, total: Int)? = nil,
-        bundle: Bundle = .main
+        bundle: Bundle = AppLanguage.currentLocalizedBundle()
     )
         -> [FooterTelemetry]
     {
@@ -303,7 +303,7 @@ nonisolated enum SessionStatusBarModel {
         totalSessions: Int,
         visibleCount: Int,
         hasSelection: Bool,
-        bundle: Bundle = .main
+        bundle: Bundle = AppLanguage.currentLocalizedBundle()
     )
         -> String
     {
@@ -386,7 +386,7 @@ nonisolated enum HistoryFooterModel {
         captureCount: Int,
         sessionCount: Int,
         hasMore: Bool,
-        bundle: Bundle = .main
+        bundle: Bundle = AppLanguage.currentLocalizedBundle()
     ) -> String {
         guard captureCount > 0 else {
             return String(localized: "No saved captures", bundle: bundle)

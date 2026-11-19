@@ -145,11 +145,27 @@ struct NativeBottomInspectorSplitView<Primary: View, Inspector: View>: NSViewCon
 /// This lets Observation invalidate the relevant content in place while the AppKit split
 /// items and their hosting roots keep stable identities across table/filter updates.
 struct NativeBottomDeferredContent<Content: View>: View {
+    // MARK: Lifecycle
+
+    init(content: @escaping () -> Content) {
+        self.content = content
+    }
+
+    // MARK: Internal
+
     let content: () -> Content
 
     var body: some View {
+        let locale = AppLanguage(rawValue: language)?.localeOverride
+        let _ = AppLanguage.syncCurrentLanguage(language)
         content()
+            .appLocaleOverride(locale)
     }
+
+    // MARK: Private
+
+    @AppStorage(SettingsKeys.language, store: TracexyIdentity.applicationDefaults)
+    private var language = AppLanguage.system.rawValue
 }
 
 // MARK: - NativeBottomInspectorSplitSizing

@@ -19,11 +19,11 @@ nonisolated enum SessionTimeFormat: String, CaseIterable, Identifiable, Sendable
     }
 
     var menuTitle: String {
-        menuTitle(in: .main)
+        menuTitle(in: AppLanguage.currentLocalizedBundle())
     }
 
     var columnTitle: String {
-        columnTitle(in: .main)
+        columnTitle(in: AppLanguage.currentLocalizedBundle())
     }
 
     func menuTitle(in bundle: Bundle) -> String {

@@ -22,18 +22,22 @@ enum SidebarItem: String, CaseIterable, Identifiable, Hashable {
     }
 
     nonisolated var title: String {
+        title(in: AppLanguage.currentLocalizedBundle())
+    }
+
+    nonisolated func title(in bundle: Bundle) -> String {
         switch self {
-        case .overview: String(localized: "Overview")
-        case .sessions: String(localized: "Sessions")
-        case .flow: String(localized: "Flow Map")
-        case .history: String(localized: "History")
+        case .overview: String(localized: "Overview", bundle: bundle)
+        case .sessions: String(localized: "Sessions", bundle: bundle)
+        case .flow: String(localized: "Flow Map", bundle: bundle)
+        case .history: String(localized: "History", bundle: bundle)
         case .dns: "DNS"
         case .tcp: "TCP"
         case .tls: "TLS"
         case .http: "HTTP"
         case .quic: "QUIC"
         case .stun: "STUN"
-        case .saved: String(localized: "Saved")
+        case .saved: String(localized: "Saved", bundle: bundle)
         }
     }
 
@@ -84,9 +88,13 @@ enum SidebarSection: String, CaseIterable, Identifiable, Hashable {
     }
 
     nonisolated var title: String {
+        title(in: AppLanguage.currentLocalizedBundle())
+    }
+
+    nonisolated func title(in bundle: Bundle) -> String {
         switch self {
-        case .monitor: String(localized: "Monitor")
-        case .protocols: String(localized: "Protocols")
+        case .monitor: String(localized: "Monitor", bundle: bundle)
+        case .protocols: String(localized: "Protocols", bundle: bundle)
         }
     }
 
