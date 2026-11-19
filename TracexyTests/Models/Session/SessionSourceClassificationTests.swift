@@ -2134,6 +2134,167 @@ struct SessionSourceClassificationTests {
         #expect(coordinator.retainedFrameCount == 0)
     }
 
+    @Test(
+        "Unattributed sessions report honest localized diagnostic reasons and tally per-target childCounts"
+    )
+    func unattributedDiagnosticReasonsAndChildCounts() throws {
+        let bundles = try makeCatalogLanguageBundles()
+        defer { bundles.teardown() }
+
+        let savedUnattributed = makeSession(
+            processName: nil,
+            host: "api.example.com",
+            src: ("192.168.0.130", 51_200),
+            dst: ("93.184.216.34", 443),
+            protos: [.tcp, .tls]
+        )
+        let savedEn = SessionSourceClassifier.classify(
+            savedUnattributed,
+            localIPs: Self.liveLocalIPs,
+            isViewingSavedCapture: true,
+            bundle: bundles.en
+        )
+        let savedZh = SessionSourceClassifier.classify(
+            savedUnattributed,
+            localIPs: Self.liveLocalIPs,
+            isViewingSavedCapture: true,
+            bundle: bundles.zhHans
+        )
+        #expect(savedEn.category == .unattributed)
+        #expect(savedEn.filterKey == "—")
+        #expect(savedEn.tableLabel == "—")
+        #expect(savedEn.subtitle == "Saved capture file contains no local process metadata")
+        #expect(savedEn.tableDetail == savedEn.subtitle)
+        #expect(savedZh.subtitle == "已保存抓包文件不包含本机进程元数据")
+        #expect(savedZh.tableDetail == savedZh.subtitle)
+
+        let liveDNS = makeSession(
+            processName: nil,
+            host: "slardar-bd-sg.larksuite.com",
+            src: ("192.168.0.130", 53_100),
+            dst: ("8.8.8.8", 53),
+            protos: [.udp, .dns],
+            bytesUp: 64,
+            bytesDown: 128,
+            packetsUp: 1,
+            packetsDown: 1
+        )
+        let dnsEn = SessionSourceClassifier.classify(
+            liveDNS,
+            localIPs: Self.liveLocalIPs,
+            isViewingSavedCapture: false,
+            bundle: bundles.en
+        )
+        let dnsZh = SessionSourceClassifier.classify(
+            liveDNS,
+            localIPs: Self.liveLocalIPs,
+            isViewingSavedCapture: false,
+            bundle: bundles.zhHans
+        )
+        #expect(dnsEn.category == .unattributed)
+        #expect(dnsEn.subtitle == "Ephemeral DNS socket closed before sampling or outbound query missed")
+        #expect(dnsEn.tableDetail == dnsEn.subtitle)
+        #expect(dnsZh.subtitle == "瞬态 DNS 套接字在采样前已关闭或未捕获出站请求")
+        #expect(dnsZh.tableDetail == dnsZh.subtitle)
+
+        let liveGeneral = makeSession(
+            processName: nil,
+            host: "cdn.example.net",
+            src: ("192.168.0.130", 54_200),
+            dst: ("198.51.100.10", 443),
+            protos: [.tcp, .tls]
+        )
+        let generalEn = SessionSourceClassifier.classify(
+            liveGeneral,
+            localIPs: Self.liveLocalIPs,
+            isViewingSavedCapture: false,
+            bundle: bundles.en
+        )
+        let generalZh = SessionSourceClassifier.classify(
+            liveGeneral,
+            localIPs: Self.liveLocalIPs,
+            isViewingSavedCapture: false,
+            bundle: bundles.zhHans
+        )
+        #expect(generalEn.category == .unattributed)
+        #expect(generalEn.subtitle == "Short-lived socket closed before sampling or started before capture")
+        #expect(generalEn.tableDetail == generalEn.subtitle)
+        #expect(generalZh.subtitle == "短生命周期套接字在采样前已关闭或在抓包前已建立")
+        #expect(generalZh.tableDetail == generalZh.subtitle)
+
+        // Grouping tallies per-host childCounts across multiple unattributed sessions.
+        let liveDNS2 = makeSession(
+            processName: nil,
+            host: "slardar-bd-sg.larksuite.com",
+            src: ("192.168.0.130", 53_101),
+            dst: ("8.8.8.8", 53),
+            protos: [.udp, .dns],
+            bytesUp: 64,
+            bytesDown: 128
+        )
+        let liveDNS3 = makeSession(
+            processName: nil,
+            host: "slardar-bd-sg.larksuite.com",
+            src: ("192.168.0.130", 53_102),
+            dst: ("8.8.8.8", 53),
+            protos: [.udp, .dns],
+            bytesUp: 64,
+            bytesDown: 128
+        )
+        let groups = SessionSourceClassifier.group(
+            sessions: [liveDNS, liveDNS2, liveDNS3, liveGeneral],
+            localIPs: Self.liveLocalIPs,
+            isViewingSavedCapture: false,
+            bundle: bundles.en
+        )
+        let unattributedGroup = try #require(groups.first { $0.category == .unattributed })
+        #expect(unattributedGroup.totalSessions == 4)
+        #expect(unattributedGroup.items.count == 1)
+        let item = try #require(unattributedGroup.items.first)
+        #expect(item.count == 4)
+        #expect(item.childCounts["host:slardar-bd-sg.larksuite.com"] == 3)
+        #expect(item.childCounts["host:cdn.example.net"] == 1)
+        #expect(Set(item.children.map(\.value)) == ["slardar-bd-sg.larksuite.com", "cdn.example.net"])
+    }
+
+    private func makeCatalogLanguageBundles() throws -> (en: Bundle, zhHans: Bundle, teardown: () -> Void) {
+        var root = URL(fileURLWithPath: #filePath)
+        while root.lastPathComponent != "TracexyTests", root.path != "/" {
+            root.deleteLastPathComponent()
+        }
+        root.deleteLastPathComponent()
+        let data = try Data(contentsOf: root.appendingPathComponent("Tracexy/Localizable.xcstrings"))
+        let catalog = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let stringsMap = try #require(catalog["strings"] as? [String: [String: Any]])
+
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tracexy-unattr-i18n-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        for language in ["en", "zh-Hans"] {
+            var dict: [String: String] = [:]
+            for (key, entry) in stringsMap {
+                if let locs = entry["localizations"] as? [String: Any],
+                   let langObj = locs[language] as? [String: Any],
+                   let unit = langObj["stringUnit"] as? [String: Any],
+                   let value = unit["value"] as? String
+                {
+                    dict[key] = value
+                } else if language == "en" {
+                    dict[key] = key
+                }
+            }
+            let lproj = tempDir.appendingPathComponent("\(language).lproj", isDirectory: true)
+            try FileManager.default.createDirectory(at: lproj, withIntermediateDirectories: true)
+            let plist = try PropertyListSerialization.data(fromPropertyList: dict, format: .binary, options: 0)
+            try plist.write(to: lproj.appendingPathComponent("Localizable.strings"))
+        }
+
+        let enBundle = try #require(Bundle(url: tempDir.appendingPathComponent("en.lproj", isDirectory: true)))
+        let zhBundle = try #require(Bundle(url: tempDir.appendingPathComponent("zh-Hans.lproj", isDirectory: true)))
+        return (enBundle, zhBundle, { try? FileManager.default.removeItem(at: tempDir) })
+    }
+
     private func agyHelperDNSCtxSession(_ session: SessionSummary) -> SessionSummary {
         session
     }

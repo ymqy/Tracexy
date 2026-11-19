@@ -164,6 +164,45 @@ struct SidebarLazyDisclosureTests {
         #expect(sidebar.contains("SidebarChildSlice("))
     }
 
+    @Test("SidebarView routes .unattributed directly to diagnostic hosts without nested duplicate rows")
+    func sidebarUnattributedDisclosureContractAndLineCeiling() throws {
+        let sidebar = try readProjectFile("Tracexy/Views/Sidebar/SidebarView.swift")
+
+        // 1. .unattributed badge uses total unattributed sessions rather than item count (always 1).
+        #expect(sidebar.contains("category == .unattributed"))
+        #expect(sidebar.contains("visibleItems.reduce(0) { $0 + $1.count }"))
+
+        // 2. browseList routes .unattributed to unattributedDisclosure instead of sourceCategoryDisclosure.
+        #expect(sidebar.contains("if let display = displaysByCategory[.unattributed] {\n                        unattributedDisclosure(display, activeScope: activeScope)\n                    }"))
+
+        // 3. unattributedDisclosure guards lazy body, renders diagnostic note + direct child targets with badges,
+        //    and NEVER nests a duplicate SourceItemRow inside itself.
+        let unattrStart = try #require(sidebar.range(of: "private func unattributedDisclosure("))
+        let domainsStart = try #require(sidebar.range(of: "private func domainsDisclosure("))
+        let unattrBody = sidebar[unattrStart.lowerBound ..< domainsStart.lowerBound]
+
+        #expect(unattrBody.contains("DisclosureGroup(isExpanded: searchExpansion($unattributedExpanded))"))
+        #expect(unattrBody.contains("if isSearching || unattributedExpanded {"))
+        #expect(unattrBody.contains("Saved capture file contains no local process metadata"))
+        #expect(unattrBody.contains("Short-lived sockets closed before sampling or missed outbound packets"))
+        #expect(unattrBody.contains("SidebarChildTargetList("))
+        #expect(unattrBody.contains("childCounts: countsByID"))
+        #expect(unattrBody.contains("showAllChildren: $showAllUnattributedChildren"))
+        #expect(unattrBody.contains("Button(\"Show Unattributed Sessions\""))
+        #expect(unattrBody.contains("Button(\"Copy Source Hosts\""))
+        #expect(!unattrBody.contains("SourceItemRow("))
+
+        // 4. SourceChildTargetRow renders optional badge counts.
+        #expect(sidebar.contains("var badgeCount: Int?"))
+        #expect(sidebar.contains("badgeCount: childCounts[child.id]"))
+
+        // 5. SwiftLint file_length ceiling (< 1,800 non-comment-only lines).
+        let nonCommentLines = sidebar
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+        #expect(nonCommentLines.count < 1_800, "SidebarView.swift has \(nonCommentLines.count) non-comment lines (ceiling: 1800)")
+    }
+
     // MARK: Private
 
     private enum ResolveError: Error {

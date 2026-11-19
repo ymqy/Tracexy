@@ -81,6 +81,7 @@ struct SidebarView: View {
     @State private var lanExpanded = false
     @State private var kernelAndLinkExpanded = false
     @State private var unattributedExpanded = false
+    @State private var showAllUnattributedChildren = false
     @State private var domainsExpanded = false
     @State private var localDiscoveryExpanded = false
     @State private var ipsExpanded = false
@@ -124,52 +125,32 @@ struct SidebarView: View {
         var result: [TrafficSourceCategory: [SourceItemGroup]] = [:]
         for group in coordinator.sourceCategoryGroups {
             let items: [SourceItemGroup] = group.items.compactMap { item in
-                guard !coordinator.isSourceAppHidden(item.filterKey) else {
-                    return nil
-                }
+                guard !coordinator.isSourceAppHidden(item.filterKey) else { return nil }
                 let subprocesses: [SourceSubprocessGroup] = item.subprocesses.compactMap { sub in
-                    guard !coordinator.isSourceAppHidden(sub.filterKey) else {
-                        return nil
-                    }
-                    let subChildren = sub.children.filter { child in
-                        switch child.kind {
-                        case .host: !coordinator.isSourceHostHidden(child.value)
-                        case .peerIP: !coordinator.isSourceIPHidden(child.value)
-                        }
-                    }
+                    guard !coordinator.isSourceAppHidden(sub.filterKey) else { return nil }
+                    let subChildren = sub.children.filter { isChildVisible($0) }
                     return SourceSubprocessGroup(
-                        filterKey: sub.filterKey,
-                        category: sub.category,
-                        title: sub.title,
-                        subtitle: sub.subtitle,
-                        iconTitle: sub.iconTitle,
-                        symbolName: sub.symbolName,
-                        children: subChildren,
-                        count: sub.count
+                        filterKey: sub.filterKey, category: sub.category, title: sub.title, subtitle: sub.subtitle,
+                        iconTitle: sub.iconTitle, symbolName: sub.symbolName, children: subChildren, count: sub.count
                     )
                 }
-                let children = item.children.filter { child in
-                    switch child.kind {
-                    case .host: !coordinator.isSourceHostHidden(child.value)
-                    case .peerIP: !coordinator.isSourceIPHidden(child.value)
-                    }
-                }
+                let children = item.children.filter { isChildVisible($0) }
                 return SourceItemGroup(
-                    filterKey: item.filterKey,
-                    category: item.category,
-                    title: item.title,
-                    subtitle: item.subtitle,
-                    symbolName: item.symbolName,
-                    subprocesses: subprocesses,
-                    children: children,
-                    count: item.count
+                    filterKey: item.filterKey, category: item.category, title: item.title, subtitle: item.subtitle,
+                    symbolName: item.symbolName, subprocesses: subprocesses, children: children,
+                    childCounts: item.childCounts, count: item.count
                 )
             }
-            if !items.isEmpty {
-                result[group.category] = items
-            }
+            if !items.isEmpty { result[group.category] = items }
         }
         return result
+    }
+
+    private func isChildVisible(_ child: SourceChildTarget) -> Bool {
+        switch child.kind {
+        case .host: !coordinator.isSourceHostHidden(child.value)
+        case .peerIP: !coordinator.isSourceIPHidden(child.value)
+        }
     }
 
     private var displayedSourceCategories: [SourceCategoryDisplay] {
@@ -184,86 +165,53 @@ struct SidebarView: View {
                 filteredItems = visibleItems
             } else {
                 filteredItems = visibleItems.compactMap { item in
-                    if matches(item.title) || (item.subtitle.map(matches) ?? false) {
-                        return item
-                    }
+                    if matches(item.title) || (item.subtitle.map(matches) ?? false) { return item }
                     let matchingSubprocesses: [SourceSubprocessGroup] = item.subprocesses.compactMap { sub in
-                        if matches(sub.title) || (sub.subtitle.map(matches) ?? false) {
-                            return sub
-                        }
-                        let matchingSubChildren = sub.children.filter {
-                            matches($0.label) || matches($0.value)
-                        }
-                        guard !matchingSubChildren.isEmpty else {
-                            return nil
-                        }
+                        if matches(sub.title) || (sub.subtitle.map(matches) ?? false) { return sub }
+                        let matchingSubChildren = sub.children.filter { matches($0.label) || matches($0.value) }
+                        guard !matchingSubChildren.isEmpty else { return nil }
                         return SourceSubprocessGroup(
-                            filterKey: sub.filterKey,
-                            category: sub.category,
-                            title: sub.title,
-                            subtitle: sub.subtitle,
-                            iconTitle: sub.iconTitle,
-                            symbolName: sub.symbolName,
-                            children: matchingSubChildren,
-                            count: sub.count
+                            filterKey: sub.filterKey, category: sub.category, title: sub.title, subtitle: sub.subtitle,
+                            iconTitle: sub.iconTitle, symbolName: sub.symbolName,
+                            children: matchingSubChildren, count: sub.count
                         )
                     }
-                    let matchingChildren = item.children.filter {
-                        matches($0.label) || matches($0.value)
-                    }
-                    guard !matchingSubprocesses.isEmpty || !matchingChildren.isEmpty else {
-                        return nil
-                    }
+                    let matchingChildren = item.children.filter { matches($0.label) || matches($0.value) }
+                    guard !matchingSubprocesses.isEmpty || !matchingChildren.isEmpty else { return nil }
                     return SourceItemGroup(
-                        filterKey: item.filterKey,
-                        category: item.category,
-                        title: item.title,
-                        subtitle: item.subtitle,
-                        symbolName: item.symbolName,
-                        subprocesses: matchingSubprocesses,
-                        children: matchingChildren,
-                        count: item.count
+                        filterKey: item.filterKey, category: item.category, title: item.title, subtitle: item.subtitle,
+                        symbolName: item.symbolName, subprocesses: matchingSubprocesses, children: matchingChildren,
+                        childCounts: item.childCounts, count: item.count
                     )
                 }
             }
-            let showsHiddenRestoreFallback = category == .app
-                && !isSearching
-                && !coordinator.hiddenSourceApps.isEmpty
-            guard !filteredItems.isEmpty || showsHiddenRestoreFallback else {
-                return nil
-            }
-            return SourceCategoryDisplay(
-                category: category,
-                visibleCount: visibleItems.count,
-                filteredItems: filteredItems
-            )
+            let showsHiddenRestoreFallback = category == .app && !isSearching && !coordinator.hiddenSourceApps.isEmpty
+            guard !filteredItems.isEmpty || showsHiddenRestoreFallback else { return nil }
+            let visibleCount = category == .unattributed
+                ? visibleItems.reduce(0) { $0 + $1.count }
+                : visibleItems.count
+            return SourceCategoryDisplay(category: category, visibleCount: visibleCount, filteredItems: filteredItems)
         }
     }
 
     private var visibleDomainGroups: [DomainGroup] {
         coordinator.domainGroups.compactMap { group in
-            guard !coordinator.isSourceDomainHidden(group.domain) else {
-                return nil
-            }
-            let ips = group.ips.filter { !coordinator.isSourceIPHidden($0) }
-            return DomainGroup(domain: group.domain, ips: ips, count: group.count)
+            guard !coordinator.isSourceDomainHidden(group.domain) else { return nil }
+            return DomainGroup(
+                domain: group.domain,
+                ips: group.ips.filter { !coordinator.isSourceIPHidden($0) },
+                count: group.count
+            )
         }
     }
 
     private var visibleLocalDiscoveryGroups: [LocalDiscoveryGroup] {
         coordinator.localDiscoveryGroups.compactMap { group in
-            guard !coordinator.isSourceLocalNameHidden(group.name) else {
-                return nil
-            }
-            let ips = group.ips.filter { !coordinator.isSourceIPHidden($0) }
+            guard !coordinator.isSourceLocalNameHidden(group.name) else { return nil }
             return LocalDiscoveryGroup(
-                name: group.name,
-                badgeTitle: group.badgeTitle,
-                subtitle: group.subtitle,
-                symbolName: group.symbolName,
-                tooltip: group.tooltip,
-                ips: ips,
-                count: group.count
+                name: group.name, badgeTitle: group.badgeTitle, subtitle: group.subtitle,
+                symbolName: group.symbolName, tooltip: group.tooltip,
+                ips: group.ips.filter { !coordinator.isSourceIPHidden($0) }, count: group.count
             )
         }
     }
@@ -273,32 +221,20 @@ struct SidebarView: View {
     }
 
     private var filteredPinnedHosts: [String] {
-        guard isSearching else {
-            return coordinator.pinnedHosts
-        }
-        if matches("Pinned") || matches("Favorites") {
-            return coordinator.pinnedHosts
-        }
+        guard isSearching else { return coordinator.pinnedHosts }
+        if matches("Pinned") || matches("Favorites") { return coordinator.pinnedHosts }
         return coordinator.pinnedHosts.filter { matches($0) }
     }
 
     private var filteredSavedCaptures: [SavedCapture] {
-        guard isSearching else {
-            return coordinator.savedCaptures
-        }
-        if matches("Saved") || matches("Favorites") {
-            return coordinator.savedCaptures
-        }
+        guard isSearching else { return coordinator.savedCaptures }
+        if matches("Saved") || matches("Favorites") { return coordinator.savedCaptures }
         return coordinator.savedCaptures.filter { matches($0.name) }
     }
 
     private var filteredFocusSets: [FocusSet] {
-        guard isSearching else {
-            return coordinator.focusSets
-        }
-        if matches("Focus Sets") {
-            return coordinator.focusSets
-        }
+        guard isSearching else { return coordinator.focusSets }
+        if matches("Focus Sets") { return coordinator.focusSets }
         return coordinator.focusSets.filter { matches($0.name) || matches($0.subtitle) }
     }
 
@@ -309,25 +245,11 @@ struct SidebarView: View {
     }
 
     private var captureRemovalConfirmation: Binding<Bool> {
-        Binding(
-            get: { capturePendingRemoval != nil },
-            set: {
-                if !$0 {
-                    capturePendingRemoval = nil
-                }
-            }
-        )
+        Binding(get: { capturePendingRemoval != nil }, set: { if !$0 { capturePendingRemoval = nil } })
     }
 
     private var captureRemovalErrorPresentation: Binding<Bool> {
-        Binding(
-            get: { captureRemovalError != nil },
-            set: {
-                if !$0 {
-                    captureRemovalError = nil
-                }
-            }
-        )
+        Binding(get: { captureRemovalError != nil }, set: { if !$0 { captureRemovalError = nil } })
     }
 
     private var sidebarBottomBar: some View {
@@ -540,6 +462,97 @@ struct SidebarView: View {
                 restoreLabel: "Restore Hidden Sources",
                 onRestore: coordinator.restoreHiddenSourceApps
             )
+        }
+    }
+
+    /// Unattributed sessions disclosure: expands directly to a brief diagnostic
+    /// note and the deduplicated target hosts with per-host badges, avoiding a
+    /// redundant nested `"Unattributed"` item row.
+    private func unattributedDisclosure(
+        _ display: SourceCategoryDisplay,
+        activeScope: SidebarActiveScope
+    ) -> some View {
+        let bundle = AppLanguage.currentLocalizedBundle()
+        let isActive = activeScope.isActiveProcess("—")
+        let appearsExpanded = isSearching || unattributedExpanded
+        let noteText = coordinator.isViewingSavedCapture
+            ? String(localized: "Saved capture file contains no local process metadata", bundle: bundle)
+            : String(localized: "Short-lived sockets closed before sampling or missed outbound packets", bundle: bundle)
+        var childrenByID: [String: SourceChildTarget] = [:]
+        var countsByID: [String: Int] = [:]
+        for item in display.filteredItems {
+            for child in item.children {
+                childrenByID[child.id] = child
+                countsByID[child.id, default: 0] += item.childCounts[child.id] ?? 0
+            }
+        }
+        let sortedChildren = childrenByID.values.sorted { lhs, rhs in
+            let lhsCount = countsByID[lhs.id] ?? 0
+            let rhsCount = countsByID[rhs.id] ?? 0
+            return lhsCount != rhsCount ? lhsCount > rhsCount : lhs.label < rhs.label
+        }
+        return DisclosureGroup(isExpanded: searchExpansion($unattributedExpanded)) {
+            if isSearching || unattributedExpanded {
+                Text(noteText)
+                    .font(Theme.Typography.micro)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(2)
+                SidebarChildTargetList(
+                    children: sortedChildren,
+                    childCounts: countsByID,
+                    coordinator: coordinator,
+                    activeScope: activeScope,
+                    isSearching: isSearching,
+                    showAllChildren: $showAllUnattributedChildren
+                )
+            }
+        } label: {
+            HStack {
+                Label(display.category.title, systemImage: display.category.systemImage)
+                    .foregroundStyle(isActive ? Color.accentColor : .primary)
+                    .font(isActive ? Theme.Typography.navigationMedium : Theme.Typography.navigation)
+                Spacer(minLength: 0)
+            }
+            .badge(display.visibleCount)
+            .contentShape(Rectangle())
+            .onTapGesture { coordinator.selectProcess("—") }
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAddTraits(isActive ? .isSelected : [])
+            .accessibilityAction { coordinator.selectProcess("—") }
+            .help("\(display.category.title) — \(noteText)")
+            .contextMenu {
+                Button("Show Unattributed Sessions", systemImage: "rectangle.stack") {
+                    coordinator.selectProcess("—")
+                }
+                Button("Show All Sessions", systemImage: "rectangle.stack") {
+                    coordinator.selectSidebarItem(.sessions)
+                }
+                Button("Copy Source Hosts", systemImage: "doc.on.doc") {
+                    copyToPasteboard(sortedChildren.map(\.value).joined(separator: "\n"))
+                }
+                .disabled(sortedChildren.isEmpty)
+                if !coordinator.hiddenSourceApps.isEmpty {
+                    let restore = String(localized: "Restore Hidden Sources", bundle: bundle)
+                    Button("\(restore) (\(coordinator.hiddenSourceApps.count))", systemImage: "arrow.uturn.backward") {
+                        coordinator.restoreHiddenSourceApps()
+                    }
+                }
+                Divider()
+                Button(
+                    appearsExpanded ? "Collapse \(display.category.title)" : "Expand \(display.category.title)",
+                    systemImage: appearsExpanded ? "chevron.up" : "chevron.down"
+                ) {
+                    unattributedExpanded.toggle()
+                }
+                .disabled(isSearching)
+                Divider()
+                Button("Remove from Sources", systemImage: "trash", role: .destructive) {
+                    coordinator.hideSourceApp("—")
+                }
+            }
+        }
+        .onChange(of: unattributedExpanded) { _, open in
+            if !open { showAllUnattributedChildren = false }
         }
     }
 
@@ -955,7 +968,7 @@ struct SidebarView: View {
                         sourceCategoryDisclosure(display, expanded: $kernelAndLinkExpanded, activeScope: activeScope)
                     }
                     if let display = displaysByCategory[.unattributed] {
-                        sourceCategoryDisclosure(display, expanded: $unattributedExpanded, activeScope: activeScope)
+                        unattributedDisclosure(display, activeScope: activeScope)
                     }
                     if showsDomainsCategory {
                         domainsDisclosure(visibleCount: visibleDomains.count, filteredGroups: filteredDomains, activeScope: activeScope)
@@ -1365,6 +1378,7 @@ private struct SidebarChildIPList: View {
 
 private struct SidebarChildTargetList: View {
     let children: [SourceChildTarget]
+    var childCounts: [String: Int] = [:]
     let coordinator: MainContentCoordinator
     let activeScope: SidebarActiveScope
     let isSearching: Bool
@@ -1373,7 +1387,12 @@ private struct SidebarChildTargetList: View {
     var body: some View {
         let slice = SidebarChildSlice(children, showAll: showAllChildren, isSearching: isSearching)
         ForEach(slice.visible) { child in
-            SourceChildTargetRow(child: child, coordinator: coordinator, activeScope: activeScope)
+            SourceChildTargetRow(
+                child: child,
+                badgeCount: childCounts[child.id],
+                coordinator: coordinator,
+                activeScope: activeScope
+            )
         }
         if slice.isTruncated {
             SidebarShowMoreChildrenRow(remainingCount: slice.remainingCount) { showAllChildren = true }
@@ -1416,6 +1435,20 @@ private struct FocusSetRow: View {
             }
         }
     }
+}
+
+private func childListExpansion(
+    forceExpanded: Bool,
+    expanded: Binding<Bool>,
+    showAll: Binding<Bool>
+) -> Binding<Bool> {
+    Binding(
+        get: { forceExpanded || expanded.wrappedValue },
+        set: { newValue in
+            expanded.wrappedValue = newValue
+            if !newValue { showAll.wrappedValue = false }
+        }
+    )
 }
 
 // MARK: - DomainRow
@@ -1474,15 +1507,7 @@ private struct DomainRow: View {
     @State private var showAllChildren = false
 
     private var expansion: Binding<Bool> {
-        Binding(
-            get: { forceExpanded || expanded },
-            set: { newValue in
-                expanded = newValue
-                if !newValue {
-                    showAllChildren = false
-                }
-            }
-        )
+        childListExpansion(forceExpanded: forceExpanded, expanded: $expanded, showAll: $showAllChildren)
     }
 }
 
@@ -1527,15 +1552,7 @@ private struct LocalDiscoveryRow: View {
     @State private var showAllChildren = false
 
     private var expansion: Binding<Bool> {
-        Binding(
-            get: { forceExpanded || expanded },
-            set: { newValue in
-                expanded = newValue
-                if !newValue {
-                    showAllChildren = false
-                }
-            }
-        )
+        childListExpansion(forceExpanded: forceExpanded, expanded: $expanded, showAll: $showAllChildren)
     }
 
     private var isActiveHost: Bool {
@@ -1715,15 +1732,7 @@ private struct SourceItemRow: View {
     @State private var showAllChildren = false
 
     private var expansion: Binding<Bool> {
-        Binding(
-            get: { forceExpanded || expanded },
-            set: { newValue in
-                expanded = newValue
-                if !newValue {
-                    showAllChildren = false
-                }
-            }
-        )
+        childListExpansion(forceExpanded: forceExpanded, expanded: $expanded, showAll: $showAllChildren)
     }
 
     private var isActiveSource: Bool {
@@ -1817,15 +1826,7 @@ private struct SourceSubprocessRow: View {
     @State private var showAllChildren = false
 
     private var expansion: Binding<Bool> {
-        Binding(
-            get: { forceExpanded || expanded },
-            set: { newValue in
-                expanded = newValue
-                if !newValue {
-                    showAllChildren = false
-                }
-            }
-        )
+        childListExpansion(forceExpanded: forceExpanded, expanded: $expanded, showAll: $showAllChildren)
     }
 
     private var isActiveSubprocess: Bool {
@@ -1884,6 +1885,7 @@ private struct SourceSubprocessRow: View {
 
 private struct SourceChildTargetRow: View {
     let child: SourceChildTarget
+    var badgeCount: Int?
     let coordinator: MainContentCoordinator
     let activeScope: SidebarActiveScope
 
@@ -1904,6 +1906,7 @@ private struct SourceChildTargetRow: View {
             .foregroundStyle(isActive ? Color.accentColor : .secondary)
             .lineLimit(1)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .badge(badgeCount.flatMap { $0 > 0 ? Text($0.formatted()) : nil })
             .contentShape(Rectangle())
             .onTapGesture(perform: selectAction)
             .accessibilityAddTraits(.isButton)

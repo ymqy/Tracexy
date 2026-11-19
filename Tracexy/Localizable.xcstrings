@@ -8401,6 +8401,28 @@
         }
       }
     },
+    "Copy Source Hosts": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy Source Hosts"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sao chép máy chủ nguồn"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "复制来源主机"
+          }
+        }
+      }
+    },
     "Copy Source Name": {
       "localizations": {
         "zh-Hans": {
@@ -10786,6 +10808,28 @@
           "stringUnit": {
             "state": "translated",
             "value": "熵接近 1 表示数值分布均匀；接近 0 表示某单一数值占主导地位。"
+          }
+        }
+      }
+    },
+    "Ephemeral DNS socket closed before sampling or outbound query missed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ephemeral DNS socket closed before sampling or outbound query missed"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Socket DNS tạm thời đã đóng trước khi lấy mẫu hoặc bỏ lỡ truy vấn đi"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "瞬态 DNS 套接字在采样前已关闭或未捕获出站请求"
           }
         }
       }
@@ -27347,6 +27391,28 @@
         }
       }
     },
+    "Saved capture file contains no local process metadata": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Saved capture file contains no local process metadata"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Tệp ghi đã lưu không chứa siêu dữ liệu tiến trình cục bộ"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已保存抓包文件不包含本机进程元数据"
+          }
+        }
+      }
+    },
     "Saved capture, %@ sessions": {
       "localizations": {
         "vi": {
@@ -28922,6 +28988,50 @@
         }
       }
     },
+    "Short-lived socket closed before sampling or started before capture": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Short-lived socket closed before sampling or started before capture"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Socket tồn tại ngắn đã đóng trước khi lấy mẫu hoặc mở trước khi ghi"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "短生命周期套接字在采样前已关闭或在抓包前已建立"
+          }
+        }
+      }
+    },
+    "Short-lived sockets closed before sampling or missed outbound packets": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Short-lived sockets closed before sampling or missed outbound packets"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Các socket tồn tại ngắn đã đóng trước khi lấy mẫu hoặc bỏ lỡ gói tin đi"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "短生命周期套接字在采样前已关闭或未捕获出站数据包"
+          }
+        }
+      }
+    },
     "Show": {
       "localizations": {
         "vi": {
@@ -29318,6 +29428,28 @@
           "stringUnit": {
             "state": "translated",
             "value": "显示包含 %@ 的会话"
+          }
+        }
+      }
+    },
+    "Show Unattributed Sessions": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Unattributed Sessions"
+          }
+        },
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hiển thị phiên chưa quy thuộc"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示未归属会话"
           }
         }
       }

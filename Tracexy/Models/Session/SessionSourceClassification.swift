@@ -184,6 +184,7 @@ nonisolated struct SourceItemGroup: Identifiable, Equatable, Hashable, Sendable 
     let symbolName: String?
     let subprocesses: [SourceSubprocessGroup]
     let children: [SourceChildTarget]
+    let childCounts: [String: Int]
     let count: Int
 
     init(
@@ -194,6 +195,7 @@ nonisolated struct SourceItemGroup: Identifiable, Equatable, Hashable, Sendable 
         symbolName: String? = nil,
         subprocesses: [SourceSubprocessGroup] = [],
         children: [SourceChildTarget] = [],
+        childCounts: [String: Int] = [:],
         count: Int
     ) {
         self.filterKey = filterKey
@@ -203,6 +205,7 @@ nonisolated struct SourceItemGroup: Identifiable, Equatable, Hashable, Sendable 
         self.symbolName = symbolName
         self.subprocesses = subprocesses
         self.children = children
+        self.childCounts = childCounts
         self.count = count
     }
 
@@ -472,6 +475,7 @@ nonisolated private struct ItemAccumulator {
     var viaProcessNames: [String] = []
     var subprocessesByKey: [String: SubprocessAccumulator] = [:]
     var childrenByID: [String: SourceChildTarget] = [:]
+    var childCounts: [String: Int] = [:]
     var count = 1
 
     init(classified: ClassifiedSessionSource, viaProcessName: String?, contextRichness: Int) {
@@ -486,6 +490,7 @@ nonisolated private struct ItemAccumulator {
         }
         if let child = classified.childTarget {
             childrenByID[child.id] = child
+            childCounts[child.id] = 1
         }
     }
 
@@ -506,6 +511,7 @@ nonisolated private struct ItemAccumulator {
         }
         if let childTarget {
             childrenByID[childTarget.id] = childTarget
+            childCounts[childTarget.id] = 1
         }
     }
 
@@ -570,6 +576,7 @@ nonisolated private struct ItemAccumulator {
 
     private mutating func mergeChild(_ childTarget: SourceChildTarget?) {
         guard let child = childTarget else { return }
+        childCounts[child.id, default: 0] += 1
         if let existing = childrenByID[child.id] {
             if existing.label == existing.value, child.label != child.value {
                 childrenByID[child.id] = child
@@ -608,6 +615,7 @@ nonisolated private struct ItemAccumulator {
             symbolName: symbolName,
             subprocesses: sortedSubprocesses,
             children: sortedChildren,
+            childCounts: childCounts,
             count: count
         )
     }
@@ -1263,6 +1271,7 @@ nonisolated enum SessionSourceClassifier {
         return classifyUnattributedSession(
             session,
             endpoints: endpoints,
+            isViewingSavedCapture: isViewingSavedCapture,
             normalizedResolvedNamesProvider: normalizedResolvedNamesProvider,
             bundle: bundle
         )
@@ -1801,6 +1810,7 @@ nonisolated enum SessionSourceClassifier {
     private static func classifyUnattributedSession(
         _ session: SessionSummary,
         endpoints: ParsedEndpoints,
+        isViewingSavedCapture: Bool,
         normalizedResolvedNamesProvider: () -> [String: String],
         bundle: Bundle
     )
@@ -1881,13 +1891,21 @@ nonisolated enum SessionSourceClassifier {
             return makeKernelSource(subkind: kernelSubkind, session: session, bundle: bundle)
         }
 
+        let reason: String = if isViewingSavedCapture {
+            String(localized: "Saved capture file contains no local process metadata", bundle: bundle)
+        } else if protos.contains(.dns) || endpoints.hasPort(53) {
+            String(localized: "Ephemeral DNS socket closed before sampling or outbound query missed", bundle: bundle)
+        } else {
+            String(localized: "Short-lived socket closed before sampling or started before capture", bundle: bundle)
+        }
+
         return ClassifiedSessionSource(
             category: .unattributed,
             filterKey: "—",
             title: String(localized: "Unattributed", bundle: bundle),
-            subtitle: nil,
+            subtitle: reason,
             tableLabel: "—",
-            tableDetail: nil,
+            tableDetail: reason,
             symbolName: TrafficSourceCategory.unattributed.systemImage,
             childTarget: hostChildTarget(for: session)
         )
