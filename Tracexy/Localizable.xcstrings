@@ -2111,6 +2111,22 @@
         }
       }
     },
+    "+ %lld more…": {
+      "localizations": {
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "+ %lld mục khác…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "另有 %lld 项…"
+          }
+        }
+      }
+    },
     "1 DNS message": {
       "localizations": {
         "vi": {
@@ -21179,6 +21195,12 @@
     },
     "No visible local names": {
       "localizations": {
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không có tên cục bộ hiển thị"
+          }
+        },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
@@ -21189,6 +21211,12 @@
     },
     "No visible sources": {
       "localizations": {
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Không có nguồn hiển thị"
+          }
+        },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
@@ -25477,6 +25505,22 @@
         }
       }
     },
+    "Reset Columns": {
+      "localizations": {
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đặt lại cột"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重置列"
+          }
+        }
+      }
+    },
     "Reset Filters": {
       "localizations": {
         "vi": {
@@ -25553,6 +25597,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "重置会话过滤器"
+          }
+        }
+      }
+    },
+    "Reset Sort Order": {
+      "localizations": {
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Đặt lại thứ tự sắp xếp"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重置排序顺序"
           }
         }
       }
@@ -28890,6 +28950,22 @@
           "stringUnit": {
             "state": "translated",
             "value": "显示 %@"
+          }
+        }
+      }
+    },
+    "Show %lld more items": {
+      "localizations": {
+        "vi": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hiển thị thêm %lld mục"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示其余 %lld 项"
           }
         }
       }

@@ -491,7 +491,13 @@ struct SessionCenterView: View {
             sortCriteria: $sortCriteria,
             columnState: $columnState,
             revealToken: workspace.sessionRevealToken,
-            onLiveScrollStateChange: nil,
+            onLiveScrollStateChange: { isScrolling in
+                if isScrolling {
+                    coordinator.beginUserLiveScroll()
+                } else {
+                    coordinator.endUserLiveScroll()
+                }
+            },
             onUserNavigateHistory: {
                 coordinator.userDidNavigateSessionHistory()
             },
