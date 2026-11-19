@@ -345,7 +345,11 @@ final class MainContentCoordinator {
 
     /// True while the session list shows an opened saved capture rather than a
     /// live one (so the UI can label it and Start replaces it).
-    var isViewingSavedCapture = false
+    var isViewingSavedCapture = false {
+        didSet {
+            isViewingSavedCaptureSnapshot = isViewingSavedCapture
+        }
+    }
 
     /// The saved file currently open in this workspace, or `nil` during a live
     /// capture or an idle session. Held so the Overview can label the file
@@ -897,8 +901,14 @@ final class MainContentCoordinator {
     /// it resolved to (the "sub-IPs"), for the sidebar "Domains" tree. Excludes mDNS
     /// (`.local`), DNS-SD, and special-use `.arpa` discovery names.
     var domainGroups: [DomainGroup] {
+        _ = sessions.isEmpty
+        _ = removedSessionIDs.isEmpty
+        let key = currentRollupCacheKey()
+        if let cached = domainGroupsCache, cached.key == key {
+            return cached.value
+        }
         var byDomain: [String: (ips: Set<String>, count: Int)] = [:]
-        for session in presentedSessions where LocalDiscoveryNameClassifier.isPublicOrUnicastDomainName(session.host) {
+        for session in cachedPresentedSessions() where LocalDiscoveryNameClassifier.isPublicOrUnicastDomainName(session.host) {
             var entry = byDomain[session.host] ?? (ips: [], count: 0)
             entry.count += 1
             for answer in session.dnsAnswers where !answer.hasPrefix("CNAME") {
@@ -909,18 +919,30 @@ final class MainContentCoordinator {
             }
             byDomain[session.host] = entry
         }
-        return byDomain
-            .map { DomainGroup(domain: $0.key, ips: $0.value.ips.sorted(), count: $0.value.count) }
-            .sorted { $0.count == $1.count ? $0.domain < $1.domain : $0.count > $1.count }
+        let mapped: [DomainGroup] = byDomain.map { domain, entry in
+            DomainGroup(domain: domain, ips: entry.ips.sorted(), count: entry.count)
+        }
+        let result = mapped.sorted { lhs, rhs in
+            lhs.count == rhs.count ? lhs.domain < rhs.domain : lhs.count > rhs.count
+        }
+        domainGroupsCache = (key: key, value: result)
+        return result
     }
 
     /// Local-network discovery names (`.local`, Bonjour / DNS-SD services, and
     /// special-use `.arpa` probes) grouped by host name with human-readable semantic
     /// annotations and unicast peer IPs (excluding multicast `224.0.0.251` / `ff02::fb`).
     var localDiscoveryGroups: [LocalDiscoveryGroup] {
+        _ = sessions.isEmpty
+        _ = removedSessionIDs.isEmpty
+        let key = currentRollupCacheKey()
+        if let cached = localDiscoveryGroupsCache, cached.key == key {
+            return cached.value
+        }
+        let bundle = AppLanguage.currentLocalizedBundle()
         var byName: [String: (annotation: LocalDiscoveryAnnotation, ips: Set<String>, count: Int)] = [:]
-        for session in presentedSessions {
-            guard let annotation = LocalDiscoveryNameClassifier.classify(session.host) else {
+        for session in cachedPresentedSessions() {
+            guard let annotation = LocalDiscoveryNameClassifier.classify(session.host, bundle: bundle) else {
                 continue
             }
             var entry = byName[session.host] ?? (annotation: annotation, ips: [], count: 0)
@@ -948,31 +970,49 @@ final class MainContentCoordinator {
             }
             byName[session.host] = entry
         }
-        return byName
-            .map { name, entry in
-                LocalDiscoveryGroup(
-                    name: name,
-                    badgeTitle: entry.annotation.badgeTitle,
-                    subtitle: entry.annotation.detailTitle,
-                    symbolName: entry.annotation.symbolName,
-                    tooltip: entry.annotation.tooltip,
-                    ips: entry.ips.sorted(),
-                    count: entry.count
-                )
-            }
-            .sorted { $0.count == $1.count ? $0.name < $1.name : $0.count > $1.count }
+        let mapped: [LocalDiscoveryGroup] = byName.map { name, entry in
+            LocalDiscoveryGroup(
+                name: name,
+                badgeTitle: entry.annotation.badgeTitle,
+                subtitle: entry.annotation.detailTitle,
+                symbolName: entry.annotation.symbolName,
+                tooltip: entry.annotation.tooltip,
+                ips: entry.ips.sorted(),
+                count: entry.count
+            )
+        }
+        let result = mapped.sorted { lhs, rhs in
+            lhs.count == rhs.count ? lhs.name < rhs.name : lhs.count > rhs.count
+        }
+        localDiscoveryGroupsCache = (key: key, value: result)
+        return result
     }
 
     /// Bare-IP hosts (valid IPv4/IPv6 literals only) with session counts.
     var ipHosts: [(name: String, count: Int)] {
-        groupCounts { $0.host }.filter { IPAddressValue(parsing: $0.name) != nil }
+        _ = sessions.isEmpty
+        _ = removedSessionIDs.isEmpty
+        let key = currentRollupCacheKey()
+        if let cached = ipHostsCache, cached.key == key {
+            return cached.value
+        }
+        var totals: [String: Int] = [:]
+        for session in cachedPresentedSessions() {
+            totals[session.host, default: 0] += 1
+        }
+        let result = totals
+            .filter { AddressNameBook.mayBeIPLiteral($0.key) && IPAddressValue(parsing: $0.key) != nil }
+            .sorted { $0.value > $1.value }
+            .map { (name: $0.key, count: $0.value) }
+        ipHostsCache = (key: key, value: result)
+        return result
     }
 
     /// Apps that originated traffic, each carrying the hosts/IPs it contacted
     /// (the "sub-links"), for an expandable sidebar "Apps" tree — sibling-app-style.
     var appGroups: [AppGroup] {
         var byApp: [String: (hosts: Set<String>, count: Int)] = [:]
-        for session in presentedSessions {
+        for session in cachedPresentedSessions() {
             let app = session.processName ?? "—"
             var entry = byApp[app] ?? (hosts: [], count: 0)
             entry.count += 1
@@ -986,10 +1026,7 @@ final class MainContentCoordinator {
 
     /// Combined passively learned and manually named IP → hostname mappings for LAN peer annotations.
     var mergedResolvedNames: [String: String] {
-        if addressNames.names.isEmpty {
-            return addressNames.learnedNames
-        }
-        return addressNames.learnedNames.merging(addressNames.names) { _, manual in manual }
+        addressNames.mergedNames
     }
 
     /// Per-session process provenance converted to ``SessionProcessContext`` for 7-dimension classification.
@@ -1012,25 +1049,58 @@ final class MainContentCoordinator {
     }
 
     /// Classifies a single session into one of the 7 traffic source dimensions with role annotations.
+    /// Served in O(1) from the revision-keyed presentation cache when warm, without registering
+    /// per-cell `@Observable` subscriptions during table scrolling.
     func classifiedSource(for session: SessionSummary) -> ClassifiedSessionSource {
-        SessionSourceClassifier.classify(
+        let key = currentClassificationCacheKey()
+        if let cache = classificationPresentationCache, cache.key == key {
+            if let hit = cache.classifiedByID[session.id] {
+                return hit
+            }
+            let bundle = AppLanguage.currentLocalizedBundle()
+            let classified = SessionSourceClassifier.classifyPreNormalized(
+                session,
+                context: effectiveSessionProcessContext(for: session),
+                normalizedLocalIPsProvider: { cachedNormalizedLocalIPs() },
+                isViewingSavedCapture: key.isViewingSavedCapture,
+                normalizedResolvedNamesProvider: { cachedNormalizedResolvedNames() },
+                bundle: bundle
+            )
+            classificationPresentationCache?.classifiedByID[session.id] = classified
+            return classified
+        }
+        var cache = warmClassificationCache(for: key)
+        if let hit = cache.classifiedByID[session.id] {
+            return hit
+        }
+        let bundle = AppLanguage.currentLocalizedBundle()
+        let classified = SessionSourceClassifier.classifyPreNormalized(
             session,
             context: effectiveSessionProcessContext(for: session),
-            localIPs: ProcessResolver.shared.currentLocalIPs,
-            isViewingSavedCapture: isViewingSavedCapture,
-            resolvedNames: mergedResolvedNames
+            normalizedLocalIPsProvider: { cachedNormalizedLocalIPs() },
+            isViewingSavedCapture: key.isViewingSavedCapture,
+            normalizedResolvedNamesProvider: { cachedNormalizedResolvedNames() },
+            bundle: bundle
         )
+        cache.classifiedByID[session.id] = classified
+        classificationPresentationCache = cache
+        return classified
     }
 
     /// Presented sessions aggregated into the 7-dimension sidebar Sources hierarchy.
     var sourceCategoryGroups: [SourceCategoryGroup] {
-        SessionSourceClassifier.group(
-            sessions: presentedSessions,
-            contextProvider: { sessionProcessContext(for: $0) },
-            localIPs: ProcessResolver.shared.currentLocalIPs,
-            isViewingSavedCapture: isViewingSavedCapture,
-            resolvedNames: mergedResolvedNames
-        )
+        _ = sessions.isEmpty
+        _ = removedSessionIDs.isEmpty
+        _ = attributedProvenancesBySessionID.isEmpty
+        _ = isViewingSavedCapture
+        _ = addressNames.names.isEmpty
+        _ = addressNames.learnedNames.isEmpty
+
+        let key = currentClassificationCacheKey()
+        if let cache = classificationPresentationCache, cache.key == key {
+            return cache.sourceCategoryGroups
+        }
+        return warmClassificationCache(for: key).sourceCategoryGroups
     }
 
     /// Coarse capture state for the toolbar status capsule.
@@ -1531,10 +1601,46 @@ final class MainContentCoordinator {
 
     // MARK: Private
 
+    private struct ClassificationCacheKey: Equatable {
+        let processContextGeneration: UInt64
+        let isViewingSavedCapture: Bool
+        let addressNamesRevision: UInt64
+        let localIPsRevision: UInt64
+        let bundlePath: String
+    }
+
+    private struct ClassificationPresentationCache {
+        let key: ClassificationCacheKey
+        var classifiedByID: [UUID: ClassifiedSessionSource]
+        var sourceCategoryGroups: [SourceCategoryGroup]
+    }
+
+    private struct RollupCacheKey: Equatable {
+        let processContextGeneration: UInt64
+        let bundlePath: String
+    }
+
+    @ObservationIgnored private var isViewingSavedCaptureSnapshot = false
+    @ObservationIgnored private var presentedSessionsCache: (
+        generation: UInt64,
+        sessions: [SessionSummary]
+    )?
     @ObservationIgnored private var processContextFallbackCache: (
         generation: UInt64,
         map: [String: SessionProcessContext]
     )?
+    @ObservationIgnored private var normalizedLocalIPsCache: (
+        revision: UInt64,
+        ips: Set<IPAddressValue>
+    )?
+    @ObservationIgnored private var normalizedResolvedNamesCache: (
+        revision: UInt64,
+        names: [String: String]
+    )?
+    @ObservationIgnored private var classificationPresentationCache: ClassificationPresentationCache?
+    @ObservationIgnored private var domainGroupsCache: (key: RollupCacheKey, value: [DomainGroup])?
+    @ObservationIgnored private var localDiscoveryGroupsCache: (key: RollupCacheKey, value: [LocalDiscoveryGroup])?
+    @ObservationIgnored private var ipHostsCache: (key: RollupCacheKey, value: [(name: String, count: Int)])?
     @ObservationIgnored private var processContextGeneration: UInt64 = 0
 
     private let live = try? LiveCapture()
@@ -1580,17 +1686,89 @@ final class MainContentCoordinator {
         return parsed.compressedText
     }
 
+    private func cachedPresentedSessions() -> [SessionSummary] {
+        let generation = processContextGeneration
+        if let cached = presentedSessionsCache, cached.generation == generation {
+            return cached.sessions
+        }
+        let result = presentedSessions
+        presentedSessionsCache = (generation: generation, sessions: result)
+        return result
+    }
+
     private func cachedProcessContextFallbacks() -> [String: SessionProcessContext] {
         let generation = processContextGeneration
         if let cached = processContextFallbackCache, cached.generation == generation {
             return cached.map
         }
         let map = SessionSourceClassifier.fallbackContextsByProcessName(
-            for: presentedSessions,
+            for: cachedPresentedSessions(),
             contextProvider: { sessionProcessContext(for: $0) }
         )
         processContextFallbackCache = (generation: generation, map: map)
         return map
+    }
+
+    private func cachedNormalizedLocalIPs() -> Set<IPAddressValue> {
+        let revision = ProcessResolver.shared.localIPsRevision
+        if let cached = normalizedLocalIPsCache, cached.revision == revision {
+            return cached.ips
+        }
+        let normalized = SessionSourceClassifier.normalizeLocalIPs(ProcessResolver.shared.currentLocalIPs)
+        normalizedLocalIPsCache = (revision: revision, ips: normalized)
+        return normalized
+    }
+
+    private func cachedNormalizedResolvedNames() -> [String: String] {
+        let revision = addressNames.revision
+        if let cached = normalizedResolvedNamesCache, cached.revision == revision {
+            return cached.names
+        }
+        let normalized = SessionSourceClassifier.normalizeAddressBookResolvedNames(
+            learnedNames: addressNames.learnedNames,
+            manualNames: addressNames.names
+        )
+        normalizedResolvedNamesCache = (revision: revision, names: normalized)
+        return normalized
+    }
+
+    private func currentClassificationCacheKey() -> ClassificationCacheKey {
+        ClassificationCacheKey(
+            processContextGeneration: processContextGeneration,
+            isViewingSavedCapture: isViewingSavedCaptureSnapshot,
+            addressNamesRevision: addressNames.revision,
+            localIPsRevision: ProcessResolver.shared.localIPsRevision,
+            bundlePath: AppLanguage.currentLocalizedBundle().bundlePath
+        )
+    }
+
+    private func currentRollupCacheKey() -> RollupCacheKey {
+        RollupCacheKey(
+            processContextGeneration: processContextGeneration,
+            bundlePath: AppLanguage.currentLocalizedBundle().bundlePath
+        )
+    }
+
+    private func warmClassificationCache(for key: ClassificationCacheKey) -> ClassificationPresentationCache {
+        let bundle = AppLanguage.currentLocalizedBundle()
+        let sessions = cachedPresentedSessions()
+        let fallbacks = cachedProcessContextFallbacks()
+        let (classifiedByID, groups) = SessionSourceClassifier.classifyAndGroupPreNormalized(
+            sessions: sessions,
+            contextProvider: { sessionProcessContext(for: $0) },
+            fallbackContexts: fallbacks,
+            normalizedLocalIPsProvider: { cachedNormalizedLocalIPs() },
+            isViewingSavedCapture: key.isViewingSavedCapture,
+            normalizedResolvedNamesProvider: { cachedNormalizedResolvedNames() },
+            bundle: bundle
+        )
+        let built = ClassificationPresentationCache(
+            key: key,
+            classifiedByID: classifiedByID,
+            sourceCategoryGroups: groups
+        )
+        classificationPresentationCache = built
+        return built
     }
 
     private static func isMulticastOrUnspecified(_ address: IPAddressValue) -> Bool {
@@ -1674,8 +1852,12 @@ final class MainContentCoordinator {
                         )
                         return
                     }
-                    self.helperBufferDropCount = batch.bufferDroppedCount
-                    self.captureStatistics = statistics
+                    if self.helperBufferDropCount != batch.bufferDroppedCount {
+                        self.helperBufferDropCount = batch.bufferDroppedCount
+                    }
+                    if self.captureStatistics != statistics {
+                        self.captureStatistics = statistics
+                    }
                     self.ingestFinalHelperBatch(
                         frames,
                         linkType: batch.captureLinkType,
@@ -1900,12 +2082,16 @@ extension MainContentCoordinator {
                 }
                 // Capture-source loss and kernel/interface accounting, surfaced
                 // as their own figures (never folded into UI-retention eviction).
-                self.helperBufferDropCount = bufferDrops
-                // Always assign — including `nil`. When `pcap_stats` becomes
-                // unavailable, clearing stale accounting keeps the UI honest
-                // (unknown, not a lingering clean figure) rather than freezing
-                // the last sample.
-                self.captureStatistics = statistics
+                // Guard against identical writes so unchanged 350ms helper polls
+                // do not trigger spurious `@Observable` redraws across the UI.
+                if self.helperBufferDropCount != bufferDrops {
+                    self.helperBufferDropCount = bufferDrops
+                }
+                // Always clear when `pcap_stats` becomes unavailable (`nil != non-nil`),
+                // keeping the UI honest while skipping redundant writes when unchanged.
+                if self.captureStatistics != statistics {
+                    self.captureStatistics = statistics
+                }
                 self.ingest(frames, linkType: batchLinkType)
                 if let readFailure = batch.readFailure {
                     // The frames above are the complete tail the source delivered
@@ -2018,7 +2204,11 @@ extension MainContentCoordinator {
                     guard let coordinator = self else {
                         return
                     }
-                    Task { @MainActor in coordinator.captureStatistics = sample }
+                    Task { @MainActor in
+                        if coordinator.captureStatistics != sample {
+                            coordinator.captureStatistics = sample
+                        }
+                    }
                 },
                 onReadFailure: { [weak self] message in
                     guard let coordinator = self else {
@@ -2042,7 +2232,9 @@ extension MainContentCoordinator {
     /// Shared receipt path for backend batches and deterministic synthetic lifecycle
     /// tests. Callers establish the active capture generation before delivering frames.
     func ingest(_ frames: [CapturedFrame], linkType: UInt32) {
-        currentLinkType = linkType
+        if currentLinkType != linkType {
+            currentLinkType = linkType
+        }
         appendRetainedFrames(frames)
         pendingChartBytes += frames.reduce(0) { $0 + $1.originalLength }
 
@@ -2302,6 +2494,9 @@ extension MainContentCoordinator {
     /// thin hop so the ingest path reads clearly. Independent of session
     /// accumulation — see ``retainedFrameLimit``.
     func appendRetainedFrames(_ frames: [CapturedFrame]) {
+        guard !frames.isEmpty else {
+            return
+        }
         retainedFrames.append(contentsOf: frames)
     }
 

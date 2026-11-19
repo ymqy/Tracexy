@@ -28,8 +28,20 @@ final class AddressNameBook {
 
     nonisolated static let maximumSubnets = 200
 
-    private(set) var names: [String: String] = [:]
-    private(set) var learnedNames: [String: String] = [:]
+    @ObservationIgnored private(set) var revision: UInt64 = 0
+
+    private(set) var names: [String: String] = [:] {
+        didSet {
+            revision &+= 1
+        }
+    }
+
+    private(set) var learnedNames: [String: String] = [:] {
+        didSet {
+            revision &+= 1
+        }
+    }
+
     private(set) var canEditNames = true
     /// ``subnetNames`` as validated blocks.
     private(set) var subnets: [SubnetName] = []
@@ -37,10 +49,52 @@ final class AddressNameBook {
     /// Named IPv4 blocks, keyed by their text (`192.168.1.0/24`).
     private(set) var subnetNames: [String: String] = [:] {
         didSet {
+            revision &+= 1
             subnets = subnetNames.compactMap { text, name in
                 SubnetNames.block(text).map { SubnetName(block: $0, name: name) }
             }
         }
+    }
+
+    /// Combined passively learned and manually named IP → hostname mappings,
+    /// memoized per `revision` so scrolling never re-merges up to 4,000 entries per row.
+    var mergedNames: [String: String] {
+        let currentRevision = revision
+        if let cached = cachedMergedNames, cached.revision == currentRevision {
+            return cached.merged
+        }
+        let merged: [String: String] = if names.isEmpty {
+            learnedNames
+        } else if learnedNames.isEmpty {
+            names
+        } else {
+            learnedNames.merging(names) { _, manual in manual }
+        }
+        cachedMergedNames = (revision: currentRevision, merged: merged)
+        return merged
+    }
+
+    /// Fast ASCII/byte prefilter before calling `IPAddressValue(parsing:)`:
+    /// - Rejects empty strings and non-IP domain names (`www.google.com`, `*.local`) in ~2ns.
+    /// - Preserves every valid IPv4 literal, IPv6 literal, bracketed IPv6, and zone-indexed IPv6.
+    nonisolated static func mayBeIPLiteral(_ host: String) -> Bool {
+        let utf8 = host.utf8
+        guard !utf8.isEmpty else {
+            return false
+        }
+        var hasNonIPv4Byte = false
+        var dotCount = 0
+        for byte in utf8 {
+            if byte == 0x3A { // ':' — IPv6 candidate (including bracketed / zone-indexed)
+                return true
+            }
+            if byte == 0x2E { // '.'
+                dotCount += 1
+            } else if byte < 0x30 || byte > 0x39 { // outside ASCII '0'...'9'
+                hasNonIPv4Byte = true
+            }
+        }
+        return !hasNonIPv4Byte && dotCount == 3
     }
 
     func bind(to defaults: UserDefaults) {
@@ -188,13 +242,17 @@ final class AddressNameBook {
     /// The host a session list should show: the investigator's name or named subnet
     /// for a bare address host, a reused learned domain name, or the capture's own host.
     func displayHost(for session: SessionSummary) -> String {
-        guard IPAddressValue(parsing: session.host) != nil else {
+        guard Self.mayBeIPLiteral(session.host), let parsed = IPAddressValue(parsing: session.host) else {
             return session.host
         }
-        if let manualOrSubnet = manualOrSubnetName(for: session.host) {
-            return "\(manualOrSubnet) (\(session.host))"
+        let canonicalKey = parsed.compressedText.lowercased()
+        if let manual = names[canonicalKey] {
+            return "\(manual) (\(session.host))"
         }
-        if let learned = learnedName(for: session.host) {
+        if !subnets.isEmpty, let subnet = SubnetNames.lookup(session.host, in: subnets) {
+            return "\(SubnetNames.label(session.host, in: subnet)) (\(session.host))"
+        }
+        if let learned = learnedNames[canonicalKey] {
             return learned
         }
         return session.host
@@ -281,6 +339,7 @@ final class AddressNameBook {
     @ObservationIgnored private var storedNames: [String: String] = [:]
     @ObservationIgnored private var learnedTicks: [String: UInt64] = [:]
     @ObservationIgnored private var learnedSequence: UInt64 = 0
+    @ObservationIgnored private var cachedMergedNames: (revision: UInt64, merged: [String: String])?
 
     private var canPersistLearnedToDefaults: Bool {
         guard let defaults else {

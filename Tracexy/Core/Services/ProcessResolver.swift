@@ -660,6 +660,10 @@ final class ProcessResolver {
 
     // MARK: - Live Lookup & Refresh
 
+    /// Monotonically incremented whenever `localIPs` changes so caches keyed on local
+    /// interface addresses invalidate in O(1) without re-normalizing IP sets.
+    private(set) var localIPsRevision: UInt64 = 0
+
     /// Normalized local interface IP addresses currently known for this Mac.
     var currentLocalIPs: Set<String> {
         localIPs
@@ -747,7 +751,13 @@ final class ProcessResolver {
     private let localIPsProvider: @Sendable () -> Set<String>
     private let attributionResolver: @Sendable (Int32, String) -> (appName: String, provenance: ProcessProvenance)
     private var resolvedTable = ResolvedSocketTable()
-    private var localIPs: Set<String>
+    private var localIPs: Set<String> {
+        didSet {
+            if localIPs != oldValue {
+                localIPsRevision &+= 1
+            }
+        }
+    }
     private var lastRefresh = Date.distantPast
     private var isRefreshing = false
     private var pendingForcedRefresh = false

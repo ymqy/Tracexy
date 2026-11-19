@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 // MARK: - LocalDiscoveryKind
 
@@ -31,12 +32,32 @@ nonisolated struct LocalDiscoveryAnnotation: Equatable, Hashable, Sendable {
 nonisolated enum LocalDiscoveryNameClassifier {
     // MARK: Internal
 
-    /// Classifies a raw host string if it is a local-discovery or special system
-    /// DNS name; returns `nil` for public domains, IP literals, empty strings,
-    /// and the missing-host placeholder `"—"`.
+    /// Classifies a raw host string using the current app language bundle if it is a
+    /// local-discovery or special system DNS name; returns `nil` for public domains,
+    /// IP literals, empty strings, and `"—"` without querying localization bundles.
+    static func classify(_ rawHost: String) -> LocalDiscoveryAnnotation? {
+        let cleanHost = normalizedHost(rawHost)
+        guard !cleanHost.isEmpty, cleanHost != "—" else {
+            return nil
+        }
+
+        let lower = cleanHost.lowercased()
+        guard lower.hasSuffix(".local")
+            || lower.hasSuffix(".arpa")
+            || lower.contains("._dns-sd._udp.") else
+        {
+            return nil
+        }
+
+        return classifyCandidate(cleanHost: cleanHost, lower: lower, bundle: AppLanguage.currentLocalizedBundle())
+    }
+
+    /// Classifies a raw host string using an explicit localization `bundle` if it is a
+    /// local-discovery or special system DNS name; returns `nil` for public domains,
+    /// IP literals, empty strings, and the missing-host placeholder `"—"`.
     static func classify(
         _ rawHost: String,
-        bundle: Bundle = AppLanguage.currentLocalizedBundle()
+        bundle: Bundle
     )
         -> LocalDiscoveryAnnotation?
     {
@@ -44,11 +65,79 @@ nonisolated enum LocalDiscoveryNameClassifier {
         guard !cleanHost.isEmpty, cleanHost != "—" else {
             return nil
         }
-        guard IPAddressValue(parsing: cleanHost) == nil else {
+
+        let lower = cleanHost.lowercased()
+        guard lower.hasSuffix(".local")
+            || lower.hasSuffix(".arpa")
+            || lower.contains("._dns-sd._udp.") else
+        {
             return nil
         }
 
+        return classifyCandidate(cleanHost: cleanHost, lower: lower, bundle: bundle)
+    }
+
+    /// True when `rawHost` is an mDNS / DNS-SD local discovery name or a
+    /// special-use system `.arpa` DNS name. Pure membership check — never resolves
+    /// localization bundles.
+    static func isLocalOrSpecialDiscoveryName(_ rawHost: String) -> Bool {
+        let cleanHost = normalizedHost(rawHost)
+        guard !cleanHost.isEmpty, cleanHost != "—" else {
+            return false
+        }
         let lower = cleanHost.lowercased()
+        guard lower.hasSuffix(".local")
+            || lower.hasSuffix(".arpa")
+            || lower.contains("._dns-sd._udp.") else
+        {
+            return false
+        }
+        return classifyCandidate(cleanHost: cleanHost, lower: lower, bundle: .main) != nil
+    }
+
+    /// True when `rawHost` is a domain name that belongs in the public / unicast
+    /// Domains list (i.e. a domain name that is NOT local discovery or `.arpa`).
+    static func isPublicOrUnicastDomainName(_ rawHost: String) -> Bool {
+        MainContentCoordinator.isDomainName(rawHost) && !isLocalOrSpecialDiscoveryName(rawHost)
+    }
+
+    // MARK: Private
+
+    private static let maximumCacheEntries = 512
+    private static let annotationCache = OSAllocatedUnfairLock<[String: LocalDiscoveryAnnotation?]>(initialState: [:])
+
+    private static func classifyCandidate(
+        cleanHost: String,
+        lower: String,
+        bundle: Bundle
+    )
+        -> LocalDiscoveryAnnotation?
+    {
+        let cacheKey = "\(bundle.bundlePath)|\(cleanHost)"
+        if let cached = annotationCache.withLock({ $0[cacheKey] }) {
+            return cached
+        }
+
+        let annotation = computeAnnotation(lower: lower, cleanHost: cleanHost, bundle: bundle)
+        annotationCache.withLock { cache in
+            if cache.count >= maximumCacheEntries {
+                cache.removeAll(keepingCapacity: true)
+            }
+            cache[cacheKey] = annotation
+        }
+        return annotation
+    }
+
+    private static func computeAnnotation(
+        lower: String,
+        cleanHost: String,
+        bundle: Bundle
+    )
+        -> LocalDiscoveryAnnotation?
+    {
+        guard IPAddressValue(parsing: cleanHost) == nil else {
+            return nil
+        }
 
         // Tier A — DNS-SD meta queries (checked before `.arpa` so
         // `lb._dns-sd._udp.0.1.168.192.in-addr.arpa` classifies as DNS-SD).
@@ -76,21 +165,17 @@ nonisolated enum LocalDiscoveryNameClassifier {
         return nil
     }
 
-    /// True when `rawHost` is an mDNS / DNS-SD local discovery name or a
-    /// special-use system `.arpa` DNS name.
-    static func isLocalOrSpecialDiscoveryName(_ rawHost: String) -> Bool {
-        classify(rawHost) != nil
-    }
-
-    /// True when `rawHost` is a domain name that belongs in the public / unicast
-    /// Domains list (i.e. a domain name that is NOT local discovery or `.arpa`).
-    static func isPublicOrUnicastDomainName(_ rawHost: String) -> Bool {
-        MainContentCoordinator.isDomainName(rawHost) && !isLocalOrSpecialDiscoveryName(rawHost)
-    }
-
-    // MARK: Private
-
     private static func normalizedHost(_ rawHost: String) -> String {
+        guard !rawHost.isEmpty else {
+            return ""
+        }
+        let utf8 = rawHost.utf8
+        let first = utf8[utf8.startIndex]
+        let last = utf8[utf8.index(before: utf8.endIndex)]
+        // Fast path: printable ASCII without leading/trailing whitespace or trailing '.'
+        if first > 0x20, first < 0x7F, last > 0x20, last < 0x7F, last != 0x2E {
+            return rawHost
+        }
         var trimmed = rawHost.trimmingCharacters(in: .whitespacesAndNewlines)
         while trimmed.hasSuffix(".") {
             trimmed.removeLast()

@@ -626,18 +626,57 @@ nonisolated enum SessionSourceClassifier {
         localIPs: Set<String> = [],
         isViewingSavedCapture: Bool = false,
         resolvedNames: [String: String] = [:],
-        homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
+        homeDirectoryPath: String = SessionSourceClassifier.defaultHomeDirectoryPath,
         appBundleExistsLookup: ((String) -> Bool)? = nil,
         bundle: Bundle = AppLanguage.currentLocalizedBundle()
     )
         -> ClassifiedSessionSource
     {
-        classifyNormalized(
+        classifyLazy(
             session,
             context: context,
-            normalizedLocalIPs: normalizeIPSet(localIPs),
+            normalizedLocalIPsProvider: { normalizeIPSet(localIPs) },
             isViewingSavedCapture: isViewingSavedCapture,
-            normalizedResolvedNames: normalizeResolvedNames(resolvedNames),
+            normalizedResolvedNamesProvider: { normalizeResolvedNames(resolvedNames) },
+            homeDirectoryPath: homeDirectoryPath,
+            appBundleExistsLookup: appBundleExistsLookup ?? defaultAppBundleExists(_:),
+            usesDefaultAppBundleLookup: appBundleExistsLookup == nil,
+            bundle: bundle
+        )
+    }
+
+    /// Pre-normalizes a set of raw local IP strings into binary `IPAddressValue` keys once
+    /// so callers can reuse them across thousands of sessions in O(1).
+    static func normalizeLocalIPs(_ rawIPs: Set<String>) -> Set<IPAddressValue> {
+        normalizeIPSet(rawIPs)
+    }
+
+    /// Pre-normalizes a raw IP → hostname dictionary once so callers can reuse it across
+    /// thousands of sessions without re-sorting or re-parsing keys per row.
+    static func normalizeResolvedNameMap(_ resolvedNames: [String: String]) -> [String: String] {
+        normalizeResolvedNames(resolvedNames)
+    }
+
+    /// Classifies a single `SessionSummary` using caller-supplied pre-normalized `localIPs`
+    /// and `resolvedNames` providers (evaluated lazily only for kernel/unattributed traffic).
+    static func classifyPreNormalized(
+        _ session: SessionSummary,
+        context: SessionProcessContext? = nil,
+        normalizedLocalIPsProvider: () -> Set<IPAddressValue>,
+        isViewingSavedCapture: Bool = false,
+        normalizedResolvedNamesProvider: () -> [String: String],
+        homeDirectoryPath: String = SessionSourceClassifier.defaultHomeDirectoryPath,
+        appBundleExistsLookup: ((String) -> Bool)? = nil,
+        bundle: Bundle = AppLanguage.currentLocalizedBundle()
+    )
+        -> ClassifiedSessionSource
+    {
+        classifyLazy(
+            session,
+            context: context,
+            normalizedLocalIPsProvider: normalizedLocalIPsProvider,
+            isViewingSavedCapture: isViewingSavedCapture,
+            normalizedResolvedNamesProvider: normalizedResolvedNamesProvider,
             homeDirectoryPath: homeDirectoryPath,
             appBundleExistsLookup: appBundleExistsLookup ?? defaultAppBundleExists(_:),
             usesDefaultAppBundleLookup: appBundleExistsLookup == nil,
@@ -721,7 +760,7 @@ nonisolated enum SessionSourceClassifier {
         isViewingSavedCapture: Bool = false,
         resolvedNames: [String: String] = [:],
         includeEmptyCategories: Bool = false,
-        homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
+        homeDirectoryPath: String = SessionSourceClassifier.defaultHomeDirectoryPath,
         appBundleExistsLookup: ((String) -> Bool)? = nil,
         bundle: Bundle = AppLanguage.currentLocalizedBundle()
     )
@@ -748,23 +787,74 @@ nonisolated enum SessionSourceClassifier {
         isViewingSavedCapture: Bool = false,
         resolvedNames: [String: String] = [:],
         includeEmptyCategories: Bool = false,
-        homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
+        homeDirectoryPath: String = SessionSourceClassifier.defaultHomeDirectoryPath,
         appBundleExistsLookup: ((String) -> Bool)? = nil,
         bundle: Bundle = AppLanguage.currentLocalizedBundle()
     )
         -> [SourceCategoryGroup]
     {
-        let normalizedLocal = normalizeIPSet(localIPs)
-        let normalizedNames = normalizeResolvedNames(resolvedNames)
+        classifyAndGroupPreNormalized(
+            sessions: sessions,
+            contextProvider: contextProvider,
+            fallbackContexts: nil,
+            normalizedLocalIPsProvider: { normalizeIPSet(localIPs) },
+            isViewingSavedCapture: isViewingSavedCapture,
+            normalizedResolvedNamesProvider: { normalizeResolvedNames(resolvedNames) },
+            includeEmptyCategories: includeEmptyCategories,
+            homeDirectoryPath: homeDirectoryPath,
+            appBundleExistsLookup: appBundleExistsLookup,
+            bundle: bundle
+        ).groups
+    }
+
+    /// Classifies and aggregates `sessions` in a single pass using caller-supplied pre-normalized
+    /// providers (evaluated lazily only when kernel/unattributed traffic is present), returning both
+    /// the per-session classification lookup map and the sorted sidebar category groups.
+    static func classifyAndGroupPreNormalized(
+        sessions: [SessionSummary],
+        contextProvider: (SessionSummary) -> SessionProcessContext?,
+        fallbackContexts: [String: SessionProcessContext]? = nil,
+        normalizedLocalIPsProvider: () -> Set<IPAddressValue>,
+        isViewingSavedCapture: Bool = false,
+        normalizedResolvedNamesProvider: () -> [String: String],
+        includeEmptyCategories: Bool = false,
+        homeDirectoryPath: String = SessionSourceClassifier.defaultHomeDirectoryPath,
+        appBundleExistsLookup: ((String) -> Bool)? = nil,
+        bundle: Bundle = AppLanguage.currentLocalizedBundle()
+    )
+        -> (classifiedByID: [UUID: ClassifiedSessionSource], groups: [SourceCategoryGroup])
+    {
+        var cachedNormalizedLocal: Set<IPAddressValue>?
+        var cachedNormalizedNames: [String: String]?
+        let resolveLocalIPs: () -> Set<IPAddressValue> = {
+            if let cachedNormalizedLocal {
+                return cachedNormalizedLocal
+            }
+            let resolved = normalizedLocalIPsProvider()
+            cachedNormalizedLocal = resolved
+            return resolved
+        }
+        let resolveNames: () -> [String: String] = {
+            if let cachedNormalizedNames {
+                return cachedNormalizedNames
+            }
+            let resolved = normalizedResolvedNamesProvider()
+            cachedNormalizedNames = resolved
+            return resolved
+        }
         let resolvedAppBundleExistsLookup = appBundleExistsLookup ?? defaultAppBundleExists(_:)
         let usesDefaultAppBundleLookup = appBundleExistsLookup == nil
 
-        let fallbackContextByProcessName = fallbackContextsByProcessName(
+        let fallbackContextByProcessName = fallbackContexts ?? fallbackContextsByProcessName(
             for: sessions,
             contextProvider: contextProvider
         )
 
+        var classifiedByID: [UUID: ClassifiedSessionSource] = [:]
+        classifiedByID.reserveCapacity(sessions.count)
         var accumulatorsByKey: [String: ItemAccumulator] = [:]
+        let appMainProcessSubtitle = String(localized: "App Main Process", bundle: bundle)
+        let appHelperProcessSubtitle = String(localized: "App Helper Process", bundle: bundle)
         for session in sessions {
             let directContext = contextProvider(session)
             let effectiveContext = effectiveProcessContext(
@@ -773,17 +863,18 @@ nonisolated enum SessionSourceClassifier {
                 fallbacks: fallbackContextByProcessName
             )
 
-            let classified = classifyNormalized(
+            let classified = classifyLazy(
                 session,
                 context: effectiveContext,
-                normalizedLocalIPs: normalizedLocal,
+                normalizedLocalIPsProvider: resolveLocalIPs,
                 isViewingSavedCapture: isViewingSavedCapture,
-                normalizedResolvedNames: normalizedNames,
+                normalizedResolvedNamesProvider: resolveNames,
                 homeDirectoryPath: homeDirectoryPath,
                 appBundleExistsLookup: resolvedAppBundleExistsLookup,
                 usesDefaultAppBundleLookup: usesDefaultAppBundleLookup,
                 bundle: bundle
             )
+            classifiedByID[session.id] = classified
 
             let richness = contextRichness(effectiveContext)
             let rawVia = normalizedViaProcessName(
@@ -818,9 +909,7 @@ nonisolated enum SessionSourceClassifier {
                     filterKey: "app-proc:\(appTitle):\(origin)",
                     category: isMain ? .app : .thirdPartyService,
                     title: origin,
-                    baseSubtitle: isMain
-                        ? String(localized: "App Main Process", bundle: bundle)
-                        : String(localized: "App Helper Process", bundle: bundle),
+                    baseSubtitle: isMain ? appMainProcessSubtitle : appHelperProcessSubtitle,
                     iconTitle: origin,
                     symbolName: isMain ? nil : "gearshape.2",
                     delegatedViaName: delegatedVia,
@@ -887,7 +976,7 @@ nonisolated enum SessionSourceClassifier {
                 totalSessions: totalSessions
             ))
         }
-        return categoryGroups
+        return (classifiedByID: classifiedByID, groups: categoryGroups)
     }
 
     /// Human-readable localized title for any `filterKey` (e.g. `"lan:mdns"` -> `"Bonjour / mDNS"`,
@@ -1057,12 +1146,12 @@ nonisolated enum SessionSourceClassifier {
                 if rawName != nil, !isKernel {
                     return false
                 }
-                let classified = classifyNormalized(
+                let classified = classifyLazy(
                     session,
                     context: context,
-                    normalizedLocalIPs: normalizedLocal,
+                    normalizedLocalIPsProvider: { normalizedLocal },
                     isViewingSavedCapture: isViewingSavedCapture,
-                    normalizedResolvedNames: [:],
+                    normalizedResolvedNamesProvider: { [:] },
                     homeDirectoryPath: "",
                     appBundleExistsLookup: { _ in false },
                     usesDefaultAppBundleLookup: false,
@@ -1085,6 +1174,8 @@ nonisolated enum SessionSourceClassifier {
     }
 
     // MARK: Private
+
+    private static let defaultHomeDirectoryPath = FileManager.default.homeDirectoryForCurrentUser.path
 
     private static let wellKnownAppNames: Set<String> = [
         "Safari", "Mail", "Music", "Messages", "Maps", "Photos", "Calendar", "Notes", "Reminders",
@@ -1130,12 +1221,12 @@ nonisolated enum SessionSourceClassifier {
 
     // MARK: Core classification
 
-    private static func classifyNormalized(
+    private static func classifyLazy(
         _ session: SessionSummary,
         context: SessionProcessContext?,
-        normalizedLocalIPs: Set<IPAddressValue>,
+        normalizedLocalIPsProvider: () -> Set<IPAddressValue>,
         isViewingSavedCapture: Bool,
-        normalizedResolvedNames: [String: String],
+        normalizedResolvedNamesProvider: () -> [String: String],
         homeDirectoryPath: String,
         appBundleExistsLookup: (String) -> Bool,
         usesDefaultAppBundleLookup: Bool,
@@ -1144,19 +1235,8 @@ nonisolated enum SessionSourceClassifier {
         -> ClassifiedSessionSource
     {
         let rawName = normalizedProcessName(session.processName)
-        let endpoints = parseEndpoints(
-            of: session,
-            normalizedLocalIPs: normalizedLocalIPs,
-            isViewingSavedCapture: isViewingSavedCapture
-        )
 
-        if isKernelTaskSession(rawName: rawName, context: context) {
-            let subkind = classifyKernelSubkind(session, endpoints: endpoints, forceFallbackToTeardown: true)
-                ?? .tcpTeardown
-            return makeKernelSource(subkind: subkind, session: session, bundle: bundle)
-        }
-
-        if let rawName {
+        if let rawName, !isKernelTaskSession(rawName: rawName, context: context) {
             return classifyNamedProcess(
                 rawName: rawName,
                 session: session,
@@ -1168,10 +1248,22 @@ nonisolated enum SessionSourceClassifier {
             )
         }
 
+        let endpoints = parseEndpoints(
+            of: session,
+            normalizedLocalIPs: normalizedLocalIPsProvider(),
+            isViewingSavedCapture: isViewingSavedCapture
+        )
+
+        if isKernelTaskSession(rawName: rawName, context: context) {
+            let subkind = classifyKernelSubkind(session, endpoints: endpoints, forceFallbackToTeardown: true)
+                ?? .tcpTeardown
+            return makeKernelSource(subkind: subkind, session: session, bundle: bundle)
+        }
+
         return classifyUnattributedSession(
             session,
             endpoints: endpoints,
-            normalizedResolvedNames: normalizedResolvedNames,
+            normalizedResolvedNamesProvider: normalizedResolvedNamesProvider,
             bundle: bundle
         )
     }
@@ -1709,7 +1801,7 @@ nonisolated enum SessionSourceClassifier {
     private static func classifyUnattributedSession(
         _ session: SessionSummary,
         endpoints: ParsedEndpoints,
-        normalizedResolvedNames: [String: String],
+        normalizedResolvedNamesProvider: () -> [String: String],
         bundle: Bundle
     )
         -> ClassifiedSessionSource
@@ -1722,7 +1814,7 @@ nonisolated enum SessionSourceClassifier {
                     .arp,
                     session: session,
                     endpoints: endpoints,
-                    names: normalizedResolvedNames,
+                    names: normalizedResolvedNamesProvider(),
                     bundle: bundle
                 )
             }
@@ -1750,7 +1842,7 @@ nonisolated enum SessionSourceClassifier {
                     .dhcp,
                     session: session,
                     endpoints: endpoints,
-                    names: normalizedResolvedNames,
+                    names: normalizedResolvedNamesProvider(),
                     bundle: bundle
                 )
             }
@@ -1762,7 +1854,7 @@ nonisolated enum SessionSourceClassifier {
                     subkind,
                     session: session,
                     endpoints: endpoints,
-                    names: normalizedResolvedNames,
+                    names: normalizedResolvedNamesProvider(),
                     bundle: bundle
                 )
             }
@@ -1771,7 +1863,7 @@ nonisolated enum SessionSourceClassifier {
                     .dhcp,
                     session: session,
                     endpoints: endpoints,
-                    names: normalizedResolvedNames,
+                    names: normalizedResolvedNamesProvider(),
                     bundle: bundle
                 )
             }
@@ -1780,7 +1872,7 @@ nonisolated enum SessionSourceClassifier {
                 savedLan,
                 session: session,
                 endpoints: endpoints,
-                names: normalizedResolvedNames,
+                names: normalizedResolvedNamesProvider(),
                 bundle: bundle
             )
         }
@@ -2009,8 +2101,7 @@ nonisolated enum SessionSourceClassifier {
     }
 
     private static func hostChildTarget(for session: SessionSummary) -> SourceChildTarget? {
-        let trimmed = session.host.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed != "—" else {
+        guard let trimmed = normalizedNonEmpty(session.host), trimmed != "—" else {
             return nil
         }
         return SourceChildTarget(kind: .host, value: trimmed, label: trimmed)
@@ -2186,12 +2277,61 @@ nonisolated enum SessionSourceClassifier {
         return result
     }
 
+    /// Fast pre-normalized merge for `AddressNameBook`, whose `learnedNames` keys are already
+    /// canonical lowercase IPs and values are already sanitized non-IP hostnames, so only
+    /// manual `names` (`<= 500`) need validation when overlaying.
+    static func normalizeAddressBookResolvedNames(
+        learnedNames: [String: String],
+        manualNames: [String: String]
+    )
+        -> [String: String]
+    {
+        guard !manualNames.isEmpty else {
+            return learnedNames
+        }
+        var result = learnedNames
+        for key in manualNames.keys.sorted() {
+            guard let ip = parseBareIP(key) else {
+                continue
+            }
+            let canonicalKey = ip.compressedText.lowercased()
+            guard let rawName = normalizedNonEmpty(manualNames[key]),
+                  !mayBeBareIPCandidate(rawName) || parseBareIP(rawName) == nil else
+            {
+                result.removeValue(forKey: canonicalKey)
+                continue
+            }
+            result[canonicalKey] = rawName
+        }
+        return result
+    }
+
+    private static func mayBeBareIPCandidate(_ trimmed: String) -> Bool {
+        let utf8 = trimmed.utf8
+        guard !utf8.isEmpty else {
+            return false
+        }
+        var hasNonIPv4Byte = false
+        var dotCount = 0
+        for byte in utf8 {
+            if byte == 0x3A || byte == 0x5B || byte == 0x25 { // ':', '[', '%'
+                return true
+            }
+            if byte == 0x2E { // '.'
+                dotCount += 1
+            } else if byte < 0x30 || byte > 0x39 {
+                hasNonIPv4Byte = true
+            }
+        }
+        return !hasNonIPv4Byte && dotCount == 3
+    }
+
     private static func normalizeResolvedNames(_ resolvedNames: [String: String]) -> [String: String] {
         var result: [String: String] = [:]
         result.reserveCapacity(resolvedNames.count)
         for key in resolvedNames.keys.sorted() {
             guard let rawName = normalizedNonEmpty(resolvedNames[key]),
-                  parseBareIP(rawName) == nil,
+                  !mayBeBareIPCandidate(rawName) || parseBareIP(rawName) == nil,
                   let ip = parseBareIP(key) else
             {
                 continue
@@ -2247,10 +2387,18 @@ nonisolated enum SessionSourceClassifier {
     }
 
     private static func normalizedNonEmpty(_ raw: String?) -> String? {
-        guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+        guard let raw, !raw.isEmpty else {
             return nil
         }
-        return trimmed
+        let utf8 = raw.utf8
+        let first = utf8[utf8.startIndex]
+        let last = utf8[utf8.index(before: utf8.endIndex)]
+        // Fast path: printable ASCII without leading/trailing whitespace avoids NSString bridging.
+        if first > 0x20, first < 0x7F, last > 0x20, last < 0x7F {
+            return raw
+        }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private static func normalizeDirectoryPrefix(_ path: String) -> String {

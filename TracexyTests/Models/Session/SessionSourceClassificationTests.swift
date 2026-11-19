@@ -1842,6 +1842,298 @@ struct SessionSourceClassificationTests {
         #expect(!catalog.containsApp(named: "Hidden Nested Helper"))
     }
 
+    // MARK: - 14. Presentation Cache Performance, Parity & Invalidation (R6)
+
+    @Test("Coordinator presentation caches classify 1,000 sessions with 4,000 learned DNS names in <50ms with 100% parity")
+    @MainActor
+    func coordinatorPresentationCacheBenchmarkAndParity() {
+        let suiteName = "tracexy.tests.r6.perf.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let coordinator = MainContentCoordinator(settingsDefaults: defaults)
+
+        // Seed 4,000 learned DNS entries in AddressNameBook (maximumLearnedEntries).
+        var bindings: [DNSAddressBinding] = []
+        bindings.reserveCapacity(4_000)
+        for index in 0 ..< 4_000 {
+            let third = index / 250
+            let fourth = (index % 250) + 1
+            bindings.append(DNSAddressBinding(
+                ip: "10.200.\(third).\(fourth)",
+                hostname: "svc-\(third)-\(fourth).example.com"
+            ))
+        }
+        let dnsSeeder = makeSession(
+            processName: "mDNSResponder",
+            host: "dns.example.com",
+            protos: [.udp, .dns],
+            dnsResolvedBindings: bindings
+        )
+        coordinator.addressNames.learn(from: [dnsSeeder])
+        #expect(coordinator.addressNames.learnedNames.count == 4_000)
+
+        // Build 1,000 realistic sessions across all traffic categories.
+        let safariProv = ProcessProvenance(
+            executablePath: "/System/Applications/Safari.app/Contents/MacOS/Safari",
+            bundleIdentifier: "com.apple.Safari",
+            viaProcessName: "nsurlsessiond"
+        )
+        let curlProv = ProcessProvenance(
+            executablePath: "/usr/bin/curl",
+            parentProcessName: "zsh",
+            hasControllingTTY: true
+        )
+        let mdnsProv = ProcessProvenance(
+            executablePath: "/usr/sbin/mDNSResponder"
+        )
+
+        var sessions: [SessionSummary] = []
+        sessions.reserveCapacity(1_000)
+        for idx in 0 ..< 1_000 {
+            switch idx % 10 {
+            case 0, 1, 2, 3:
+                sessions.append(makeSession(
+                    processName: "Safari",
+                    host: "app-\(idx % 40).example.com",
+                    src: ("192.168.0.130", UInt16(40_000 + idx)),
+                    dst: ("93.184.216.\((idx % 200) + 1)", 443),
+                    protos: [.tcp, .tls, .http2],
+                    processProvenance: safariProv
+                ))
+            case 4, 5:
+                sessions.append(makeSession(
+                    processName: "curl",
+                    host: "api-\(idx % 20).example.org",
+                    src: ("192.168.0.130", UInt16(45_000 + idx)),
+                    dst: ("198.51.100.\((idx % 200) + 1)", 443),
+                    protos: [.tcp, .tls],
+                    processProvenance: curlProv
+                ))
+            case 6:
+                sessions.append(makeSession(
+                    processName: "mDNSResponder",
+                    host: idx % 20 == 6 ? "_companion-link._tcp.local" : "Device-\(idx % 12).local",
+                    src: ("192.168.0.130", 5_353),
+                    dst: ("224.0.0.251", 5_353),
+                    protos: [.udp, .mdns],
+                    processProvenance: mdnsProv
+                ))
+            case 7:
+                let third = (idx * 3) / 250
+                let fourth = ((idx * 3) % 250) + 1
+                sessions.append(makeSession(
+                    processName: "Safari",
+                    host: "10.200.\(third).\(fourth)",
+                    src: ("192.168.0.130", UInt16(50_000 + idx)),
+                    dst: ("10.200.\(third).\(fourth)", 443),
+                    protos: [.tcp, .tls],
+                    processProvenance: safariProv
+                ))
+            case 8:
+                sessions.append(makeSession(
+                    processName: "kernel_task",
+                    host: "198.51.100.88",
+                    src: ("192.168.0.130", UInt16(55_000 + idx)),
+                    dst: ("198.51.100.88", 443),
+                    protos: [.tcp],
+                    tcpCompleteness: [.ack],
+                    processProvenance: ProcessProvenance(isKernelTask: true)
+                ))
+            default:
+                let peerIdx = idx % 250
+                sessions.append(makeSession(
+                    processName: nil,
+                    host: "239.255.255.250",
+                    src: ("10.200.0.\(peerIdx + 1)", UInt16(52_000 + (idx % 500))),
+                    dst: ("239.255.255.250", 1_900),
+                    protos: [.udp, .ssdp]
+                ))
+            }
+        }
+
+        coordinator.sessions = sessions
+        // Ensure one-time singleton initialization (`ProcessResolver.shared` libproc scan)
+        // happens before timing the steady-state classification & scroll workload.
+        _ = ProcessResolver.shared.localIPsRevision
+
+        // Run under an explicit language selection so the benchmark measures our
+        // classification & rollup caches directly (isolating `.system` bundle resolution).
+        AppLanguage.withTemporaryLanguageForTesting("en") {
+            let clock = ContinuousClock()
+            let start = clock.now
+            var firstPass: [ClassifiedSessionSource] = []
+            firstPass.reserveCapacity(sessions.count)
+            for session in sessions {
+                firstPass.append(coordinator.classifiedSource(for: session))
+            }
+            var secondPass: [ClassifiedSessionSource] = []
+            secondPass.reserveCapacity(sessions.count)
+            for session in sessions {
+                secondPass.append(coordinator.classifiedSource(for: session))
+            }
+            let categories = coordinator.sourceCategoryGroups
+            let domains = coordinator.domainGroups
+            let localDiscovery = coordinator.localDiscoveryGroups
+            let ips = coordinator.ipHosts
+            // Second read of sidebar rollups (warm cache hits)
+            #expect(coordinator.sourceCategoryGroups == categories)
+            #expect(coordinator.domainGroups.map(\.domain) == domains.map(\.domain))
+            #expect(coordinator.domainGroups.map(\.count) == domains.map(\.count))
+            #expect(coordinator.localDiscoveryGroups == localDiscovery)
+            #expect(coordinator.ipHosts.count == ips.count)
+            let elapsed = clock.now - start
+
+            #expect(elapsed < .milliseconds(50), "Expected <50ms total, measured \(elapsed)")
+            #expect(firstPass == secondPass)
+            #expect(!categories.isEmpty)
+            #expect(!domains.isEmpty)
+            #expect(!localDiscovery.isEmpty)
+            #expect(!ips.isEmpty)
+
+            // Verify 100% parity against direct `SessionSourceClassifier.classify(...)` using
+            // pre-normalized inputs equivalent to direct classification.
+            let localIPs = ProcessResolver.shared.currentLocalIPs
+            let mergedNames = coordinator.mergedResolvedNames
+            let isSaved = coordinator.isViewingSavedCapture
+            let normalizedLocal = SessionSourceClassifier.normalizeLocalIPs(localIPs)
+            let normalizedNames = SessionSourceClassifier.normalizeResolvedNameMap(mergedNames)
+            for (index, session) in sessions.enumerated() {
+                let direct = SessionSourceClassifier.classifyPreNormalized(
+                    session,
+                    context: coordinator.effectiveSessionProcessContext(for: session),
+                    normalizedLocalIPsProvider: { normalizedLocal },
+                    isViewingSavedCapture: isSaved,
+                    normalizedResolvedNamesProvider: { normalizedNames }
+                )
+                #expect(firstPass[index] == direct, "Mismatch at session index \(index)")
+            }
+            // Spot-check unattributed SSDP peer session against direct uncached `classify(...)`.
+            let ssdpSample = sessions[9]
+            let directSSDP = SessionSourceClassifier.classify(
+                ssdpSample,
+                context: coordinator.effectiveSessionProcessContext(for: ssdpSample),
+                localIPs: localIPs,
+                isViewingSavedCapture: isSaved,
+                resolvedNames: mergedNames
+            )
+            #expect(firstPass[9] == directSSDP)
+            #expect(firstPass[9].childTarget?.label == "10.200.0.10 · svc-0-10.example.com")
+        }
+    }
+
+    @Test("AddressNameBook fast-path displayHost preserves IPv4, IPv6, bracketed/zone IPv6, and domain parity")
+    @MainActor
+    func addressNameBookDisplayHostFastPathParity() {
+        let suiteName = "tracexy.tests.r6.addr.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let book = AddressNameBook()
+        book.bind(to: defaults)
+        let rev0 = book.revision
+        #expect(book.setName("Gateway", for: "192.168.0.1"))
+        let rev1 = book.revision
+        #expect(rev1 > rev0)
+        #expect(book.setName("IPv6-Lab", for: "fe80::1"))
+        #expect(book.setName("Doc-V6", for: "2001:db8::1"))
+        #expect(book.setSubnetName("office", for: "10.42.0.0/24"))
+
+        // Domain names and special tokens fast-reject cleanly.
+        #expect(!AddressNameBook.mayBeIPLiteral(""))
+        #expect(!AddressNameBook.mayBeIPLiteral("—"))
+        #expect(!AddressNameBook.mayBeIPLiteral("www.google.com"))
+        #expect(!AddressNameBook.mayBeIPLiteral("anon.local"))
+        #expect(!AddressNameBook.mayBeIPLiteral("_companion-link._tcp.local"))
+        // IPv4, IPv6 (including leading hex a-f), bracketed IPv6, and zone-indexed IPv6 pass prefilter.
+        #expect(AddressNameBook.mayBeIPLiteral("192.168.0.1"))
+        #expect(AddressNameBook.mayBeIPLiteral("fe80::1"))
+        #expect(AddressNameBook.mayBeIPLiteral("2001:db8::1"))
+        #expect(AddressNameBook.mayBeIPLiteral("::1"))
+        #expect(AddressNameBook.mayBeIPLiteral("[2001:db8::1]"))
+        #expect(AddressNameBook.mayBeIPLiteral("fe80::1%en0"))
+
+        #expect(book.displayHost(for: makeSession(processName: "Safari", host: "www.google.com")) == "www.google.com")
+        #expect(book.displayHost(for: makeSession(processName: "Safari", host: "—")) == "—")
+        #expect(book.displayHost(for: makeSession(processName: "Safari", host: "192.168.0.1")) == "Gateway (192.168.0.1)")
+        #expect(book.displayHost(for: makeSession(processName: "Safari", host: "10.42.0.7")) == "office.7 (10.42.0.7)")
+        #expect(book.displayHost(for: makeSession(processName: "Safari", host: "fe80::1")) == "IPv6-Lab (fe80::1)")
+        #expect(book.displayHost(for: makeSession(processName: "Safari", host: "2001:0DB8::1")) == "Doc-V6 (2001:0DB8::1)")
+        // Bracketed & zone-indexed forms are not accepted by IPAddressValue(parsing:), so returned verbatim.
+        #expect(book.displayHost(for: makeSession(processName: "Safari", host: "[2001:db8::1]")) == "[2001:db8::1]")
+        #expect(book.displayHost(for: makeSession(processName: "Safari", host: "fe80::1%en0")) == "fe80::1%en0")
+    }
+
+    @Test("Mutating AddressNameBook, attributedProvenancesBySessionID, isViewingSavedCapture, or removedSessionIDs immediately invalidates caches")
+    @MainActor
+    func coordinatorPresentationCacheInvalidation() {
+        let suiteName = "tracexy.tests.r6.inval.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let coordinator = MainContentCoordinator(settingsDefaults: defaults)
+        let ssdpSession = makeSession(
+            processName: nil,
+            host: "239.255.255.250",
+            src: ("192.168.0.42", 52_100),
+            dst: ("239.255.255.250", 1_900),
+            protos: [.udp, .ssdp]
+        )
+        let toolSession = makeSession(
+            processName: "mycustomprobe",
+            host: "api.example.com",
+            src: ("192.168.0.130", 51_000),
+            dst: ("93.184.216.34", 443),
+            protos: [.tcp, .tls]
+        )
+        let localResetSession = makeSession(
+            processName: nil,
+            host: "93.184.216.34",
+            src: ("127.0.0.1", 50_100),
+            dst: ("93.184.216.34", 443),
+            protos: [.tcp],
+            bytesUp: 60,
+            bytesDown: 0,
+            packetsUp: 1,
+            packetsDown: 0,
+            tcpCompleteness: [.rst]
+        )
+
+        coordinator.sessions = [ssdpSession, toolSession, localResetSession]
+
+        // 1. Warm cache and check initial classifications.
+        #expect(coordinator.classifiedSource(for: ssdpSession).childTarget?.label == "192.168.0.42")
+        #expect(coordinator.classifiedSource(for: toolSession).category == .thirdPartyService)
+        #expect(coordinator.classifiedSource(for: localResetSession).category == .kernelAndLink)
+        #expect(coordinator.domainGroups.map(\.domain) == ["api.example.com"])
+
+        // 2. Mutate AddressNameBook -> cache invalidates immediately.
+        #expect(coordinator.addressNames.setName("LivingRoom-TV", for: "192.168.0.42"))
+        #expect(coordinator.classifiedSource(for: ssdpSession).childTarget?.label == "192.168.0.42 · LivingRoom-TV")
+        let lanGroup = coordinator.sourceCategoryGroups.first { $0.category == .lanDiscovery }
+        #expect(lanGroup?.items.first?.children.first?.label == "192.168.0.42 · LivingRoom-TV")
+
+        // 3. Mutate attributedProvenancesBySessionID -> cache invalidates immediately.
+        coordinator.attributedProvenancesBySessionID[toolSession.id] = ProcessProvenance(
+            executablePath: "/opt/homebrew/bin/mycustomprobe",
+            hasControllingTTY: true
+        )
+        #expect(coordinator.classifiedSource(for: toolSession).category == .cli)
+        #expect(coordinator.sourceCategoryGroups.contains { $0.category == .cli })
+
+        // 4. Flip isViewingSavedCapture -> cache invalidates immediately.
+        coordinator.isViewingSavedCapture = true
+        #expect(coordinator.classifiedSource(for: localResetSession).category == .unattributed)
+
+        // 5. Remove session -> domainGroups cache invalidates immediately.
+        coordinator.removedSessionIDs.insert(toolSession.id)
+        #expect(coordinator.domainGroups.isEmpty)
+
+        // 6. Empty appendRetainedFrames is a no-op.
+        coordinator.appendRetainedFrames([])
+        #expect(coordinator.retainedFrameCount == 0)
+    }
+
     private func agyHelperDNSCtxSession(_ session: SessionSummary) -> SessionSummary {
         session
     }
