@@ -58,13 +58,14 @@ struct SessionCenterView: View {
                 didLoadColumnCustomization = false
                 loadColumnCustomization()
             }
-            .onChange(of: columnCustomization) { _, customization in
-                guard didLoadColumnCustomization,
-                      let data = try? JSONEncoder().encode(customization) else
-                {
+            .onChange(of: columnState) { _, updated in
+                guard didLoadColumnCustomization else {
                     return
                 }
-                coordinator.activeProjectDefaults.set(data, forKey: ProjectScopedSettingsKeys.sessionTableColumns)
+                updated.save(
+                    to: coordinator.activeProjectDefaults,
+                    key: ProjectScopedSettingsKeys.sessionTableColumns
+                )
             }
     }
 
@@ -119,12 +120,14 @@ struct SessionCenterView: View {
         let filterRules: [SessionFilterRule]
     }
 
+    @Environment(\.locale) private var locale
+
     /// Column sort chosen by clicking a header. Empty keeps the engine's stable
     /// capture order (oldest→newest, rows updating in place), which stays the
     /// default so a live list never reshuffles under the cursor unasked.
-    @State private var sortOrder: [KeyPathComparator<SessionSummary>] = []
-    /// Which columns are shown and in what order; kept per Project.
-    @State private var columnCustomization = TableColumnCustomization<SessionSummary>()
+    @State private var sortCriteria: [SessionOutlineSortCriterion] = []
+    /// Which columns are shown, their widths, and their order; kept per Project.
+    @State private var columnState = SessionOutlineColumnState.defaultState
     @State private var didLoadColumnCustomization = false
     /// The address being named from the context menu, and the name being typed.
     @State private var namingAddress: String?
@@ -352,31 +355,17 @@ struct SessionCenterView: View {
                 savedCaptureWarningNotice(warning)
                 Divider()
             }
-            // List-first (Wireshark/Proxyman): the table is the spine and takes the
-            // remaining height.
-            //
-            // NOTE (reentrancy): the Table stays in its own branch with no
-            // GeometryReader — feeding a Table a height derived from its own
-            // container re-enters NSTableView layout ("reentrant operation in its
-            // NSTableView delegate" → hang/assert under the debugger).
+            // List-first (Wireshark/Proxyman): the native NSOutlineView table is
+            // the spine and takes the remaining height.
             //
             // When there are no rows, show ONLY the purposeful empty state — not
-            // an empty `Table` (its header + ghost row separators would show
-            // through an overlay). Safe w.r.t. the live-reload reentrancy note:
-            // with zero rows there is nothing for NSTableView to reload, and
-            // sessions grow monotonically during capture (one empty→filled flip).
+            // an empty table whose header + ghost separators would show through.
             if sessions.isEmpty {
                 emptyState
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                Group {
-                    if workspace.sessionGrouping == .none {
-                        sessionTable(sessions: sessions, workspace: workspace)
-                    } else {
-                        groupedTable(rows: coordinator.sessionRows, workspace: workspace)
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                nativeSessionTable(sessions: sessions, workspace: workspace)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -432,662 +421,256 @@ struct SessionCenterView: View {
         .background(Color.yellow.opacity(0.06))
     }
 
-    /// The Time cell for a row. A capture file that recorded no time for a frame
-    /// leaves the session's start unknown; the cell says so with the standard em
-    /// dash rather than showing a substituted instant.
-    @ViewBuilder
-    private func timeCell(_ startTime: Date?, format: SessionTimeFormat, captureStart: Date?) -> some View {
-        if let startTime {
-            Text(format.string(for: startTime, captureStart: captureStart))
-                .font(Theme.Typography.monoSmall)
-                .foregroundStyle(.secondary)
-        } else {
-            Text("—")
-                .font(Theme.Typography.monoSmall)
-                .foregroundStyle(.tertiary)
-                .help("This capture file records no time for these frames.")
-        }
-    }
-
-    private func sessionTable(sessions: [SessionSummary], workspace: WorkspaceState) -> some View {
-        let ordered = sortOrder.isEmpty ? sessions : sessions.sorted(using: sortOrder)
-        // Computed once per render, and only when the Timeline column is shown.
-        let timelineSpan = columnCustomization[visibility: "timeline"] == .visible
-            ? SessionTimelineBar.span(of: sessions)
-            : nil
-        let investigationNotes = coordinator.investigationNotes
-        let noteIDs: Set<UUID> = investigationNotes.notes.isEmpty
-            ? []
-            : investigationNotes.annotatedSessionIDs
-        let tagsBySessionID: [UUID: [SessionTag]]
-        if let scope = investigationNotes.scope, !investigationNotes.tagRecords.isEmpty {
-            var map: [UUID: [SessionTag]] = [:]
-            map.reserveCapacity(investigationNotes.tagRecords.count)
-            for record in investigationNotes.tagRecords where record.scope == scope {
-                if map[record.sessionID] == nil {
-                    map[record.sessionID] = record.tags
-                }
-            }
-            tagsBySessionID = map
-        } else {
-            tagsBySessionID = [:]
-        }
+    private func nativeSessionTable(sessions: [SessionSummary], workspace: WorkspaceState) -> some View {
+        let isGrouped = workspace.sessionGrouping != .none
         let timeFormat = coordinator.sessionTimeDisplay.format
         let captureStart = coordinator.trafficTimeline.captureStartFrame
-        let revealRow = workspace.selectedSessionID.flatMap { selectedID in
-            ordered.firstIndex { $0.id == selectedID }
-        }
-        return Table(ordered, selection: Binding(
-            get: { workspace.selectedSessionID },
-            // Guard the write-back: while a live rebuild replaces the rows,
-            // NSTableView re-applies the selection *through this setter from
-            // inside its own delegate callback*. Assigning the same value there
-            // re-triggers an observable update mid-update — the "reentrant
-            // operation in its NSTableView delegate" warning that becomes a hard
-            // assert (and a crash under the debugger). No-op when unchanged.
-            set: { newValue in
-                if workspace.selectedSessionID != newValue {
-                    coordinator.userDidNavigateSessionHistory()
-                    workspace.selectedSessionID = newValue
-                }
-            }
-        ), sortOrder: $sortOrder, columnCustomization: $columnCustomization) {
-            endpointColumns(timeFormat: timeFormat, captureStart: captureStart)
-            TableColumn("Host", value: \.host) { session in
-                let displayHost = coordinator.addressNames.displayHost(for: session)
-                let discovery = LocalDiscoveryNameClassifier.classify(displayHost)
-                HStack(spacing: Theme.Metrics.spacingS) {
-                    SessionTagDots(tags: tagsBySessionID[session.id] ?? [])
-                    Text(displayHost)
-                        .font(Theme.Typography.body)
-                        .lineLimit(1)
-                    if let discovery {
-                        localDiscoveryBadge(discovery)
-                    }
-                    if noteIDs.contains(session.id) {
-                        Image(systemName: "note.text")
-                            .font(.system(size: Theme.Icon.small))
-                            .foregroundStyle(.secondary)
-                            .help("You wrote a note about this session")
-                            .accessibilityLabel("Has a note")
-                    }
-                }
-                .help(discovery?.tooltip ?? displayHost)
-            }
-            .width(min: 130, ideal: 215)
-            .customizationID("host")
-            TableColumn("Client", value: \.sortableProcessName) { session in
-                clientCell(session)
-            }
-            .width(min: 105, ideal: 175)
-            .customizationID("client")
-            TableColumn("Protocol", value: \.primaryProtocolLabel) { session in
-                protocolPill(session.primaryProtocol)
-            }
-            .width(72)
-            .customizationID("protocol")
-            TableColumn("Length", value: \.totalBytes) { session in
-                Text(ByteUnits.string(Int64(session.totalBytes)))
-                    .font(Theme.Typography.monoSmall)
-                    .foregroundStyle(.secondary)
-            }
-            .width(72)
-            .customizationID("length")
-            TableColumn("Latency", value: \.sortableLatency) { session in
-                Text(session.latencyMilliseconds.map { String(format: "%.1f ms", $0) } ?? "—")
-                    .font(Theme.Typography.monoSmall)
-                    .foregroundStyle(.secondary)
-            }
-            .width(72)
-            .customizationID("latency")
-            .defaultVisibility(.automatic)
-            TableColumn("", value: \.statusRank) { session in
-                Image(systemName: session.status.systemImage)
-                    .font(.system(size: Theme.Icon.small))
-                    .foregroundStyle(Theme.color(for: session.status))
-                    .help(session.status.label)
-                    // The column header is intentionally empty, and help text is
-                    // pointer-only, so state would otherwise be colour and shape
-                    // alone with nothing for VoiceOver to announce.
-                    .accessibilityLabel(session.status.label)
-            }
-            .width(20)
-            .customizationID("status")
-            .disabledCustomizationBehavior(.visibility)
-            TableColumn("Summary", value: \.infoSummary) { session in
-                Text(session.infoSummary)
-                    .font(Theme.Typography.body)
-                    .lineLimit(1)
-                    .foregroundStyle(session.status == .error ? Color.red : Color.primary)
-                    // The most content-rich column, and the one most often cut.
-                    .help(session.infoSummary)
-            }
-            .width(min: 160, ideal: 280)
-            .customizationID("summary")
-            optionalColumns(span: timelineSpan)
-        }
-        .contextMenu(forSelectionType: SessionSummary.ID.self) { ids in
-            rowContextMenu(ids: ids, sessions: sessions)
-        }
-        .background {
-            SessionHistoryScrollObserver(
-                revealToken: workspace.sessionRevealToken,
-                revealRow: revealRow
-            ) {
-                coordinator.userDidNavigateSessionHistory()
-            }
-        }
-    }
+        let languageBundlePath = "\(locale.identifier)|\(AppLanguage.currentLocalizedBundle().bundlePath)"
 
-    /// Correlated view: one row per action, its sessions nested beneath.
-    ///
-    /// Deliberately a separate `Table` from the flat one rather than a
-    /// parameterised single table. The flat table carries hard-won guards
-    /// against `NSTableView` reentrancy, and grouping changes both its row type
-    /// and its selection semantics — folding both into one body risks
-    /// destabilising the path that already works.
-    private func groupedTable(rows: [SessionRow], workspace: WorkspaceState) -> some View {
-        let timeFormat = coordinator.sessionTimeDisplay.format
-        let captureStart = coordinator.trafficTimeline.captureStartFrame
-        let revealRow = workspace.selectedSessionID.flatMap { selectedID in
-            rows.firstIndex { $0.id == selectedID }
-        }
-        return Table(of: SessionRow.self, selection: Binding(
-            get: { workspace.selectedSessionID },
-            // Selecting an action resolves to its first session, so the
-            // inspector and the dock always have a concrete thing to describe.
-            // Same no-op guard as the flat table: NSTableView re-applies the
-            // selection through this setter from inside its own delegate.
-            set: { newValue in
-                guard let newValue else {
-                    if workspace.selectedSessionID != nil {
-                        coordinator.userDidNavigateSessionHistory()
-                        workspace.selectedSessionID = nil
-                    }
-                    return
-                }
-                let resolved = rows.first { $0.id == newValue }?.representativeSessionID ?? newValue
-                if workspace.selectedSessionID != resolved {
-                    coordinator.userDidNavigateSessionHistory()
-                    workspace.selectedSessionID = resolved
-                }
-            }
-        )) {
-            TableColumn(timeFormat.columnTitle) { (row: SessionRow) in
-                timeCell(row.startTime, format: timeFormat, captureStart: captureStart)
-            }
-            .width(72)
-            TableColumn("Source") { (row: SessionRow) in
-                Text(row.sourceEndpoint).font(Theme.Typography.mono).lineLimit(1)
-            }
-            .width(min: 110, ideal: 150)
-            TableColumn("Destination") { (row: SessionRow) in
-                Text(row.destinationEndpoint).font(Theme.Typography.mono).lineLimit(1)
-            }
-            .width(min: 110, ideal: 150)
-            TableColumn("Host") { (row: SessionRow) in
-                actionHostCell(row)
-            }
-            .width(min: 140, ideal: 220)
-            TableColumn("Client") { (row: SessionRow) in
-                groupedClientCell(row)
-            }
-            .width(min: 100, ideal: 145)
-            TableColumn("Protocol") { (row: SessionRow) in
-                if let proto = row.primaryProtocol {
-                    protocolPill(proto)
-                }
-            }
-            .width(72)
-            TableColumn("Length") { (row: SessionRow) in
-                Text(ByteUnits.string(Int64(row.totalBytes)))
-                    .font(Theme.Typography.monoSmall)
-                    .foregroundStyle(.secondary)
-            }
-            .width(72)
-            TableColumn("Latency") { (row: SessionRow) in
-                Text(row.latencyMilliseconds.map { String(format: "%.1f ms", $0) } ?? "—")
-                    .font(Theme.Typography.monoSmall)
-                    .foregroundStyle(.secondary)
-            }
-            .width(72)
-            TableColumn("") { (row: SessionRow) in
-                Image(systemName: row.status.systemImage)
-                    .font(.system(size: Theme.Icon.small))
-                    .foregroundStyle(Theme.color(for: row.status))
-                    .help(row.status.label)
-                    .accessibilityLabel(row.status.label)
-            }
-            .width(20)
-            TableColumn("Summary") { (row: SessionRow) in
-                Text(row.summary)
-                    .font(Theme.Typography.body)
-                    .lineLimit(1)
-                    .foregroundStyle(row.status == .error ? Color.red : Color.primary)
-            }
-            .width(min: 160, ideal: 280)
-        } rows: {
-            ForEach(rows) { row in
-                if case .action = row, !row.childRows.isEmpty {
-                    DisclosureTableRow(row) {
-                        ForEach(row.childRows) { child in
-                            TableRow(child)
-                        }
-                    }
-                } else {
-                    TableRow(row)
-                }
-            }
-        }
-        .contextMenu(forSelectionType: SessionRow.ID.self) { ids in
-            groupedRowContextMenu(ids: ids, rows: rows)
-        }
-        .background {
-            SessionHistoryScrollObserver(
-                revealToken: workspace.sessionRevealToken,
-                revealRow: revealRow
-            ) {
-                coordinator.userDidNavigateSessionHistory()
-            }
-        }
-    }
+        let groupedRows: [SessionRow] = isGrouped ? coordinator.sessionRows : []
+        let presentationRows: [SessionOutlineRowModel]
 
-    /// The action's name with its confidence, so an inferred grouping never
-    /// looks like an observed fact.
-    @ViewBuilder
-    private func actionHostCell(_ row: SessionRow) -> some View {
-        switch row {
-        case let .action(activity):
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 6) {
-                    Text(activity.title).font(Theme.Typography.body).lineLimit(1).truncationMode(.middle)
-                    Text("\(activity.sessions.count) sessions")
-                        .font(Theme.Typography.badge)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .tracexyChipStyle(tint: .secondary, isActive: true)
-                    Text(activity.confidence.title)
-                        .font(Theme.Typography.badge)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .tracexyChipStyle(
-                            tint: Theme.color(for: activity.confidence),
-                            isActive: true
-                        )
-                    if activity.isContested {
-                        Image(systemName: "questionmark.circle")
-                            .font(.system(size: Theme.Icon.small))
-                            .foregroundStyle(.orange)
+        if isGrouped {
+            presentationRows = SessionOutlineRowModel.buildGroupedRows(
+                rows: groupedRows,
+                timeFormat: timeFormat,
+                captureStart: captureStart,
+                displayHostForSession: { coordinator.addressNames.displayHost(for: $0) },
+                classifiedSourceForSession: { coordinator.classifiedSource(for: $0) }
+            )
+        } else {
+            let visibleOptional = columnState.visibleOptionalColumns
+            let timelineSpan = visibleOptional.contains(.timeline)
+                ? SessionTimelineBar.span(of: sessions)
+                : nil
+            let investigationNotes = coordinator.investigationNotes
+            let noteIDs: Set<UUID> = investigationNotes.notes.isEmpty
+                ? []
+                : investigationNotes.annotatedSessionIDs
+            let tagsBySessionID: [UUID: [SessionTag]]
+            if let scope = investigationNotes.scope, !investigationNotes.tagRecords.isEmpty {
+                var map: [UUID: [SessionTag]] = [:]
+                map.reserveCapacity(investigationNotes.tagRecords.count)
+                for record in investigationNotes.tagRecords where record.scope == scope {
+                    if map[record.sessionID] == nil {
+                        map[record.sessionID] = record.tags
                     }
                 }
-                // The claim's grounds, on the row that makes the claim. A
-                // grouping the user has to open a panel to audit is one they
-                // will take on trust — which is exactly what correlation must
-                // not be granted.
-                Text(evidenceLine(activity))
-                    .font(Theme.Typography.micro)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .foregroundStyle(activity.isContested ? Color.orange : Theme.color(for: activity.confidence))
-            }
-            .help(evidenceLine(activity))
-        case let .group(group):
-            // Observed, not inferred — so no confidence pill. The count is the
-            // whole claim: these sessions literally carry this attribute.
-            HStack(spacing: 6) {
-                Image(systemName: group.kind == .host ? "globe" : "app.badge")
-                    .font(.system(size: Theme.Icon.small))
-                    .foregroundStyle(.secondary)
-                Text(group.title).font(Theme.Typography.body).lineLimit(1).truncationMode(.middle)
-                Text("\(group.sessions.count)")
-                    .font(Theme.Typography.badge)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .tracexyChipStyle(tint: .secondary, isActive: true)
-            }
-        case let .session(session):
-            let displayHost = coordinator.addressNames.displayHost(for: session)
-            let discovery = LocalDiscoveryNameClassifier.classify(displayHost)
-            if let discovery {
-                HStack(spacing: Theme.Metrics.spacingS) {
-                    Text(displayHost)
-                        .font(Theme.Typography.body)
-                        .lineLimit(1)
-                    localDiscoveryBadge(discovery)
-                }
-                .help(discovery.tooltip)
+                tagsBySessionID = map
             } else {
-                Text(displayHost)
-                    .font(Theme.Typography.body)
-                    .lineLimit(1)
+                tagsBySessionID = [:]
             }
+
+            presentationRows = SessionOutlineRowModel.buildFlatRows(
+                sessions: sessions,
+                sortCriteria: sortCriteria,
+                timeFormat: timeFormat,
+                captureStart: captureStart,
+                timelineSpan: timelineSpan,
+                visibleOptionalColumns: visibleOptional,
+                noteIDs: noteIDs,
+                tagsBySessionID: tagsBySessionID,
+                displayHostForSession: { coordinator.addressNames.displayHost(for: $0) },
+                classifiedSourceForSession: { coordinator.classifiedSource(for: $0) }
+            )
         }
+
+        return NativeSessionOutlineTable(
+            rows: presentationRows,
+            isGrouped: isGrouped,
+            timeFormat: timeFormat,
+            languageBundlePath: languageBundlePath,
+            selectedSessionID: Binding(
+                get: { workspace.selectedSessionID },
+                set: { newValue in
+                    if workspace.selectedSessionID != newValue {
+                        workspace.selectedSessionID = newValue
+                    }
+                }
+            ),
+            sortCriteria: $sortCriteria,
+            columnState: $columnState,
+            revealToken: workspace.sessionRevealToken,
+            onLiveScrollStateChange: nil,
+            onUserNavigateHistory: {
+                coordinator.userDidNavigateSessionHistory()
+            },
+            contextMenuBuilder: { rowModel in
+                contextMenu(for: rowModel, sessions: sessions, groupedRows: groupedRows)
+            }
+        )
     }
 
-    private func localDiscoveryBadge(_ discovery: LocalDiscoveryAnnotation) -> some View {
-        Text(discovery.badgeTitle)
-            .font(Theme.Typography.micro)
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .fixedSize(horizontal: true, vertical: false)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1)
-            .background(Color.secondary.opacity(0.12), in: Capsule())
-    }
+    private func contextMenu(
+        for rowModel: SessionOutlineRowModel,
+        sessions: [SessionSummary],
+        groupedRows: [SessionRow]
+    ) -> NSMenu? {
+        let bundle = AppLanguage.currentLocalizedBundle()
+        switch rowModel.kind {
+        case .session:
+            guard let session = resolveSession(id: rowModel.id, sessions: sessions, groupedRows: groupedRows) else {
+                return nil
+            }
+            return makeSessionMenu(for: session, bundle: bundle)
 
-    /// Right-click menu for the flat session table. Acts on the row under the
-    /// cursor — resolved from the ids the context menu hands us, never the stale
-    /// `selectedSessionID` — so a right-click that lands off the current selection
-    /// still operates on what the user actually clicked.
-    @ViewBuilder
-    private func rowContextMenu(ids: Set<SessionSummary.ID>, sessions: [SessionSummary]) -> some View {
-        if let session = clickedSession(ids: ids, in: sessions) {
-            sessionMenu(session)
-        }
-    }
-
-    /// Right-click menu for the grouped table. The clicked `SessionRow` is
-    /// resolved from the same ids — including nested child rows — so a session,
-    /// an action, or a group each gets the menu that is honest for its kind.
-    @ViewBuilder
-    private func groupedRowContextMenu(ids: Set<SessionRow.ID>, rows: [SessionRow]) -> some View {
-        if let row = clickedRow(ids: ids, in: rows) {
-            switch row {
-            case let .session(session):
-                sessionMenu(session)
-            case let .action(activity):
-                if let first = activity.sessions.first {
-                    Button("Inspect First Session", systemImage: "sidebar.right") {
+        case .action:
+            guard let activity = groupedRows.compactMap({ row -> Activity? in
+                if case let .action(item) = row, item.id == rowModel.id {
+                    return item
+                }
+                return nil
+            }).first else {
+                return nil
+            }
+            let actions = SessionOutlineContextMenuBuilder.ActionRowActions(
+                sessionCount: activity.sessions.count,
+                summary: rowModel.summary,
+                hasFirstSession: activity.sessions.first != nil,
+                onInspectFirst: {
+                    if let first = activity.sessions.first {
                         coordinator.select(first)
                     }
-                }
-                // An action spans several conversations, so it has no single
-                // hostname to scope by — only its own summary line to copy.
-                Button("Copy Summary", systemImage: "doc.on.doc") {
-                    copyToPasteboard(row.summary)
-                }
-
-                Divider()
-
-                Button(
-                    "Remove \(activity.sessions.count) Sessions from View",
-                    systemImage: "trash",
-                    role: .destructive
-                ) {
+                },
+                onCopySummary: {
+                    copyToPasteboard(rowModel.summary)
+                },
+                onRemoveAll: {
                     coordinator.removeSessionsFromView(Set(activity.sessions.map(\.id)))
                 }
-            case let .group(group):
-                groupMenu(group)
-            }
-        }
-    }
+            )
+            return SessionOutlineContextMenuBuilder.makeActionRowMenu(actions, bundle: bundle)
 
-    @ViewBuilder
-    private func investigateLikeThisMenu(_ session: SessionSummary) -> some View {
-        let available = likeThisTerms(session)
-        if !available.isEmpty {
-            Menu {
-                ForEach(available, id: \.1) { title, term in
-                    Button(title) {
-                        coordinator.investigateSessions(narrowingWith: term)
-                    }
-                    .help(term)
+        case .group:
+            guard let group = groupedRows.compactMap({ row -> SessionGroup? in
+                if case let .group(item) = row, item.id == rowModel.id {
+                    return item
                 }
-            } label: {
-                Label("Investigate Sessions Like This", systemImage: "scope")
+                return nil
+            }).first else {
+                return nil
             }
-        }
-    }
-
-    /// Name either endpoint's address for this Project. Offered only for endpoints
-    /// that are real IP addresses.
-    @ViewBuilder
-    private func nameAddressMenu(_ session: SessionSummary) -> some View {
-        let addresses = [session.sourceEndpointValue?.ip, session.destinationEndpointValue?.ip]
-            .compactMap(\.self)
-            .filter { IPAddressValue(parsing: $0) != nil }
-        if !addresses.isEmpty {
-            Menu {
-                ForEach(Array(Set(addresses)).sorted(), id: \.self) { address in
-                    Button(coordinator.addressNames.name(for: address).map { "\(address) (\($0))…" } ?? "\(address)…") {
-                        addressNameDraft = coordinator.addressNames.name(for: address) ?? ""
-                        namingAddress = address
+            let host = group.key
+            let actions = SessionOutlineContextMenuBuilder.GroupRowActions(
+                kind: group.kind == .host ? .host : .process,
+                key: group.key,
+                sessionCount: group.sessions.count,
+                hasFirstSession: group.sessions.first != nil,
+                isValidHost: isValidHost(host),
+                isHostPinned: coordinator.isHostPinned(host),
+                isHostMuted: coordinator.isHostMuted(host),
+                onInspectFirst: {
+                    if let first = group.sessions.first {
+                        coordinator.select(first)
                     }
+                },
+                onCopyGroupName: {
+                    copyToPasteboard(group.key)
+                },
+                onSelectHost: { coordinator.selectHost($0) },
+                onTogglePinHost: { coordinator.togglePinHost($0) },
+                onToggleMuteHost: { coordinator.toggleMuteHost($0) },
+                onSelectProcess: { coordinator.selectProcess($0) },
+                onRemoveAll: {
+                    coordinator.removeSessionsFromView(Set(group.sessions.map(\.id)))
                 }
-            } label: {
-                Label("Name Address", systemImage: "character.cursor.ibeam")
-            }
+            )
+            return SessionOutlineContextMenuBuilder.makeGroupRowMenu(actions, bundle: bundle)
         }
     }
 
-    /// The full menu for one session, shared by both tables.
-    @ViewBuilder
-    private func sessionMenu(_ session: SessionSummary) -> some View {
+    private func makeSessionMenu(for session: SessionSummary, bundle: Bundle) -> NSMenu {
         let host = session.host
         let hostValid = isValidHost(host)
         let proto = session.primaryProtocol
-
-        Button("Inspect Session", systemImage: "sidebar.right") { coordinator.select(session) }
-
-        Divider()
-
-        Menu {
-            ForEach(SessionExportFormat.allCases) { format in
-                Button(format.title) {
-                    coordinator.exportSession(session, as: format)
-                }
-            }
-            Divider()
-            Button("Export Frames…") {
-                coordinator.presentFrameExportPanel(preselectedSessions: [session.id])
-            }
-            .disabled(!coordinator.canExportFrames)
-        } label: {
-            Label("Export", systemImage: "square.and.arrow.up")
-        }
-        .disabled(!coordinator.canExport(session) && !coordinator.canExportFrames)
-
-        Divider()
-
-        Menu {
-            if hostValid {
-                Button("Host") { copyToPasteboard(host) }
-            }
-            Button("Source") { copyToPasteboard(session.sourceEndpoint) }
-            Button("Destination") { copyToPasteboard(session.destinationEndpoint) }
-            Button("Summary") { copyToPasteboard(session.infoSummary) }
-            let terms = likeThisTerms(session)
-            if !terms.isEmpty {
-                Divider()
-                Menu("As Session Expression") {
-                    ForEach(terms, id: \.term) { title, term in
-                        Button(title) { copyToPasteboard(term) }
-                            .help(term)
-                    }
-                }
-            }
-        } label: {
-            Label("Copy", systemImage: "doc.on.doc")
-        }
-
-        Divider()
-
-        investigateLikeThisMenu(session)
-        SessionTagMenu(coordinator: coordinator, sessionIDs: [session.id])
-        nameAddressMenu(session)
-        Button(
-            coordinator.isSessionPinned(session.id) ? "Unpin Session" : "Pin Session",
-            systemImage: coordinator.isSessionPinned(session.id) ? "pin.slash" : "pin"
-        ) { coordinator.togglePinSession(session.id) }
-
-        if hostValid {
-            Button("Show Sessions for \(host)", systemImage: "line.3.horizontal.decrease.circle") {
-                coordinator.selectHost(host)
-            }
-        }
         let classifiedSource = coordinator.classifiedSource(for: session)
-        if classifiedSource.category != .unattributed {
-            Button(
-                "Show Sessions for \(classifiedSource.title)",
-                systemImage: classifiedSource.symbolName ?? classifiedSource.category.systemImage
-            ) {
-                coordinator.selectProcess(classifiedSource.filterKey)
-            }
-            if classifiedSource.category == .cli,
-               let hostApp = coordinator.sessionProcessContext(for: session)?.hostAppName,
-               !hostApp.isEmpty
-            {
-                Button("Show Sessions for \(hostApp)", systemImage: "app.badge") {
-                    coordinator.selectProcess(hostApp)
-                }
-            }
-        }
-
-        if hostValid || classifiedSource.category != .unattributed {
-            Divider()
-        }
-
-        if hostValid {
-            Button(
-                coordinator.isHostPinned(host) ? "Unpin Host" : "Pin Host",
-                systemImage: coordinator.isHostPinned(host) ? "pin.slash" : "pin"
-            ) { coordinator.togglePinHost(host) }
-            Button(
-                coordinator.isHostMuted(host) ? "Unmute Host" : "Mute Host",
-                systemImage: coordinator.isHostMuted(host) ? "speaker.wave.2" : "speaker.slash"
-            ) { coordinator.toggleMuteHost(host) }
-        }
-        Button(
-            coordinator.isProtocolMuted(proto) ? "Unmute \(proto.label)" : "Mute \(proto.label)",
-            systemImage: coordinator.isProtocolMuted(proto) ? "speaker.wave.2" : "speaker.slash"
-        ) { coordinator.toggleMuteProtocol(proto) }
-
-        Divider()
-
-        Button("Remove from View", systemImage: "trash", role: .destructive) {
-            coordinator.removeSessionsFromView(Set([session.id]))
-        }
-    }
-
-    /// The menu for an observed group. Scopes by the group's real attribute — a
-    /// host filters by host, a process by process — and never invents an
-    /// aggregate endpoint the group does not carry.
-    @ViewBuilder
-    private func groupMenu(_ group: SessionGroup) -> some View {
-        if let first = group.sessions.first {
-            Button("Inspect First Session", systemImage: "sidebar.right") {
-                coordinator.select(first)
-            }
-        }
-        Button("Copy Group Name", systemImage: "doc.on.doc") {
-            copyToPasteboard(group.key)
-        }
-
-        Divider()
-
-        switch group.kind {
-        case .host:
-            let host = group.key
-            if isValidHost(host) {
-                Button("Show Sessions for \(host)", systemImage: "line.3.horizontal.decrease.circle") {
-                    coordinator.selectHost(host)
-                }
-                Divider()
-                Button(
-                    coordinator.isHostPinned(host) ? "Unpin Host" : "Pin Host",
-                    systemImage: coordinator.isHostPinned(host) ? "pin.slash" : "pin"
-                ) { coordinator.togglePinHost(host) }
-                Button(
-                    coordinator.isHostMuted(host) ? "Unmute Host" : "Mute Host",
-                    systemImage: coordinator.isHostMuted(host) ? "speaker.wave.2" : "speaker.slash"
-                ) { coordinator.toggleMuteHost(host) }
-            }
-        case .process:
-            Button("Show Sessions for \(group.key)", systemImage: "app.badge") {
-                coordinator.selectProcess(group.key)
-            }
-        }
-
-        Divider()
-
-        Button(
-            "Remove \(group.sessions.count) Sessions from View",
-            systemImage: "trash",
-            role: .destructive
-        ) {
-            coordinator.removeSessionsFromView(Set(group.sessions.map(\.id)))
-        }
-    }
-
-    private func clientCell(_ session: SessionSummary) -> some View {
-        let src = coordinator.classifiedSource(for: session)
-        let isProcessBacked = src.category == .app
-            || src.category == .cli
-            || src.category == .thirdPartyService
-            || src.category == .systemService
-        let labelStyle: HierarchicalShapeStyle = if src.category == .unattributed {
-            .tertiary
-        } else if isProcessBacked {
-            .primary
+        let embeddedCLIHostApp: String? = if classifiedSource.category == .cli {
+            coordinator.sessionProcessContext(for: session)?.hostAppName
         } else {
-            .secondary
+            nil
         }
-        let tooltip = src.tableDetail.map { "\(src.title) — \($0)" } ?? src.title
-        return HStack(spacing: 6) {
-            SourceIconView(
-                category: src.category,
-                filterKey: src.filterKey,
-                title: src.title,
-                subtitle: src.subtitle,
-                fallbackSymbol: src.symbolName,
-                size: 17
-            )
-            Text(src.tableLabel)
-                .font(Theme.Typography.body)
-                .lineLimit(1)
-                .foregroundStyle(labelStyle)
-        }
-        .padding(.leading, 1)
-        .help(tooltip)
+
+        let addresses = [session.sourceEndpointValue?.ip, session.destinationEndpointValue?.ip]
+            .compactMap(\.self)
+            .filter { IPAddressValue(parsing: $0) != nil }
+        let nameableAddresses: [(address: String, existingName: String?)] = Array(Set(addresses))
+            .sorted()
+            .map { address in
+                (address: address, existingName: coordinator.addressNames.name(for: address))
+            }
+
+        let activeTags = Set(coordinator.investigationNotes.tags(onSession: session.id))
+        let actions = SessionOutlineContextMenuBuilder.SessionActions(
+            isValidHost: hostValid,
+            host: host,
+            sourceEndpoint: session.sourceEndpoint,
+            destinationEndpoint: session.destinationEndpoint,
+            infoSummary: session.infoSummary,
+            primaryProtocol: proto,
+            canExport: coordinator.canExport(session),
+            canExportFrames: coordinator.canExportFrames,
+            likeThisTerms: likeThisTerms(session),
+            tagScopeAvailable: coordinator.investigationNotes.scope != nil,
+            activeTags: activeTags,
+            nameableAddresses: nameableAddresses,
+            isSessionPinned: coordinator.isSessionPinned(session.id),
+            classifiedSource: classifiedSource,
+            embeddedCLIHostApp: embeddedCLIHostApp,
+            isHostPinned: coordinator.isHostPinned(host),
+            isHostMuted: coordinator.isHostMuted(host),
+            isProtocolMuted: coordinator.isProtocolMuted(proto),
+            onInspect: { coordinator.select(session) },
+            onExport: { coordinator.exportSession(session, as: $0) },
+            onExportFrames: { coordinator.presentFrameExportPanel(preselectedSessions: [session.id]) },
+            onCopy: { copyToPasteboard($0) },
+            onInvestigateTerm: { coordinator.investigateSessions(narrowingWith: $0) },
+            onToggleTag: { coordinator.toggleTag($0, on: [session.id]) },
+            onClearTags: { coordinator.clearTags(on: [session.id]) },
+            onNameAddress: { address in
+                addressNameDraft = coordinator.addressNames.name(for: address) ?? ""
+                namingAddress = address
+            },
+            onTogglePinSession: { coordinator.togglePinSession(session.id) },
+            onSelectHost: { coordinator.selectHost($0) },
+            onSelectProcess: { coordinator.selectProcess($0) },
+            onTogglePinHost: { coordinator.togglePinHost($0) },
+            onToggleMuteHost: { coordinator.toggleMuteHost($0) },
+            onToggleMuteProtocol: { coordinator.toggleMuteProtocol($0) },
+            onRemoveFromView: { coordinator.removeSessionsFromView(Set([session.id])) }
+        )
+        return SessionOutlineContextMenuBuilder.makeSessionMenu(actions, bundle: bundle)
     }
 
-    @ViewBuilder
-    private func groupedClientCell(_ row: SessionRow) -> some View {
-        switch row {
-        case let .session(session):
-            clientCell(session)
-        case let .action(activity):
-            let label = validProcessName(row.processName)
-                ?? activity.sessions.first.map { coordinator.classifiedSource(for: $0).tableLabel }
-                ?? "—"
-            Text(label)
-                .font(Theme.Typography.body)
-                .lineLimit(1)
-                .foregroundStyle(.secondary)
-        case let .group(group):
-            let label = validProcessName(row.processName)
-                ?? group.sessions.first.map { coordinator.classifiedSource(for: $0).tableLabel }
-                ?? "—"
-            Text(label)
-                .font(Theme.Typography.body)
-                .lineLimit(1)
-                .foregroundStyle(.secondary)
+    private func resolveSession(
+        id: UUID,
+        sessions: [SessionSummary],
+        groupedRows: [SessionRow]
+    ) -> SessionSummary? {
+        if let direct = sessions.first(where: { $0.id == id }) {
+            return direct
         }
-    }
-
-    private func protocolPill(_ proto: ProtocolKind) -> some View {
-        Text(proto.label)
-            .font(Theme.Typography.badge)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(Theme.color(for: proto).opacity(0.18), in: Capsule())
-            .foregroundStyle(Theme.color(for: proto))
+        for row in groupedRows {
+            switch row {
+            case let .session(session) where session.id == id:
+                return session
+            case let .action(activity):
+                if let match = activity.sessions.first(where: { $0.id == id }) {
+                    return match
+                }
+            case let .group(group):
+                if let match = group.sessions.first(where: { $0.id == id }) {
+                    return match
+                }
+            default:
+                continue
+            }
+        }
+        return nil
     }
 
     /// "Investigate Sessions Like This": each item narrows the session expression by
     /// one of this session's own facts and applies it. Only facts the session actually
     /// carries are offered, and each becomes a term the parser accepts.
-    /// The session-expression terms this session's own facts support, with menu titles.
     private func likeThisTerms(_ session: SessionSummary) -> [(title: String, term: String)] {
         let bundle = AppLanguage.currentLocalizedBundle()
         let terms: [(String, String?)] = [
@@ -1112,110 +695,11 @@ struct SessionCenterView: View {
         return terms.compactMap { title, term in term.map { (title, $0) } }
     }
 
-    @TableColumnBuilder<SessionSummary, KeyPathComparator<SessionSummary>>
-    private func endpointColumns(
-        timeFormat: SessionTimeFormat,
-        captureStart: Date?
-    ) -> some TableColumnContent<
-        SessionSummary,
-        KeyPathComparator<SessionSummary>
-    > {
-        TableColumn(timeFormat.columnTitle, value: \.sortableStartTime) { session in
-            timeCell(session.startTime, format: timeFormat, captureStart: captureStart)
-        }
-        .width(72)
-        .customizationID("time")
-        TableColumn("Source", value: \.sourceEndpoint) { session in
-            Text(session.sourceEndpoint).font(Theme.Typography.mono).lineLimit(1)
-        }
-        .width(min: 110, ideal: 150)
-        .customizationID("source")
-        TableColumn("Destination", value: \.destinationEndpoint) { session in
-            Text(session.destinationEndpoint).font(Theme.Typography.mono).lineLimit(1)
-        }
-        .width(min: 110, ideal: 150)
-        .customizationID("destination")
-    }
-
-    /// Columns a user can add from the header's context menu. Each reads a typed
-    /// session fact that is already published; none is shown until chosen.
-    @TableColumnBuilder<SessionSummary, KeyPathComparator<SessionSummary>>
-    private func optionalColumns(span: ClosedRange<Date>?) -> some TableColumnContent<
-        SessionSummary,
-        KeyPathComparator<SessionSummary>
-    > {
-        TableColumn("Timeline", value: \.sortableStartTime) { session in
-            SessionTimelineBar(session: session, span: span)
-        }
-        .width(min: 90, ideal: 140)
-        .customizationID("timeline")
-        .defaultVisibility(.hidden)
-        TableColumn("Server Name", value: \.sortableServerName) { session in
-            Text(session.sni ?? "—").font(Theme.Typography.mono).lineLimit(1)
-                .foregroundStyle(session.sni == nil ? .tertiary : .primary)
-        }
-        .width(min: 120, ideal: 180)
-        .customizationID("serverName")
-        .defaultVisibility(.hidden)
-        TableColumn("Duration", value: \.sortableDuration) { session in
-            Text(session.duration.map { String(format: "%.3f s", $0) } ?? "—")
-                .font(Theme.Typography.monoSmall).foregroundStyle(.secondary)
-        }
-        .width(80)
-        .customizationID("duration")
-        .defaultVisibility(.hidden)
-        TableColumn("Sent", value: \.bytesUp) { session in
-            Text(ByteUnits.string(Int64(session.bytesUp)))
-                .font(Theme.Typography.monoSmall).foregroundStyle(.secondary)
-        }
-        .width(72)
-        .customizationID("bytesUp")
-        .defaultVisibility(.hidden)
-        TableColumn("Received", value: \.bytesDown) { session in
-            Text(ByteUnits.string(Int64(session.bytesDown)))
-                .font(Theme.Typography.monoSmall).foregroundStyle(.secondary)
-        }
-        .width(72)
-        .customizationID("bytesDown")
-        .defaultVisibility(.hidden)
-        TableColumn("Protocols") { session in
-            Text(session.protocolStack.map(\.label).joined(separator: " "))
-                .font(Theme.Typography.monoSmall).foregroundStyle(.secondary).lineLimit(1)
-        }
-        .width(min: 90, ideal: 130)
-        .customizationID("protocolStack")
-        .defaultVisibility(.hidden)
-        TableColumn("Completeness", value: \.sortableCompleteness) { session in
-            SessionCompletenessCell(session: session)
-        }
-        .width(min: 90, ideal: 110)
-        .customizationID("tcpCompleteness")
-        .defaultVisibility(.hidden)
-    }
-
     private func loadColumnCustomization() {
-        let defaults = coordinator.activeProjectDefaults
-        let data = defaults.data(forKey: ProjectScopedSettingsKeys.sessionTableColumns)
-        let decoder = JSONDecoder()
-        let saved = data.flatMap { try? decoder.decode(TableColumnCustomization<SessionSummary>.self, from: $0) }
-        var customization = saved ?? TableColumnCustomization<SessionSummary>()
-        var didMigrate = false
-        let visibilityMigrationKey = TracexyIdentity.current.defaultsKey("migrated.latencyColumnVisible.v1")
-        if !defaults.bool(forKey: visibilityMigrationKey) {
-            customization[visibility: "latency"] = .visible
-            defaults.set(true, forKey: visibilityMigrationKey)
-            didMigrate = true
-        }
-        let orderMigrationKey = TracexyIdentity.current.defaultsKey("migrated.latencyColumnOrder.v1")
-        if !defaults.bool(forKey: orderMigrationKey) {
-            customization.resetOrder()
-            defaults.set(true, forKey: orderMigrationKey)
-            didMigrate = true
-        }
-        if didMigrate, saved != nil, let migrated = try? JSONEncoder().encode(customization) {
-            defaults.set(migrated, forKey: ProjectScopedSettingsKeys.sessionTableColumns)
-        }
-        columnCustomization = customization
+        columnState = SessionOutlineColumnState.load(
+            from: coordinator.activeProjectDefaults,
+            key: ProjectScopedSettingsKeys.sessionTableColumns
+        )
         didLoadColumnCustomization = true
     }
 
@@ -1234,26 +718,6 @@ struct SessionCenterView: View {
             aggregateRequiresFindings: workspace.aggregateRequiresFindings,
             filterRules: workspace.filterRules
         )
-    }
-
-    /// The session under the cursor, matched by id rather than read from the
-    /// current selection, so the menu never acts on a stale row.
-    private func clickedSession(ids: Set<SessionSummary.ID>, in sessions: [SessionSummary]) -> SessionSummary? {
-        sessions.first { ids.contains($0.id) }
-    }
-
-    /// The row under the cursor, searching top-level rows first and then their
-    /// child sessions so a right-click on a disclosed member resolves correctly.
-    private func clickedRow(ids: Set<SessionRow.ID>, in rows: [SessionRow]) -> SessionRow? {
-        for row in rows {
-            if ids.contains(row.id) {
-                return row
-            }
-            if let child = row.childRows.first(where: { ids.contains($0.id) }) {
-                return child
-            }
-        }
-        return nil
     }
 
     /// A host is worth acting on only when it is a real name — a blank host or the
@@ -1277,16 +741,6 @@ struct SessionCenterView: View {
     private func copyToPasteboard(_ value: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(value, forType: .string)
-    }
-
-    /// The row's grounds in one line: the evidence summaries, or — when the
-    /// address was claimed by more than one name — the competing candidates,
-    /// because that ambiguity outranks the reasons for grouping.
-    private func evidenceLine(_ activity: Activity) -> String {
-        if activity.isContested {
-            return "Shared address — also claimed by \(activity.competingNames.joined(separator: ", "))"
-        }
-        return activity.evidence.map(\.summary).joined(separator: "; ")
     }
 
     private func liveChartBinding(_ workspace: WorkspaceState) -> Binding<Bool> {
@@ -1352,15 +806,431 @@ private struct LiveTrafficStrip: View {
     }
 }
 
-private extension SessionRow {
-    var latencyMilliseconds: Double? {
-        switch self {
-        case let .session(session):
-            session.latencyMilliseconds
-        case let .action(activity):
-            activity.sessions.compactMap(\.latencyMilliseconds).max()
-        case let .group(group):
-            group.sessions.compactMap(\.latencyMilliseconds).max()
-        }
+// MARK: - ClosureMenuAction
+
+/// Lightweight retained target for dynamically constructed `NSMenuItem`s.
+private final class ClosureMenuAction: NSObject {
+    let handler: () -> Void
+
+    init(_ handler: @escaping () -> Void) {
+        self.handler = handler
+    }
+
+    @objc
+    func invoke(_: Any?) {
+        handler()
     }
 }
+
+// MARK: - SessionOutlineContextMenuBuilder
+
+/// Builds native AppKit `NSMenu`s for `.session`, `.action`, and `.group` rows
+/// with 100% action parity with the original SwiftUI menus and live localization.
+enum SessionOutlineContextMenuBuilder {
+    // MARK: Internal
+
+    struct SessionActions {
+        let isValidHost: Bool
+        let host: String
+        let sourceEndpoint: String
+        let destinationEndpoint: String
+        let infoSummary: String
+        let primaryProtocol: ProtocolKind
+        let canExport: Bool
+        let canExportFrames: Bool
+        let likeThisTerms: [(title: String, term: String)]
+        let tagScopeAvailable: Bool
+        let activeTags: Set<SessionTag>
+        let nameableAddresses: [(address: String, existingName: String?)]
+        let isSessionPinned: Bool
+        let classifiedSource: ClassifiedSessionSource
+        let embeddedCLIHostApp: String?
+        let isHostPinned: Bool
+        let isHostMuted: Bool
+        let isProtocolMuted: Bool
+
+        let onInspect: () -> Void
+        let onExport: (SessionExportFormat) -> Void
+        let onExportFrames: () -> Void
+        let onCopy: (String) -> Void
+        let onInvestigateTerm: (String) -> Void
+        let onToggleTag: (SessionTag) -> Void
+        let onClearTags: () -> Void
+        let onNameAddress: (String) -> Void
+        let onTogglePinSession: () -> Void
+        let onSelectHost: (String) -> Void
+        let onSelectProcess: (String) -> Void
+        let onTogglePinHost: (String) -> Void
+        let onToggleMuteHost: (String) -> Void
+        let onToggleMuteProtocol: (ProtocolKind) -> Void
+        let onRemoveFromView: () -> Void
+    }
+
+    struct ActionRowActions {
+        let sessionCount: Int
+        let summary: String
+        let hasFirstSession: Bool
+        let onInspectFirst: () -> Void
+        let onCopySummary: () -> Void
+        let onRemoveAll: () -> Void
+    }
+
+    struct GroupRowActions {
+        let kind: SessionOutlineGroupKind
+        let key: String
+        let sessionCount: Int
+        let hasFirstSession: Bool
+        let isValidHost: Bool
+        let isHostPinned: Bool
+        let isHostMuted: Bool
+        let onInspectFirst: () -> Void
+        let onCopyGroupName: () -> Void
+        let onSelectHost: (String) -> Void
+        let onTogglePinHost: (String) -> Void
+        let onToggleMuteHost: (String) -> Void
+        let onSelectProcess: (String) -> Void
+        let onRemoveAll: () -> Void
+    }
+
+    static func makeSessionMenu(
+        _ actions: SessionActions,
+        bundle: Bundle = AppLanguage.currentLocalizedBundle()
+    ) -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+
+        menu.addItem(makeItem(
+            title: String(localized: "Inspect Session", bundle: bundle),
+            symbol: "sidebar.right",
+            handler: actions.onInspect
+        ))
+        menu.addItem(.separator())
+
+        // Export submenu
+        let exportMenu = NSMenu()
+        exportMenu.autoenablesItems = false
+        for format in SessionExportFormat.allCases {
+            exportMenu.addItem(makeItem(
+                title: String(localized: String.LocalizationValue(format.title), bundle: bundle),
+                handler: { actions.onExport(format) }
+            ))
+        }
+        exportMenu.addItem(.separator())
+        let exportFramesItem = makeItem(
+            title: String(localized: "Export Frames…", bundle: bundle),
+            isEnabled: actions.canExportFrames,
+            handler: actions.onExportFrames
+        )
+        exportMenu.addItem(exportFramesItem)
+        let exportRoot = makeSubmenuItem(
+            title: String(localized: "Export", bundle: bundle),
+            symbol: "square.and.arrow.up",
+            submenu: exportMenu,
+            isEnabled: actions.canExport || actions.canExportFrames
+        )
+        menu.addItem(exportRoot)
+        menu.addItem(.separator())
+
+        // Copy submenu
+        let copyMenu = NSMenu()
+        copyMenu.autoenablesItems = false
+        if actions.isValidHost {
+            copyMenu.addItem(makeItem(
+                title: String(localized: "Host", bundle: bundle),
+                handler: { actions.onCopy(actions.host) }
+            ))
+        }
+        copyMenu.addItem(makeItem(
+            title: String(localized: "Source", bundle: bundle),
+            handler: { actions.onCopy(actions.sourceEndpoint) }
+        ))
+        copyMenu.addItem(makeItem(
+            title: String(localized: "Destination", bundle: bundle),
+            handler: { actions.onCopy(actions.destinationEndpoint) }
+        ))
+        copyMenu.addItem(makeItem(
+            title: String(localized: "Summary", bundle: bundle),
+            handler: { actions.onCopy(actions.infoSummary) }
+        ))
+        if !actions.likeThisTerms.isEmpty {
+            copyMenu.addItem(.separator())
+            let exprMenu = NSMenu()
+            exprMenu.autoenablesItems = false
+            for (title, term) in actions.likeThisTerms {
+                let item = makeItem(title: title, handler: { actions.onCopy(term) })
+                item.toolTip = term
+                exprMenu.addItem(item)
+            }
+            copyMenu.addItem(makeSubmenuItem(
+                title: String(localized: "As Session Expression", bundle: bundle),
+                submenu: exprMenu
+            ))
+        }
+        menu.addItem(makeSubmenuItem(
+            title: String(localized: "Copy", bundle: bundle),
+            symbol: "doc.on.doc",
+            submenu: copyMenu
+        ))
+        menu.addItem(.separator())
+
+        // Investigate Sessions Like This
+        if !actions.likeThisTerms.isEmpty {
+            let likeMenu = NSMenu()
+            likeMenu.autoenablesItems = false
+            for (title, term) in actions.likeThisTerms {
+                let item = makeItem(title: title, handler: { actions.onInvestigateTerm(term) })
+                item.toolTip = term
+                likeMenu.addItem(item)
+            }
+            menu.addItem(makeSubmenuItem(
+                title: String(localized: "Investigate Sessions Like This", bundle: bundle),
+                symbol: "scope",
+                submenu: likeMenu
+            ))
+        }
+
+        // Tag submenu
+        let tagMenu = NSMenu()
+        tagMenu.autoenablesItems = false
+        for tag in SessionTag.allCases {
+            let item = makeItem(
+                title: String(localized: String.LocalizationValue(tag.title), bundle: bundle),
+                handler: { actions.onToggleTag(tag) }
+            )
+            item.state = actions.activeTags.contains(tag) ? .on : .off
+            item.image = SessionOutlineIconCache.smallSymbol(
+                named: "circle.fill",
+                color: SessionOutlineStyle.color(for: tag),
+                colorKey: "tag-\(tag.rawValue)",
+                pointSize: 10
+            )
+            tagMenu.addItem(item)
+        }
+        tagMenu.addItem(.separator())
+        tagMenu.addItem(makeItem(
+            title: String(localized: "Clear Tags", bundle: bundle),
+            isEnabled: !actions.activeTags.isEmpty,
+            handler: actions.onClearTags
+        ))
+        menu.addItem(makeSubmenuItem(
+            title: String(localized: "Tag", bundle: bundle),
+            symbol: "tag",
+            submenu: tagMenu,
+            isEnabled: actions.tagScopeAvailable
+        ))
+
+        // Name Address submenu
+        if !actions.nameableAddresses.isEmpty {
+            let addrMenu = NSMenu()
+            addrMenu.autoenablesItems = false
+            for entry in actions.nameableAddresses {
+                let title = entry.existingName.map { "\(entry.address) (\($0))…" } ?? "\(entry.address)…"
+                addrMenu.addItem(makeItem(title: title, handler: { actions.onNameAddress(entry.address) }))
+            }
+            menu.addItem(makeSubmenuItem(
+                title: String(localized: "Name Address", bundle: bundle),
+                symbol: "character.cursor.ibeam",
+                submenu: addrMenu
+            ))
+        }
+
+        // Pin / Unpin Session
+        menu.addItem(makeItem(
+            title: actions.isSessionPinned
+                ? String(localized: "Unpin Session", bundle: bundle)
+                : String(localized: "Pin Session", bundle: bundle),
+            symbol: actions.isSessionPinned ? "pin.slash" : "pin",
+            handler: actions.onTogglePinSession
+        ))
+
+        if actions.isValidHost {
+            menu.addItem(makeItem(
+                title: String(localized: "Show Sessions for \(actions.host)", bundle: bundle),
+                symbol: "line.3.horizontal.decrease.circle",
+                handler: { actions.onSelectHost(actions.host) }
+            ))
+        }
+
+        let classified = actions.classifiedSource
+        if classified.category != .unattributed {
+            menu.addItem(makeItem(
+                title: String(localized: "Show Sessions for \(classified.title)", bundle: bundle),
+                symbol: classified.symbolName ?? classified.category.systemImage,
+                handler: { actions.onSelectProcess(classified.filterKey) }
+            ))
+            if classified.category == .cli,
+               let hostApp = actions.embeddedCLIHostApp,
+               !hostApp.isEmpty
+            {
+                menu.addItem(makeItem(
+                    title: String(localized: "Show Sessions for \(hostApp)", bundle: bundle),
+                    symbol: "app.badge",
+                    handler: { actions.onSelectProcess(hostApp) }
+                ))
+            }
+        }
+
+        if actions.isValidHost || classified.category != .unattributed {
+            menu.addItem(.separator())
+        }
+
+        if actions.isValidHost {
+            menu.addItem(makeItem(
+                title: actions.isHostPinned
+                    ? String(localized: "Unpin Host", bundle: bundle)
+                    : String(localized: "Pin Host", bundle: bundle),
+                symbol: actions.isHostPinned ? "pin.slash" : "pin",
+                handler: { actions.onTogglePinHost(actions.host) }
+            ))
+            menu.addItem(makeItem(
+                title: actions.isHostMuted
+                    ? String(localized: "Unmute Host", bundle: bundle)
+                    : String(localized: "Mute Host", bundle: bundle),
+                symbol: actions.isHostMuted ? "speaker.wave.2" : "speaker.slash",
+                handler: { actions.onToggleMuteHost(actions.host) }
+            ))
+        }
+
+        let proto = actions.primaryProtocol
+        menu.addItem(makeItem(
+            title: actions.isProtocolMuted
+                ? String(localized: "Unmute \(proto.label)", bundle: bundle)
+                : String(localized: "Mute \(proto.label)", bundle: bundle),
+            symbol: actions.isProtocolMuted ? "speaker.wave.2" : "speaker.slash",
+            handler: { actions.onToggleMuteProtocol(proto) }
+        ))
+
+        menu.addItem(.separator())
+
+        menu.addItem(makeItem(
+            title: String(localized: "Remove from View", bundle: bundle),
+            symbol: "trash",
+            handler: actions.onRemoveFromView
+        ))
+
+        return menu
+    }
+
+    static func makeActionRowMenu(
+        _ actions: ActionRowActions,
+        bundle: Bundle = AppLanguage.currentLocalizedBundle()
+    ) -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        if actions.hasFirstSession {
+            menu.addItem(makeItem(
+                title: String(localized: "Inspect First Session", bundle: bundle),
+                symbol: "sidebar.right",
+                handler: actions.onInspectFirst
+            ))
+        }
+        menu.addItem(makeItem(
+            title: String(localized: "Copy Summary", bundle: bundle),
+            symbol: "doc.on.doc",
+            handler: actions.onCopySummary
+        ))
+        menu.addItem(.separator())
+        menu.addItem(makeItem(
+            title: String(localized: "Remove \(actions.sessionCount) Sessions from View", bundle: bundle),
+            symbol: "trash",
+            handler: actions.onRemoveAll
+        ))
+        return menu
+    }
+
+    static func makeGroupRowMenu(
+        _ actions: GroupRowActions,
+        bundle: Bundle = AppLanguage.currentLocalizedBundle()
+    ) -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        if actions.hasFirstSession {
+            menu.addItem(makeItem(
+                title: String(localized: "Inspect First Session", bundle: bundle),
+                symbol: "sidebar.right",
+                handler: actions.onInspectFirst
+            ))
+        }
+        menu.addItem(makeItem(
+            title: String(localized: "Copy Group Name", bundle: bundle),
+            symbol: "doc.on.doc",
+            handler: actions.onCopyGroupName
+        ))
+        menu.addItem(.separator())
+
+        switch actions.kind {
+        case .host:
+            if actions.isValidHost {
+                menu.addItem(makeItem(
+                    title: String(localized: "Show Sessions for \(actions.key)", bundle: bundle),
+                    symbol: "line.3.horizontal.decrease.circle",
+                    handler: { actions.onSelectHost(actions.key) }
+                ))
+                menu.addItem(.separator())
+                menu.addItem(makeItem(
+                    title: actions.isHostPinned
+                        ? String(localized: "Unpin Host", bundle: bundle)
+                        : String(localized: "Pin Host", bundle: bundle),
+                    symbol: actions.isHostPinned ? "pin.slash" : "pin",
+                    handler: { actions.onTogglePinHost(actions.key) }
+                ))
+                menu.addItem(makeItem(
+                    title: actions.isHostMuted
+                        ? String(localized: "Unmute Host", bundle: bundle)
+                        : String(localized: "Mute Host", bundle: bundle),
+                    symbol: actions.isHostMuted ? "speaker.wave.2" : "speaker.slash",
+                    handler: { actions.onToggleMuteHost(actions.key) }
+                ))
+            }
+        case .process:
+            menu.addItem(makeItem(
+                title: String(localized: "Show Sessions for \(actions.key)", bundle: bundle),
+                symbol: "app.badge",
+                handler: { actions.onSelectProcess(actions.key) }
+            ))
+        }
+
+        menu.addItem(.separator())
+        menu.addItem(makeItem(
+            title: String(localized: "Remove \(actions.sessionCount) Sessions from View", bundle: bundle),
+            symbol: "trash",
+            handler: actions.onRemoveAll
+        ))
+        return menu
+    }
+
+    // MARK: Private
+
+    static func makeItem(
+        title: String,
+        symbol: String? = nil,
+        isEnabled: Bool = true,
+        handler: @escaping () -> Void
+    ) -> NSMenuItem {
+        let action = ClosureMenuAction(handler)
+        let item = NSMenuItem(title: title, action: #selector(ClosureMenuAction.invoke(_:)), keyEquivalent: "")
+        item.target = action
+        item.representedObject = action
+        item.isEnabled = isEnabled
+        if let symbol {
+            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        }
+        return item
+    }
+
+    static func makeSubmenuItem(
+        title: String,
+        symbol: String? = nil,
+        submenu: NSMenu,
+        isEnabled: Bool = true
+    ) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.submenu = submenu
+        item.isEnabled = isEnabled
+        if let symbol {
+            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        }
+        return item
+    }
+}
+

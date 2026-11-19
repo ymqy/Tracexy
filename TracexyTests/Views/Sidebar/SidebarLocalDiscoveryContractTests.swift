@@ -59,15 +59,20 @@ struct SidebarLocalDiscoveryContractTests {
 
     @Test("SessionCenterView annotates local discovery hosts in both flat and grouped tables")
     func sessionCenterAnnotatesLocalDiscoveryHosts() throws {
+        let presentation = try readProjectFile("Tracexy/Models/UI/SessionTableRowPresentation.swift")
+        let nativeTable = try readProjectFile("Tracexy/Views/Sessions/NativeSessionOutlineTableView.swift")
         let sessions = try readProjectFile("Tracexy/Views/Sessions/SessionCenterView.swift")
 
-        let classifyCount = sessions.components(separatedBy: "LocalDiscoveryNameClassifier.classify(displayHost)").count - 1
-        #expect(classifyCount == 2)
-        #expect(sessions.contains("private func localDiscoveryBadge(_ discovery: LocalDiscoveryAnnotation)"))
-        #expect(sessions.contains("Text(discovery.badgeTitle)"))
-        #expect(sessions.contains(".help(discovery?.tooltip ?? displayHost)"))
-        #expect(sessions.contains(".help(discovery.tooltip)"))
-        #expect(sessions.contains(".width(min: 130, ideal: 215)"))
+        #expect(sessions.contains("SessionOutlineRowModel.buildFlatRows("))
+        #expect(sessions.contains("SessionOutlineRowModel.buildGroupedRows("))
+        #expect(presentation.contains("LocalDiscoveryNameClassifier.classify(displayHost)"))
+        #expect(presentation.contains("localDiscoveryBadgeTitle: discovery?.badgeTitle"))
+        #expect(presentation.contains("localDiscoveryTooltip: discovery?.tooltip"))
+        #expect(presentation.contains("localDiscoveryTooltip ?? displayHost"))
+        #expect(nativeTable.contains("if let badgeTitle = hostData.localDiscoveryBadgeTitle"))
+        #expect(nativeTable.contains("toolTip = hostData.tooltip"))
+        #expect(SessionOutlineColumnID.host.minWidth == 130)
+        #expect(SessionOutlineColumnID.host.idealWidth == 215)
     }
 
     @Test("InspectorView and ContextDockView display local discovery detail titles and tooltips")

@@ -8,49 +8,35 @@ struct SessionUILocalizationTests {
 
     @Test("Latency column sits immediately between Length and Status/Summary in both flat and grouped tables")
     func latencyColumnOrderInBothTables() throws {
-        let source = try readProjectFile("Tracexy/Views/Sessions/SessionCenterView.swift")
+        // 1. Canonical standard column order (shared by flat and grouped modes):
+        //    Length -> Latency -> Status -> Summary, and Latency is NOT optional.
+        let standard = SessionOutlineColumnID.standardColumns
+        let lengthIdx = try #require(standard.firstIndex(of: .length))
+        let latencyIdx = try #require(standard.firstIndex(of: .latency))
+        let statusIdx = try #require(standard.firstIndex(of: .status))
+        let summaryIdx = try #require(standard.firstIndex(of: .summary))
 
-        // 1. Flat table: Length -> Latency -> Status -> Summary -> optionalColumns,
-        //    and Latency is no longer buried inside optionalColumns.
-        let flatStart = try #require(source.range(of: "private func sessionTable(")?.lowerBound)
-        let groupedStart = try #require(source.range(of: "private func groupedTable(")?.lowerBound)
-        let optionalStart = try #require(source.range(of: "private func optionalColumns(")?.lowerBound)
-        let loadStart = try #require(source.range(of: "private func loadColumnCustomization(")?.lowerBound)
+        #expect(lengthIdx + 1 == latencyIdx)
+        #expect(latencyIdx + 1 == statusIdx)
+        #expect(statusIdx + 1 == summaryIdx)
+        #expect(!SessionOutlineColumnID.optionalColumns.contains(.latency))
+        #expect(SessionOutlineColumnID.latency.isDefaultVisible)
+        #expect(!SessionOutlineColumnID.status.allowsVisibilityCustomization)
 
-        let flatSection = String(source[flatStart ..< groupedStart])
-        let lengthInFlat = try #require(flatSection.range(of: ".customizationID(\"length\")")?.lowerBound)
-        let latencyInFlat = try #require(flatSection.range(of: "TableColumn(\"Latency\", value: \\.sortableLatency)")?.lowerBound)
-        let latencyIDInFlat = try #require(flatSection.range(of: ".customizationID(\"latency\")")?.lowerBound)
-        let latencyVisibilityInFlat = try #require(flatSection.range(of: ".defaultVisibility(.automatic)")?.lowerBound)
-        let statusInFlat = try #require(flatSection.range(of: ".customizationID(\"status\")")?.lowerBound)
-        let summaryInFlat = try #require(flatSection.range(of: ".customizationID(\"summary\")")?.lowerBound)
+        // 2. Default column state keeps Latency visible and resets stale pre-move column order once.
+        let suiteName = "tracexy.tests.latencyColumnOrder.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
 
-        #expect(lengthInFlat < latencyInFlat)
-        #expect(latencyInFlat < latencyIDInFlat)
-        #expect(latencyIDInFlat < latencyVisibilityInFlat)
-        #expect(latencyVisibilityInFlat < statusInFlat)
-        #expect(statusInFlat < summaryInFlat)
+        let stale = SessionOutlineColumnState(
+            hiddenColumns: Set(SessionOutlineColumnID.optionalColumns).union([.latency]),
+            columnOrder: [.time, .summary, .host, .latency]
+        )
+        stale.save(to: defaults)
 
-        let optionalSection = String(source[optionalStart ..< loadStart])
-        #expect(!optionalSection.contains("TableColumn(\"Latency\""))
-        #expect(!optionalSection.contains(".customizationID(\"latency\")"))
-
-        // 2. Grouped table: Length -> Latency -> Status -> Summary.
-        let groupedEnd = try #require(source.range(of: "} rows: {")?.lowerBound)
-        let groupedSection = String(source[groupedStart ..< groupedEnd])
-        let lengthInGrouped = try #require(groupedSection.range(of: "TableColumn(\"Length\")")?.lowerBound)
-        let latencyInGrouped = try #require(groupedSection.range(of: "TableColumn(\"Latency\")")?.lowerBound)
-        let statusInGrouped = try #require(groupedSection.range(of: "TableColumn(\"\")")?.lowerBound)
-        let summaryInGrouped = try #require(groupedSection.range(of: "TableColumn(\"Summary\")")?.lowerBound)
-
-        #expect(lengthInGrouped < latencyInGrouped)
-        #expect(latencyInGrouped < statusInGrouped)
-        #expect(statusInGrouped < summaryInGrouped)
-
-        // 3. Column customization preserves default visibility and resets stale pre-move column order once.
-        let loadSection = String(source[loadStart...])
-        #expect(loadSection.contains("customization[visibility: \"latency\"] = .visible"))
-        #expect(loadSection.contains("customization.resetOrder()"))
+        let migrated = SessionOutlineColumnState.load(from: defaults)
+        #expect(migrated.isVisible(.latency))
+        #expect(migrated.columnOrder == SessionOutlineColumnID.allCases)
     }
 
     @Test("SessionTimeFormat column and menu titles resolve cleanly in English and Simplified Chinese")
