@@ -302,16 +302,6 @@ struct SidebarView: View {
         return coordinator.focusSets.filter { matches($0.name) || matches($0.subtitle) }
     }
 
-    // MARK: Active source scope
-
-    /// The sidebar's Sources rows drill the session list into a single
-    /// host/process/IP scope (see `MainContentCoordinator.select*`). Those live
-    /// outside the native `List(selection:)`, so the active one is shown with an
-    /// accent treatment rather than the system selection highlight.
-    private var isSessionsScope: Bool {
-        coordinator.activeWorkspace.sidebarSelection == .sessions
-    }
-
     /// Noise Control belongs to Focus mode's chrome, so it stays visible while
     /// browsing but bows out of a search unless the query is about muting.
     private var showsNoiseControl: Bool {
@@ -418,7 +408,8 @@ struct SidebarView: View {
 
     // MARK: Library mode
 
-    private var libraryList: some View {
+    private func libraryList(_ workspace: WorkspaceState) -> some View {
+        let activeScope = SidebarActiveScope(workspace: workspace)
         let pinnedHosts = filteredPinnedHosts
         let savedCaptures = filteredSavedCaptures
         let hasPinned = !isSearching || !pinnedHosts.isEmpty
@@ -426,7 +417,7 @@ struct SidebarView: View {
         return List {
             Section("Favorites") {
                 if hasPinned {
-                    pinnedDisclosure(filteredHosts: pinnedHosts)
+                    pinnedDisclosure(filteredHosts: pinnedHosts, activeScope: activeScope)
                 }
                 if hasSaved {
                     savedDisclosure(filteredCaptures: savedCaptures)
@@ -439,31 +430,34 @@ struct SidebarView: View {
         .listStyle(.sidebar)
     }
 
-    private func pinnedDisclosure(filteredHosts: [String]) -> some View {
+    private func pinnedDisclosure(filteredHosts: [String], activeScope: SidebarActiveScope) -> some View {
         DisclosureGroup(isExpanded: searchExpansion($pinnedExpanded)) {
-            if filteredHosts.isEmpty {
-                Text("No pinned hosts")
-                    .font(Theme.Typography.caption).foregroundStyle(.tertiary)
-            } else {
-                ForEach(filteredHosts, id: \.self) { host in
-                    Label(host, systemImage: "globe")
-                        .foregroundStyle(isActiveHost(host) ? Color.accentColor : .secondary)
-                        .font(isActiveHost(host) ? Theme.Typography.navigationMedium : Theme.Typography.navigation)
-                        .lineLimit(1)
-                        .contentShape(Rectangle())
-                        .onTapGesture { coordinator.selectHost(host) }
-                        .accessibilityAddTraits(.isButton)
-                        .accessibilityAddTraits(isActiveHost(host) ? .isSelected : [])
-                        .accessibilityAction { coordinator.selectHost(host) }
-                        .contextMenu {
-                            SidebarSourceContextMenu(
-                                value: host,
-                                copyLabel: "Copy Address",
-                                pinnedHost: host,
-                                coordinator: coordinator,
-                                onShowSessions: { coordinator.selectHost(host) }
-                            )
-                        }
+            if isSearching || pinnedExpanded {
+                if filteredHosts.isEmpty {
+                    Text("No pinned hosts")
+                        .font(Theme.Typography.caption).foregroundStyle(.tertiary)
+                } else {
+                    ForEach(filteredHosts, id: \.self) { host in
+                        let isActive = activeScope.isActiveHost(host)
+                        Label(host, systemImage: "globe")
+                            .foregroundStyle(isActive ? Color.accentColor : .secondary)
+                            .font(isActive ? Theme.Typography.navigationMedium : Theme.Typography.navigation)
+                            .lineLimit(1)
+                            .contentShape(Rectangle())
+                            .onTapGesture { coordinator.selectHost(host) }
+                            .accessibilityAddTraits(.isButton)
+                            .accessibilityAddTraits(isActive ? .isSelected : [])
+                            .accessibilityAction { coordinator.selectHost(host) }
+                            .contextMenu {
+                                SidebarSourceContextMenu(
+                                    value: host,
+                                    copyLabel: "Copy Address",
+                                    pinnedHost: host,
+                                    coordinator: coordinator,
+                                    onShowSessions: { coordinator.selectHost(host) }
+                                )
+                            }
+                    }
                 }
             }
         } label: {
@@ -475,25 +469,27 @@ struct SidebarView: View {
     /// sidebar and a tap opens that capture in the main session view.
     private func savedDisclosure(filteredCaptures: [SavedCapture]) -> some View {
         DisclosureGroup(isExpanded: searchExpansion($savedExpanded)) {
-            if filteredCaptures.isEmpty {
-                Text("No saved captures")
-                    .font(Theme.Typography.caption).foregroundStyle(.tertiary)
-            } else {
-                ForEach(filteredCaptures) { capture in
-                    savedCaptureRow(capture)
+            if isSearching || savedExpanded {
+                if filteredCaptures.isEmpty {
+                    Text("No saved captures")
+                        .font(Theme.Typography.caption).foregroundStyle(.tertiary)
+                } else {
+                    ForEach(filteredCaptures) { capture in
+                        savedCaptureRow(capture)
+                    }
                 }
+                Button { coordinator.presentCaptureOpenPanel() } label: {
+                    Label("Open…", systemImage: "folder.badge.plus")
+                        .font(Theme.Typography.caption).foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Open a capture where it is (⌘O). Use Import to keep a copy in the Library.")
+                Button { coordinator.presentCaptureImportPanel() } label: {
+                    Label("Import into Library…", systemImage: "tray.and.arrow.down")
+                        .font(Theme.Typography.caption).foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
             }
-            Button { coordinator.presentCaptureOpenPanel() } label: {
-                Label("Open…", systemImage: "folder.badge.plus")
-                    .font(Theme.Typography.caption).foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help("Open a capture where it is (⌘O). Use Import to keep a copy in the Library.")
-            Button { coordinator.presentCaptureImportPanel() } label: {
-                Label("Import into Library…", systemImage: "tray.and.arrow.down")
-                    .font(Theme.Typography.caption).foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
         } label: {
             Label("Saved", systemImage: "folder").badge(coordinator.savedCaptures.count)
                 .contextMenu {
@@ -516,14 +512,20 @@ struct SidebarView: View {
     /// One of the 7 semantic traffic source categories (`Apps`, `CLI Tools`,
     /// `Third-Party Services`, `System Services`, `LAN & Discovery`, `Kernel & Link`,
     /// `Unattributed`), expandable to its source rows and their hosts or peer IPs.
-    private func sourceCategoryDisclosure(_ display: SourceCategoryDisplay, expanded: Binding<Bool>) -> some View {
+    private func sourceCategoryDisclosure(
+        _ display: SourceCategoryDisplay,
+        expanded: Binding<Bool>,
+        activeScope: SidebarActiveScope
+    ) -> some View {
         DisclosureGroup(isExpanded: searchExpansion(expanded)) {
-            if display.filteredItems.isEmpty {
-                Text("No visible sources")
-                    .font(Theme.Typography.caption).foregroundStyle(.tertiary)
-            } else {
-                ForEach(display.filteredItems) { item in
-                    SourceItemRow(item: item, coordinator: coordinator, forceExpanded: isSearching)
+            if isSearching || expanded.wrappedValue {
+                if display.filteredItems.isEmpty {
+                    Text("No visible sources")
+                        .font(Theme.Typography.caption).foregroundStyle(.tertiary)
+                } else {
+                    ForEach(display.filteredItems) { item in
+                        SourceItemRow(item: item, coordinator: coordinator, activeScope: activeScope, forceExpanded: isSearching)
+                    }
                 }
             }
         } label: {
@@ -542,14 +544,20 @@ struct SidebarView: View {
     }
 
     /// Domains, each expandable to the server IPs it resolved to (sub-IPs).
-    private func domainsDisclosure(visibleCount: Int, filteredGroups: [DomainGroup]) -> some View {
+    private func domainsDisclosure(
+        visibleCount: Int,
+        filteredGroups: [DomainGroup],
+        activeScope: SidebarActiveScope
+    ) -> some View {
         DisclosureGroup(isExpanded: searchExpansion($domainsExpanded)) {
-            if filteredGroups.isEmpty {
-                Text("No visible domains")
-                    .font(Theme.Typography.caption).foregroundStyle(.tertiary)
-            } else {
-                ForEach(filteredGroups) { group in
-                    DomainRow(group: group, coordinator: coordinator, forceExpanded: isSearching)
+            if isSearching || domainsExpanded {
+                if filteredGroups.isEmpty {
+                    Text("No visible domains")
+                        .font(Theme.Typography.caption).foregroundStyle(.tertiary)
+                } else {
+                    ForEach(filteredGroups) { group in
+                        DomainRow(group: group, coordinator: coordinator, activeScope: activeScope, forceExpanded: isSearching)
+                    }
                 }
             }
         } label: {
@@ -569,14 +577,20 @@ struct SidebarView: View {
 
     /// Local Bonjour / mDNS services, device hostnames, and special system DNS
     /// discovery names, separated from public Domains and kept collapsed by default.
-    private func localDiscoveryDisclosure(visibleCount: Int, filteredGroups: [LocalDiscoveryGroup]) -> some View {
+    private func localDiscoveryDisclosure(
+        visibleCount: Int,
+        filteredGroups: [LocalDiscoveryGroup],
+        activeScope: SidebarActiveScope
+    ) -> some View {
         DisclosureGroup(isExpanded: searchExpansion($localDiscoveryExpanded)) {
-            if filteredGroups.isEmpty {
-                Text("No visible local names")
-                    .font(Theme.Typography.caption).foregroundStyle(.tertiary)
-            } else {
-                ForEach(filteredGroups) { group in
-                    LocalDiscoveryRow(group: group, coordinator: coordinator, forceExpanded: isSearching)
+            if isSearching || localDiscoveryExpanded {
+                if filteredGroups.isEmpty {
+                    Text("No visible local names")
+                        .font(Theme.Typography.caption).foregroundStyle(.tertiary)
+                } else {
+                    ForEach(filteredGroups) { group in
+                        LocalDiscoveryRow(group: group, coordinator: coordinator, activeScope: activeScope, forceExpanded: isSearching)
+                    }
                 }
             }
         } label: {
@@ -596,36 +610,21 @@ struct SidebarView: View {
 
     /// Hosts seen only as a bare IP (no domain name resolved). Capped while
     /// browsing to stay scannable; a search widens the net to every match.
-    private func ipAddressesDisclosure(visibleCount: Int, filteredHosts: [(name: String, count: Int)]) -> some View {
+    private func ipAddressesDisclosure(
+        visibleCount: Int,
+        filteredHosts: [(name: String, count: Int)],
+        activeScope: SidebarActiveScope
+    ) -> some View {
         let hosts = isSearching ? filteredHosts : Array(filteredHosts.prefix(20))
         return DisclosureGroup(isExpanded: searchExpansion($ipsExpanded)) {
-            if hosts.isEmpty {
-                Text("No visible IP addresses")
-                    .font(Theme.Typography.caption).foregroundStyle(.tertiary)
-            } else {
-                ForEach(hosts, id: \.name) { host in
-                    Label(host.name, systemImage: "number")
-                        .foregroundStyle(isActiveIP(host.name) ? Color.accentColor : .secondary)
-                        .font(isActiveIP(host.name) ? Theme.Typography.navigationMedium : Theme.Typography.navigation)
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .badge(host.count)
-                        .contentShape(Rectangle())
-                        .onTapGesture { coordinator.selectIP(host.name) }
-                        .accessibilityAddTraits(.isButton)
-                        .accessibilityAddTraits(isActiveIP(host.name) ? .isSelected : [])
-                        .accessibilityAction { coordinator.selectIP(host.name) }
-                        .help("Show sessions for \(host.name)")
-                        .contextMenu {
-                            SidebarSourceContextMenu(
-                                value: host.name,
-                                copyLabel: "Copy IP Address",
-                                pinnedHost: host.name,
-                                coordinator: coordinator,
-                                onShowSessions: { coordinator.selectIP(host.name) },
-                                onRemove: { coordinator.hideSourceIP(host.name) }
-                            )
-                        }
+            if isSearching || ipsExpanded {
+                if hosts.isEmpty {
+                    Text("No visible IP addresses")
+                        .font(Theme.Typography.caption).foregroundStyle(.tertiary)
+                } else {
+                    ForEach(hosts, id: \.name) { host in
+                        SidebarIPRow(ip: host.name, count: host.count, coordinator: coordinator, activeScope: activeScope)
+                    }
                 }
             }
         } label: {
@@ -796,7 +795,7 @@ struct SidebarView: View {
         switch workspace.navigatorMode {
         case .browse: browseList(workspace)
         case .focus: focusList
-        case .library: libraryList
+        case .library: libraryList(workspace)
         }
     }
 
@@ -866,6 +865,8 @@ struct SidebarView: View {
 
     private func browseList(_ workspace: WorkspaceState) -> some View {
         // One filter pass feeds every badge and disclosure group in this list.
+        let selectedItem = workspace.sidebarSelection
+        let activeScope = SidebarActiveScope(workspace: workspace)
         let visibleCount = coordinator.visibleSessions.count
         let protocolCounts = coordinator.visibleProtocolCounts
         let monitorItems = filteredMonitorItems
@@ -894,7 +895,12 @@ struct SidebarView: View {
             if !monitorItems.isEmpty {
                 Section("Monitor") {
                     ForEach(monitorItems) { item in
-                        navRow(item, workspace: workspace, visibleCount: visibleCount, protocolCounts: protocolCounts)
+                        navRow(
+                            item,
+                            selectedItem: selectedItem,
+                            visibleCount: visibleCount,
+                            protocolCounts: protocolCounts
+                        )
                     }
                 }
             }
@@ -905,13 +911,15 @@ struct SidebarView: View {
             if !protocolItems.isEmpty {
                 Section {
                     DisclosureGroup(isExpanded: searchExpansion($protocolsExpanded)) {
-                        ForEach(protocolItems) { item in
-                            navRow(
-                                item,
-                                workspace: workspace,
-                                visibleCount: visibleCount,
-                                protocolCounts: protocolCounts
-                            )
+                        if isSearching || protocolsExpanded {
+                            ForEach(protocolItems) { item in
+                                navRow(
+                                    item,
+                                    selectedItem: selectedItem,
+                                    visibleCount: visibleCount,
+                                    protocolCounts: protocolCounts
+                                )
+                            }
                         }
                     } label: {
                         Label(SidebarSection.protocols.title, systemImage: SidebarSection.protocols.systemImage)
@@ -929,37 +937,34 @@ struct SidebarView: View {
                 )
                 Section(String(localized: "Sources", bundle: AppLanguage.currentLocalizedBundle())) {
                     if let display = displaysByCategory[.app] {
-                        sourceCategoryDisclosure(display, expanded: $appsExpanded)
+                        sourceCategoryDisclosure(display, expanded: $appsExpanded, activeScope: activeScope)
                     }
                     if let display = displaysByCategory[.cli] {
-                        sourceCategoryDisclosure(display, expanded: $cliExpanded)
+                        sourceCategoryDisclosure(display, expanded: $cliExpanded, activeScope: activeScope)
                     }
                     if let display = displaysByCategory[.thirdPartyService] {
-                        sourceCategoryDisclosure(display, expanded: $thirdPartyServicesExpanded)
+                        sourceCategoryDisclosure(display, expanded: $thirdPartyServicesExpanded, activeScope: activeScope)
                     }
                     if let display = displaysByCategory[.systemService] {
-                        sourceCategoryDisclosure(display, expanded: $systemServicesExpanded)
+                        sourceCategoryDisclosure(display, expanded: $systemServicesExpanded, activeScope: activeScope)
                     }
                     if let display = displaysByCategory[.lanDiscovery] {
-                        sourceCategoryDisclosure(display, expanded: $lanExpanded)
+                        sourceCategoryDisclosure(display, expanded: $lanExpanded, activeScope: activeScope)
                     }
                     if let display = displaysByCategory[.kernelAndLink] {
-                        sourceCategoryDisclosure(display, expanded: $kernelAndLinkExpanded)
+                        sourceCategoryDisclosure(display, expanded: $kernelAndLinkExpanded, activeScope: activeScope)
                     }
                     if let display = displaysByCategory[.unattributed] {
-                        sourceCategoryDisclosure(display, expanded: $unattributedExpanded)
+                        sourceCategoryDisclosure(display, expanded: $unattributedExpanded, activeScope: activeScope)
                     }
                     if showsDomainsCategory {
-                        domainsDisclosure(visibleCount: visibleDomains.count, filteredGroups: filteredDomains)
+                        domainsDisclosure(visibleCount: visibleDomains.count, filteredGroups: filteredDomains, activeScope: activeScope)
                     }
                     if showsLocalDiscoveryCategory {
-                        localDiscoveryDisclosure(
-                            visibleCount: visibleLocalNames.count,
-                            filteredGroups: filteredLocalDiscoveryGroups
-                        )
+                        localDiscoveryDisclosure(visibleCount: visibleLocalNames.count, filteredGroups: filteredLocalDiscoveryGroups, activeScope: activeScope)
                     }
                     if showsIPAddressesCategory {
-                        ipAddressesDisclosure(visibleCount: visibleIPs.count, filteredHosts: filteredIPs)
+                        ipAddressesDisclosure(visibleCount: visibleIPs.count, filteredHosts: filteredIPs, activeScope: activeScope)
                     }
                 }
             }
@@ -1033,7 +1038,7 @@ struct SidebarView: View {
 
     private func navRow(
         _ item: SidebarItem,
-        workspace: WorkspaceState,
+        selectedItem: SidebarItem,
         visibleCount: Int,
         protocolCounts: [ProtocolKind: Int]
     )
@@ -1046,7 +1051,7 @@ struct SidebarView: View {
         Label {
             Text(item.title)
         } icon: {
-            if workspace.sidebarSelection == item {
+            if selectedItem == item {
                 Image(systemName: item.systemImage)
             } else {
                 Image(systemName: item.systemImage)
@@ -1119,14 +1124,6 @@ struct SidebarView: View {
             }
         }
         domainsExpanded = true
-    }
-
-    private func isActiveHost(_ host: String) -> Bool {
-        isSessionsScope && coordinator.activeWorkspace.hostFilter == host
-    }
-
-    private func isActiveIP(_ ip: String) -> Bool {
-        isSessionsScope && coordinator.activeWorkspace.ipFilter == ip
     }
 
     /// A section header with a trailing action button (the "+ Add" pattern).
@@ -1219,6 +1216,171 @@ struct SidebarCaptureAutoExpansionState: Equatable, Sendable {
     private var hasExpandedForCurrentCapture = false
 }
 
+// MARK: - SidebarActiveScope
+
+/// Value-scoped snapshot of the active workspace's sidebar drill-down state.
+/// Computed once per `SidebarView` render pass so individual rows never register
+/// per-row `@Observable` subscriptions on `WorkspaceState`.
+nonisolated struct SidebarActiveScope: Equatable, Sendable {
+    let isSessionsScope: Bool
+    let hostFilter: String?
+    let processFilter: String?
+    let ipFilter: String?
+
+    init(isSessionsScope: Bool, hostFilter: String? = nil, processFilter: String? = nil, ipFilter: String? = nil) {
+        self.isSessionsScope = isSessionsScope
+        self.hostFilter = hostFilter
+        self.processFilter = processFilter
+        self.ipFilter = ipFilter
+    }
+
+    func isActiveHost(_ host: String) -> Bool { isSessionsScope && hostFilter == host }
+    func isActiveProcess(_ key: String) -> Bool { isSessionsScope && processFilter == key }
+    func isActiveIP(_ ip: String) -> Bool { isSessionsScope && ipFilter == ip }
+
+    func isActiveChild(_ child: SourceChildTarget) -> Bool {
+        guard isSessionsScope else { return false }
+        return switch child.kind {
+        case .host: hostFilter == child.value
+        case .peerIP: ipFilter == child.value
+        }
+    }
+}
+
+extension SidebarActiveScope {
+    @MainActor
+    init(workspace: WorkspaceState) {
+        self.init(
+            isSessionsScope: workspace.sidebarSelection == .sessions,
+            hostFilter: workspace.hostFilter,
+            processFilter: workspace.processFilter,
+            ipFilter: workspace.ipFilter
+        )
+    }
+}
+
+// MARK: - SidebarChildSlice
+
+/// Bounds unsearched expanded child-target lists (`DomainRow`, `LocalDiscoveryRow`,
+/// `SourceItemRow`, `SourceSubprocessRow`) until the user explicitly requests all
+/// rows or filters via sidebar search.
+nonisolated struct SidebarChildSlice<Element> {
+    static var defaultLimit: Int { 60 }
+
+    let visible: ArraySlice<Element>
+    let remainingCount: Int
+
+    var isTruncated: Bool { remainingCount > 0 }
+
+    init(_ elements: [Element], showAll: Bool, isSearching: Bool, limit: Int = Self.defaultLimit) {
+        let cap = max(0, limit)
+        if showAll || isSearching || elements.count <= cap {
+            visible = elements[...]
+            remainingCount = 0
+        } else {
+            visible = elements.prefix(cap)
+            remainingCount = elements.count - cap
+        }
+    }
+}
+
+extension SidebarChildSlice: Equatable where Element: Equatable {}
+extension SidebarChildSlice: Sendable where Element: Sendable {}
+
+// MARK: - SidebarShowMoreChildrenRow
+
+private struct SidebarShowMoreChildrenRow: View {
+    let remainingCount: Int
+    let onShowAll: () -> Void
+
+    var body: some View {
+        Button(action: onShowAll) {
+            Text("+ \(remainingCount) more…")
+                .font(Theme.Typography.caption)
+                .foregroundStyle(.tertiary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Show \(remainingCount) more items")
+    }
+}
+
+// MARK: - SidebarIPRow
+
+private struct SidebarIPRow: View {
+    let ip: String
+    var count: Int?
+    let coordinator: MainContentCoordinator
+    let activeScope: SidebarActiveScope
+
+    var body: some View {
+        let isActiveIP = activeScope.isActiveIP(ip)
+        Label(ip, systemImage: "number")
+            .foregroundStyle(isActiveIP ? Color.accentColor : .secondary)
+            .font(isActiveIP ? Theme.Typography.navigationMedium : Theme.Typography.navigation)
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .badge(count.map { Text($0.formatted()) })
+            .contentShape(Rectangle())
+            .onTapGesture { coordinator.selectIP(ip) }
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAddTraits(isActiveIP ? .isSelected : [])
+            .accessibilityAction { coordinator.selectIP(ip) }
+            .help("Show sessions for \(ip)")
+            .contextMenu {
+                SidebarSourceContextMenu(
+                    value: ip,
+                    copyLabel: "Copy IP Address",
+                    pinnedHost: ip,
+                    coordinator: coordinator,
+                    onShowSessions: { coordinator.selectIP(ip) },
+                    onRemove: { coordinator.hideSourceIP(ip) }
+                )
+            }
+    }
+}
+
+// MARK: - SidebarChildIPList
+
+private struct SidebarChildIPList: View {
+    let ips: [String]
+    let coordinator: MainContentCoordinator
+    let activeScope: SidebarActiveScope
+    let isSearching: Bool
+    @Binding var showAllChildren: Bool
+
+    var body: some View {
+        let slice = SidebarChildSlice(ips, showAll: showAllChildren, isSearching: isSearching)
+        ForEach(slice.visible, id: \.self) { ip in
+            SidebarIPRow(ip: ip, coordinator: coordinator, activeScope: activeScope)
+        }
+        if slice.isTruncated {
+            SidebarShowMoreChildrenRow(remainingCount: slice.remainingCount) { showAllChildren = true }
+        }
+    }
+}
+
+// MARK: - SidebarChildTargetList
+
+private struct SidebarChildTargetList: View {
+    let children: [SourceChildTarget]
+    let coordinator: MainContentCoordinator
+    let activeScope: SidebarActiveScope
+    let isSearching: Bool
+    @Binding var showAllChildren: Bool
+
+    var body: some View {
+        let slice = SidebarChildSlice(children, showAll: showAllChildren, isSearching: isSearching)
+        ForEach(slice.visible) { child in
+            SourceChildTargetRow(child: child, coordinator: coordinator, activeScope: activeScope)
+        }
+        if slice.isTruncated {
+            SidebarShowMoreChildrenRow(remainingCount: slice.remainingCount) { showAllChildren = true }
+        }
+    }
+}
+
 // MARK: - FocusSetRow
 
 /// A saved focus set in the sidebar: tap to apply its rules, context-menu to
@@ -1264,32 +1426,21 @@ private struct DomainRow: View {
 
     let group: DomainGroup
     let coordinator: MainContentCoordinator
+    let activeScope: SidebarActiveScope
     var forceExpanded = false
 
     var body: some View {
-        DisclosureGroup(isExpanded: expansion) {
-            ForEach(group.ips, id: \.self) { ip in
-                Label(ip, systemImage: "number")
-                    .foregroundStyle(isActiveIP(ip) ? Color.accentColor : .secondary)
-                    .font(isActiveIP(ip) ? Theme.Typography.navigationMedium : Theme.Typography.navigation)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-                    .onTapGesture { coordinator.selectIP(ip) }
-                    .accessibilityAddTraits(.isButton)
-                    .accessibilityAddTraits(isActiveIP(ip) ? .isSelected : [])
-                    .accessibilityAction { coordinator.selectIP(ip) }
-                    .help("Show sessions for \(ip)")
-                    .contextMenu {
-                        SidebarSourceContextMenu(
-                            value: ip,
-                            copyLabel: "Copy IP Address",
-                            pinnedHost: ip,
-                            coordinator: coordinator,
-                            onShowSessions: { coordinator.selectIP(ip) },
-                            onRemove: { coordinator.hideSourceIP(ip) }
-                        )
-                    }
+        let isExpanded = forceExpanded || expanded
+        let isActiveHost = activeScope.isActiveHost(group.domain)
+        return DisclosureGroup(isExpanded: expansion) {
+            if isExpanded {
+                SidebarChildIPList(
+                    ips: group.ips,
+                    coordinator: coordinator,
+                    activeScope: activeScope,
+                    isSearching: forceExpanded,
+                    showAllChildren: $showAllChildren
+                )
             }
         } label: {
             Label(group.domain, systemImage: "globe")
@@ -1320,19 +1471,18 @@ private struct DomainRow: View {
     // MARK: Private
 
     @State private var expanded = false
+    @State private var showAllChildren = false
 
     private var expansion: Binding<Bool> {
-        Binding(get: { forceExpanded || expanded }, set: { expanded = $0 })
-    }
-
-    private var isActiveHost: Bool {
-        coordinator.activeWorkspace.sidebarSelection == .sessions
-            && coordinator.activeWorkspace.hostFilter == group.domain
-    }
-
-    private func isActiveIP(_ ip: String) -> Bool {
-        coordinator.activeWorkspace.sidebarSelection == .sessions
-            && coordinator.activeWorkspace.ipFilter == ip
+        Binding(
+            get: { forceExpanded || expanded },
+            set: { newValue in
+                expanded = newValue
+                if !newValue {
+                    showAllChildren = false
+                }
+            }
+        )
     }
 }
 
@@ -1346,35 +1496,23 @@ private struct LocalDiscoveryRow: View {
 
     let group: LocalDiscoveryGroup
     let coordinator: MainContentCoordinator
+    let activeScope: SidebarActiveScope
     var forceExpanded = false
 
     var body: some View {
+        let isExpanded = forceExpanded || expanded
         if group.ips.isEmpty {
             rowLabel
         } else {
             DisclosureGroup(isExpanded: expansion) {
-                ForEach(group.ips, id: \.self) { ip in
-                    Label(ip, systemImage: "number")
-                        .foregroundStyle(isActiveIP(ip) ? Color.accentColor : .secondary)
-                        .font(isActiveIP(ip) ? Theme.Typography.navigationMedium : Theme.Typography.navigation)
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
-                        .onTapGesture { coordinator.selectIP(ip) }
-                        .accessibilityAddTraits(.isButton)
-                        .accessibilityAddTraits(isActiveIP(ip) ? .isSelected : [])
-                        .accessibilityAction { coordinator.selectIP(ip) }
-                        .help("Show sessions for \(ip)")
-                        .contextMenu {
-                            SidebarSourceContextMenu(
-                                value: ip,
-                                copyLabel: "Copy IP Address",
-                                pinnedHost: ip,
-                                coordinator: coordinator,
-                                onShowSessions: { coordinator.selectIP(ip) },
-                                onRemove: { coordinator.hideSourceIP(ip) }
-                            )
-                        }
+                if isExpanded {
+                    SidebarChildIPList(
+                        ips: group.ips,
+                        coordinator: coordinator,
+                        activeScope: activeScope,
+                        isSearching: forceExpanded,
+                        showAllChildren: $showAllChildren
+                    )
                 }
             } label: {
                 rowLabel
@@ -1386,19 +1524,22 @@ private struct LocalDiscoveryRow: View {
 
     @Environment(\.colorScheme) private var colorScheme
     @State private var expanded = false
+    @State private var showAllChildren = false
 
     private var expansion: Binding<Bool> {
-        Binding(get: { forceExpanded || expanded }, set: { expanded = $0 })
+        Binding(
+            get: { forceExpanded || expanded },
+            set: { newValue in
+                expanded = newValue
+                if !newValue {
+                    showAllChildren = false
+                }
+            }
+        )
     }
 
     private var isActiveHost: Bool {
-        coordinator.activeWorkspace.sidebarSelection == .sessions
-            && coordinator.activeWorkspace.hostFilter == group.name
-    }
-
-    private func isActiveIP(_ ip: String) -> Bool {
-        coordinator.activeWorkspace.sidebarSelection == .sessions
-            && coordinator.activeWorkspace.ipFilter == ip
+        activeScope.isActiveHost(group.name)
     }
 
     private var iconBadge: some View {
@@ -1529,17 +1670,22 @@ private struct SourceItemRow: View {
 
     let item: SourceItemGroup
     let coordinator: MainContentCoordinator
+    let activeScope: SidebarActiveScope
     var forceExpanded = false
 
     var body: some View {
+        let isExpanded = forceExpanded || expanded
         if !item.subprocesses.isEmpty {
             DisclosureGroup(isExpanded: expansion) {
-                ForEach(item.subprocesses) { subprocess in
-                    SourceSubprocessRow(
-                        subprocess: subprocess,
-                        coordinator: coordinator,
-                        forceExpanded: forceExpanded
-                    )
+                if isExpanded {
+                    ForEach(item.subprocesses) { subprocess in
+                        SourceSubprocessRow(
+                            subprocess: subprocess,
+                            coordinator: coordinator,
+                            activeScope: activeScope,
+                            forceExpanded: forceExpanded
+                        )
+                    }
                 }
             } label: {
                 sourceItemLabel
@@ -1548,8 +1694,14 @@ private struct SourceItemRow: View {
             sourceItemLabel
         } else {
             DisclosureGroup(isExpanded: expansion) {
-                ForEach(item.children) { child in
-                    SourceChildTargetRow(child: child, coordinator: coordinator)
+                if isExpanded {
+                    SidebarChildTargetList(
+                        children: item.children,
+                        coordinator: coordinator,
+                        activeScope: activeScope,
+                        isSearching: forceExpanded,
+                        showAllChildren: $showAllChildren
+                    )
                 }
             } label: {
                 sourceItemLabel
@@ -1560,14 +1712,22 @@ private struct SourceItemRow: View {
     // MARK: Private
 
     @State private var expanded = false
+    @State private var showAllChildren = false
 
     private var expansion: Binding<Bool> {
-        Binding(get: { forceExpanded || expanded }, set: { expanded = $0 })
+        Binding(
+            get: { forceExpanded || expanded },
+            set: { newValue in
+                expanded = newValue
+                if !newValue {
+                    showAllChildren = false
+                }
+            }
+        )
     }
 
     private var isActiveSource: Bool {
-        coordinator.activeWorkspace.sidebarSelection == .sessions
-            && coordinator.activeWorkspace.processFilter == item.filterKey
+        activeScope.isActiveProcess(item.filterKey)
     }
 
     private var sourceItemLabel: some View {
@@ -1627,15 +1787,23 @@ private struct SourceSubprocessRow: View {
 
     let subprocess: SourceSubprocessGroup
     let coordinator: MainContentCoordinator
+    let activeScope: SidebarActiveScope
     var forceExpanded = false
 
     var body: some View {
+        let isExpanded = forceExpanded || expanded
         if subprocess.children.isEmpty {
             subprocessLabel
         } else {
             DisclosureGroup(isExpanded: expansion) {
-                ForEach(subprocess.children) { child in
-                    SourceChildTargetRow(child: child, coordinator: coordinator)
+                if isExpanded {
+                    SidebarChildTargetList(
+                        children: subprocess.children,
+                        coordinator: coordinator,
+                        activeScope: activeScope,
+                        isSearching: forceExpanded,
+                        showAllChildren: $showAllChildren
+                    )
                 }
             } label: {
                 subprocessLabel
@@ -1646,14 +1814,22 @@ private struct SourceSubprocessRow: View {
     // MARK: Private
 
     @State private var expanded = false
+    @State private var showAllChildren = false
 
     private var expansion: Binding<Bool> {
-        Binding(get: { forceExpanded || expanded }, set: { expanded = $0 })
+        Binding(
+            get: { forceExpanded || expanded },
+            set: { newValue in
+                expanded = newValue
+                if !newValue {
+                    showAllChildren = false
+                }
+            }
+        )
     }
 
     private var isActiveSubprocess: Bool {
-        coordinator.activeWorkspace.sidebarSelection == .sessions
-            && coordinator.activeWorkspace.processFilter == subprocess.filterKey
+        activeScope.isActiveProcess(subprocess.filterKey)
     }
 
     private var subprocessLabel: some View {
@@ -1709,9 +1885,10 @@ private struct SourceSubprocessRow: View {
 private struct SourceChildTargetRow: View {
     let child: SourceChildTarget
     let coordinator: MainContentCoordinator
+    let activeScope: SidebarActiveScope
 
     var body: some View {
-        let isActive = isActiveChild
+        let isActive = activeScope.isActiveChild(child)
         let selectAction: () -> Void = switch child.kind {
         case .host: { coordinator.selectHost(child.value) }
         case .peerIP: { coordinator.selectIP(child.value) }
@@ -1743,17 +1920,5 @@ private struct SourceChildTargetRow: View {
                     onRemove: removeAction
                 )
             }
-    }
-
-    private var isActiveChild: Bool {
-        guard coordinator.activeWorkspace.sidebarSelection == .sessions else {
-            return false
-        }
-        switch child.kind {
-        case .host:
-            return coordinator.activeWorkspace.hostFilter == child.value
-        case .peerIP:
-            return coordinator.activeWorkspace.ipFilter == child.value
-        }
     }
 }
