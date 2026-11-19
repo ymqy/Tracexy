@@ -163,6 +163,156 @@ nonisolated struct IPReassemblyFacts: Equatable, Sendable {
     let frames: [UInt64]
 }
 
+// MARK: - DNSAddressBinding
+
+/// One validated `(ip, hostname)` binding recovered from a DNS/mDNS/LLMNR answer or
+/// additional resource record. Kept separate from raw `dnsQuery` / `dnsAnswers` wire
+/// projections so multicast service-discovery frames (`_companion-link._tcp.local`,
+/// `QDCOUNT == 0` announcements, Bonjour `Additional` glue) bind each unicast `A`/`AAAA`
+/// address to its true owner hostname rather than the session's first question string.
+nonisolated struct DNSAddressBinding: Codable, Equatable, Hashable, Sendable {
+    let ip: String
+    let hostname: String
+}
+
+// MARK: - DNSNameSanitizer
+
+/// Pure validation and canonicalization gates shared across packet decoding, session
+/// host learning, Resolved Addresses presentation, and persisted `AddressNameBook`
+/// cache loading/scrubbing.
+nonisolated enum DNSNameSanitizer {
+    // MARK: Internal
+
+    /// Returns a cleaned, display-worthy host/domain name, or `nil` when `raw` is empty,
+    /// placeholder text, a DNS-SD/SRV underscore label (`_companion-link._tcp.local`,
+    /// `lb._dns-sd._udp.local`, `_https._tcp.example.com`), a reverse-lookup `.arpa`
+    /// zone, a bare IP literal, or an anonymous UUID pseudo-host. Valid `.local` device
+    /// names (`TestPhone.local`, `OfficeMac.local`) are preserved.
+    static func sanitizedHostname(_ raw: String) -> String? {
+        var candidate = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !candidate.isEmpty, candidate != "—" else {
+            return nil
+        }
+        if candidate.hasSuffix("."), !candidate.hasSuffix("..") {
+            candidate.removeLast()
+        }
+        guard !candidate.isEmpty, candidate.count <= 253 else {
+            return nil
+        }
+        guard !candidate.contains(where: { $0.isWhitespace }),
+              !candidate.unicodeScalars.contains(where: { $0.value <= 0x1F || $0.value == 0x7F }) else
+        {
+            return nil
+        }
+        if IPAddressValue(parsing: candidate) != nil {
+            return nil
+        }
+        if candidate.hasPrefix("["), candidate.hasSuffix("]"),
+           IPAddressValue(parsing: String(candidate.dropFirst().dropLast())) != nil
+        {
+            return nil
+        }
+        let lower = candidate.lowercased()
+        if lower == "in-addr.arpa" || lower.hasSuffix(".in-addr.arpa")
+            || lower == "ip6.arpa" || lower.hasSuffix(".ip6.arpa")
+        {
+            return nil
+        }
+        let labels = candidate.split(separator: ".", omittingEmptySubsequences: false)
+        guard !labels.isEmpty else {
+            return nil
+        }
+        for label in labels {
+            if label.isEmpty || label.count > 63 || label.hasPrefix("_") {
+                return nil
+            }
+        }
+        if labels.count == 1, isBareUUIDLabel(labels[0]) {
+            return nil
+        }
+        if labels.count == 2, labels[1].lowercased() == "local", isBareUUIDLabel(labels[0]) {
+            return nil
+        }
+        return candidate
+    }
+
+    static func isValidHostname(_ raw: String) -> Bool {
+        sanitizedHostname(raw) != nil
+    }
+
+    /// Rejects non-unicast target addresses that must never receive a learned hostname:
+    /// unspecified (`0.0.0.0`, `::`), limited broadcast (`255.255.255.255`), IPv4
+    /// multicast (`224.0.0.0/4`), and IPv6 multicast (`ff00::/8`).
+    static func isValidUnicastTargetIP(_ address: IPAddressValue) -> Bool {
+        switch address.family {
+        case .v4:
+            guard address.bytes.count == 4 else {
+                return false
+            }
+            if address.bytes == [0, 0, 0, 0] || address.bytes == [255, 255, 255, 255] {
+                return false
+            }
+            if (address.bytes[0] & 0xF0) == 224 {
+                return false
+            }
+            return true
+        case .v6:
+            guard address.bytes.count == 16 else {
+                return false
+            }
+            if address.bytes.allSatisfy({ $0 == 0 }) {
+                return false
+            }
+            if address.bytes[0] == 0xFF {
+                return false
+            }
+            return true
+        }
+    }
+
+    static func sanitizedUnicastIP(_ raw: String) -> IPAddressValue? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let parsed = IPAddressValue(parsing: trimmed),
+              isValidUnicastTargetIP(parsed) else
+        {
+            return nil
+        }
+        return parsed
+    }
+
+    /// Restricts IPv6 Fake-IP detection to virtual proxy pools actually used in practice:
+    /// Sing-box default `fc00::/18` (`fc00:0000::`–`fc00:3fff:ffff:...`, 16 bits of
+    /// `0xFC, 0x00` plus top 2 bits of `bytes[2]`) and Clash/Mihomo default
+    /// `fdfe:dcba:9876::/48`, excluding standard `fd00::/8` home-router SLAAC ULA hosts.
+    static func isIPv6FakeIP(_ address: IPAddressValue) -> Bool {
+        guard address.family == .v6, address.bytes.count == 16 else {
+            return false
+        }
+        let bytes = address.bytes
+        let isSingBoxPool = bytes[0] == 0xFC && bytes[1] == 0x00 && (bytes[2] & 0xC0) == 0x00
+        let isClashPool = bytes[0] == 0xFD
+            && bytes[1] == 0xFE
+            && bytes[2] == 0xDC
+            && bytes[3] == 0xBA
+            && bytes[4] == 0x98
+            && bytes[5] == 0x76
+        return isSingBoxPool || isClashPool
+    }
+
+    // MARK: Private
+
+    private static func isBareUUIDLabel(_ label: Substring) -> Bool {
+        let text = String(label)
+        if UUID(uuidString: text) != nil {
+            return true
+        }
+        if text.count == 32, text.allSatisfy(\.isHexDigit) {
+            return true
+        }
+        return false
+    }
+}
+
 // MARK: - DecodedPacket
 
 nonisolated struct DecodedPacket {
@@ -202,6 +352,9 @@ nonisolated struct DecodedPacket {
     var sni: String?
     var dnsQuery: String?
     var dnsAnswers: [String]
+    /// Validated per-record `(ip, hostname)` bindings extracted from DNS/mDNS/LLMNR
+    /// Answer and Additional sections, bounded to 64 entries per packet.
+    var dnsResolvedBindings: [DNSAddressBinding] = []
     /// Number of valid DNS answer-record occurrences decoded beyond the per-packet
     /// retention cap. This is an occurrence count, not exact unique cardinality;
     /// exact uniqueness for an unbounded stream would itself require unbounded state.

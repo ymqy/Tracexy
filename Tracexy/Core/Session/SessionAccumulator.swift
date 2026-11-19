@@ -214,7 +214,7 @@ nonisolated struct SessionAccumulator {
     mutating func reset(initialResolved: [String: String] = [:]) {
         order.removeAll(keepingCapacity: false)
         states.removeAll(keepingCapacity: false)
-        resolved = initialResolved
+        resolved = SessionBuilder.normalizedResolvedMap(initialResolved)
         connections = ConnectionTable(configuration: connectionConfiguration)
         datagrams = DatagramEvidenceTable(configuration: datagramConfiguration)
         tlsEvidence = TLSEvidenceTable(configuration: tlsConfiguration)
@@ -280,6 +280,9 @@ nonisolated struct SessionAccumulator {
         packet.dnsQuery = metadata.dnsQuery ?? packet.dnsQuery
         if !metadata.dnsAnswers.isEmpty {
             packet.dnsAnswers = metadata.dnsAnswers
+        }
+        if !metadata.dnsResolvedBindings.isEmpty {
+            packet.dnsResolvedBindings = metadata.dnsResolvedBindings
         }
         // Propagate any reassembled DNS fixed-header facts transiently onto this
         // local copy. Session state ignores `dnsFacts`, so summaries/digests are
@@ -497,6 +500,7 @@ private extension SessionAccumulator {
                 sni: sni,
                 dnsQuery: dnsQuery,
                 dnsAnswers: dnsAnswers,
+                dnsResolvedBindings: dnsResolvedBindings,
                 dnsAnswersOmittedCount: dnsAnswersOmittedCount,
                 firstCaptureOrdinal: firstOrdinal?.rawValue,
                 untimedFrameCount: untimedFrameCount,
@@ -591,6 +595,7 @@ private extension SessionAccumulator {
         private var negotiatedApplication: ProtocolKind?
         private var messageTally = SessionMessageTally()
         private var dnsQuery: String?
+        private var dnsResolvedBindings: [DNSAddressBinding] = []
         private var processName: String?
         private var processProvenance: ProcessProvenance?
         /// Unique published answers in first-seen order, bounded by the publication
@@ -776,6 +781,14 @@ private extension SessionAccumulator {
             }
             if processProvenance == nil, let provenance = packet.processProvenance {
                 processProvenance = provenance
+            }
+            for binding in packet.dnsResolvedBindings {
+                if dnsResolvedBindings.contains(binding) {
+                    continue
+                }
+                if dnsResolvedBindings.count < Self.dnsAnswerPublicationCap {
+                    dnsResolvedBindings.append(binding)
+                }
             }
             // Publish unique answers in first-seen order, deduped against the
             // bounded published list (never an unbounded Set). A duplicate is

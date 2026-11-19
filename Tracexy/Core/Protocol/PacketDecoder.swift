@@ -15,10 +15,41 @@ nonisolated enum PacketDecoder {
     }
 
     struct ReassembledTCPApplication: Sendable {
+        // MARK: Lifecycle
+
+        init(
+            appProtocol: ProtocolKind,
+            layers: [DecodedLayer],
+            sni: String?,
+            dnsQuery: String?,
+            dnsAnswers: [String],
+            dnsResolvedBindings: [DNSAddressBinding] = [],
+            dnsAnswersOmittedCount: Int,
+            dnsFacts: DNSMessageFacts?,
+            tlsRecords: [TLSRecordFact],
+            tlsRecordsTruncated: Bool,
+            isComplete: Bool
+        ) {
+            self.appProtocol = appProtocol
+            self.layers = layers
+            self.sni = sni
+            self.dnsQuery = dnsQuery
+            self.dnsAnswers = dnsAnswers
+            self.dnsResolvedBindings = dnsResolvedBindings
+            self.dnsAnswersOmittedCount = dnsAnswersOmittedCount
+            self.dnsFacts = dnsFacts
+            self.tlsRecords = tlsRecords
+            self.tlsRecordsTruncated = tlsRecordsTruncated
+            self.isComplete = isComplete
+        }
+
+        // MARK: Internal
+
         let appProtocol: ProtocolKind
         let layers: [DecodedLayer]
         let sni: String?, dnsQuery: String?
         let dnsAnswers: [String]
+        let dnsResolvedBindings: [DNSAddressBinding]
         let dnsAnswersOmittedCount: Int
         let dnsFacts: DNSMessageFacts?
         /// Neutral TLS record facts recovered from the reassembled prefix and whether
@@ -88,6 +119,7 @@ nonisolated enum PacketDecoder {
             sni: packet.sni,
             dnsQuery: packet.dnsQuery,
             dnsAnswers: packet.dnsAnswers,
+            dnsResolvedBindings: packet.dnsResolvedBindings,
             dnsAnswersOmittedCount: packet.dnsAnswersOmittedCount,
             dnsFacts: packet.dnsFacts,
             tlsRecords: packet.tlsRecords,
@@ -387,8 +419,10 @@ nonisolated enum PacketDecoder {
         var displayAnswers: [String] = [] // human-readable per-record values
         var answerFields: [DecodedField] = []
         var omittedAnswers = 0
+        var cnameRecords: [(owner: String, target: String)] = []
+        var addressRecords: [(owner: String, ip: String)] = []
         for index in 0 ..< max(Int(facts.answerCount), 0) {
-            let (_, afterName) = try dnsName(buf, at: offset)
+            let (rrName, afterName) = try dnsName(buf, at: offset)
             let type = try buf.u16(afterName)
             if packet.dnsAnswerTypes.count < 64 {
                 packet.dnsAnswerTypes.append(type)
@@ -407,6 +441,12 @@ nonisolated enum PacketDecoder {
                 at: rdataOffset,
                 ip: &recordIPs
             ) {
+                if type == 5, let target = try? dnsName(buf, at: rdataOffset).name, !target.isEmpty {
+                    cnameRecords.append((owner: rrName, target: target))
+                }
+                for recordIP in recordIPs {
+                    addressRecords.append((owner: rrName, ip: recordIP))
+                }
                 if displayAnswers.count < dnsAnswerRetentionCap {
                     ipAnswers.append(contentsOf: recordIPs)
                     displayAnswers.append(value)
@@ -419,9 +459,25 @@ nonisolated enum PacketDecoder {
             }
             offset = rdataOffset + rdLength
         }
+        if facts.authorityCount > 0 || facts.additionalCount > 0 {
+            walkAuthorityAndAdditionalDNS(
+                buf,
+                from: offset,
+                authorityCount: Int(facts.authorityCount),
+                additionalCount: Int(facts.additionalCount),
+                cnames: &cnameRecords,
+                addresses: &addressRecords
+            )
+        }
         packet.appProtocol = kind
         packet.dnsQuery = firstName
         packet.dnsAnswers = ipAnswers
+        packet.dnsResolvedBindings = resolveDNSBindings(
+            kind: kind,
+            firstName: firstName,
+            cnames: cnameRecords,
+            addresses: addressRecords
+        )
         packet.dnsAnswersOmittedCount = omittedAnswers
         packet.dnsAnswerRecords = displayAnswers
         var fields: [DecodedField] = [
@@ -1401,4 +1457,139 @@ extension PacketDecoder {
             }
         ),
     ]
+}
+
+// MARK: - DNS Authority/Additional walk & owner-name binding
+
+private nonisolated extension PacketDecoder {
+    static func walkAuthorityAndAdditionalDNS(
+        _ buf: PacketBuffer,
+        from startOffset: Int,
+        authorityCount: Int,
+        additionalCount: Int,
+        cnames: inout [(owner: String, target: String)],
+        addresses: inout [(owner: String, ip: String)]
+    ) {
+        var offset = startOffset
+        do {
+            for _ in 0 ..< max(authorityCount, 0) {
+                guard offset < buf.length else {
+                    return
+                }
+                let (_, afterName) = try dnsName(buf, at: offset)
+                guard afterName + 10 <= buf.length else {
+                    return
+                }
+                let rdLength = try Int(buf.u16(afterName + 8))
+                let rdataOffset = afterName + 10
+                guard rdLength >= 0, rdataOffset <= buf.length - rdLength else {
+                    return
+                }
+                offset = rdataOffset + rdLength
+            }
+
+            for _ in 0 ..< max(additionalCount, 0) {
+                guard offset < buf.length else {
+                    return
+                }
+                let (rrName, afterName) = try dnsName(buf, at: offset)
+                guard afterName + 10 <= buf.length else {
+                    return
+                }
+                let type = try buf.u16(afterName)
+                let rdLength = try Int(buf.u16(afterName + 8))
+                let rdataOffset = afterName + 10
+                guard rdLength >= 0, rdataOffset <= buf.length - rdLength else {
+                    return
+                }
+                switch type {
+                case 1 where rdLength == 4:
+                    let addr = try ipv4Address(buf, rdataOffset)
+                    addresses.append((owner: rrName, ip: addr))
+                case 28 where rdLength == 16:
+                    let addr = try ipv6Address(buf, rdataOffset)
+                    addresses.append((owner: rrName, ip: addr))
+                case 5:
+                    if let target = try? dnsName(buf, at: rdataOffset).name, !target.isEmpty {
+                        cnames.append((owner: rrName, target: target))
+                    }
+                default:
+                    break
+                }
+                offset = rdataOffset + rdLength
+            }
+        } catch {
+            // A truncated Authority or Additional tail leaves Question + Answer intact.
+            return
+        }
+    }
+
+    static func resolveDNSBindings(
+        kind: ProtocolKind,
+        firstName: String,
+        cnames: [(owner: String, target: String)],
+        addresses: [(owner: String, ip: String)]
+    )
+        -> [DNSAddressBinding]
+    {
+        guard !addresses.isEmpty else {
+            return []
+        }
+        let sanitizedQuery = DNSNameSanitizer.sanitizedHostname(firstName)
+        var cnameChain = Set<String>()
+        if kind == .dns, let qHost = sanitizedQuery {
+            cnameChain.insert(canonicalDNSNameLower(qHost))
+            var changed = true
+            var guardSteps = 0
+            while changed, guardSteps < 64 {
+                changed = false
+                guardSteps += 1
+                for record in cnames {
+                    let ownerKey = canonicalDNSNameLower(record.owner)
+                    let targetKey = canonicalDNSNameLower(record.target)
+                    if !targetKey.isEmpty, cnameChain.contains(ownerKey), cnameChain.insert(targetKey).inserted {
+                        changed = true
+                    }
+                }
+            }
+        }
+
+        var bindings: [DNSAddressBinding] = []
+        for record in addresses {
+            guard let parsedIP = DNSNameSanitizer.sanitizedUnicastIP(record.ip) else {
+                continue
+            }
+            let resolvedHostname: String? = if kind == .dns {
+                if let qHost = sanitizedQuery,
+                   record.owner.isEmpty || cnameChain.contains(canonicalDNSNameLower(record.owner))
+                {
+                    qHost
+                } else {
+                    DNSNameSanitizer.sanitizedHostname(record.owner)
+                }
+            } else {
+                DNSNameSanitizer.sanitizedHostname(record.owner)
+                    ?? (record.owner.isEmpty ? sanitizedQuery : nil)
+            }
+            guard let hostname = resolvedHostname else {
+                continue
+            }
+            let binding = DNSAddressBinding(ip: parsedIP.compressedText.lowercased(), hostname: hostname)
+            if bindings.contains(binding) {
+                continue
+            }
+            if bindings.count < dnsAnswerRetentionCap {
+                bindings.append(binding)
+            }
+        }
+        return bindings
+    }
+
+    static func canonicalDNSNameLower(_ raw: String) -> String {
+        var trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasSuffix("."), !trimmed.hasSuffix("..") {
+            trimmed.removeLast()
+        }
+        return trimmed.lowercased()
+    }
 }

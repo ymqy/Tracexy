@@ -89,6 +89,9 @@ nonisolated struct SessionSummary: Identifiable, Hashable, Sendable {
     var sni: String?
     var dnsQuery: String?
     var dnsAnswers: [String] = []
+    /// Validated `(ip, hostname)` bindings learned from DNS/mDNS/LLMNR Answer and
+    /// Additional records in this session, bounded to 64 unique entries.
+    var dnsResolvedBindings: [DNSAddressBinding] = []
     /// DNS answer-record occurrences not published because a retention cap was
     /// reached (per-packet decode cap and/or the session publication cap). This is
     /// not presented as exact unique cardinality after the retained list fills.

@@ -74,26 +74,52 @@ nonisolated enum ResolvedAddresses {
         }
         var learned: [String: [String: Learned]] = [:]
         for session in sessions {
-            guard let name = session.dnsQuery?.trimmingCharacters(in: .whitespaces), !name.isEmpty,
-                  !session.dnsAnswers.isEmpty else
-            {
-                continue
-            }
             let source: ResolvedAddressSource = session.protocolStack.contains(.mdns) ? .mdns : .dns
             let ordinal = session.firstCaptureOrdinal ?? .max
-            for answer in session.dnsAnswers where IPAddressValue(parsing: answer) != nil {
-                if var existing = learned[answer]?[name] {
+            func recordLearned(address: String, name: String) {
+                if var existing = learned[address]?[name] {
                     existing.count += 1
                     if ordinal < existing.ordinal {
                         existing.ordinal = ordinal
                         existing.sessionID = session.id
                         existing.source = source
                     }
-                    learned[answer]?[name] = existing
+                    learned[address]?[name] = existing
                 } else {
-                    learned[answer, default: [:]][name] = Learned(
+                    learned[address, default: [:]][name] = Learned(
                         source: source, sessionID: session.id, ordinal: ordinal, count: 1
                     )
+                }
+            }
+
+            if !session.dnsResolvedBindings.isEmpty {
+                var seenInSession = Set<DNSAddressBinding>()
+                for binding in session.dnsResolvedBindings {
+                    guard let parsed = DNSNameSanitizer.sanitizedUnicastIP(binding.ip),
+                          let name = DNSNameSanitizer.sanitizedHostname(binding.hostname) else
+                    {
+                        continue
+                    }
+                    let canonical = DNSAddressBinding(ip: parsed.compressedText, hostname: name)
+                    guard seenInSession.insert(canonical).inserted else {
+                        continue
+                    }
+                    recordLearned(address: canonical.ip, name: canonical.hostname)
+                }
+            } else if let rawQuery = session.dnsQuery,
+                      let name = DNSNameSanitizer.sanitizedHostname(rawQuery),
+                      !session.dnsAnswers.isEmpty
+            {
+                var seenInSession = Set<String>()
+                for answer in session.dnsAnswers {
+                    guard let parsed = DNSNameSanitizer.sanitizedUnicastIP(answer) else {
+                        continue
+                    }
+                    let address = parsed.compressedText
+                    guard seenInSession.insert(address).inserted else {
+                        continue
+                    }
+                    recordLearned(address: address, name: name)
                 }
             }
         }
@@ -126,10 +152,10 @@ nonisolated enum ResolvedAddresses {
                 }
             }
             for rawAddress in cachedDNSNames.keys.sorted() {
-                guard let parsed = IPAddressValue(parsing: rawAddress),
+                guard let parsed = DNSNameSanitizer.sanitizedUnicastIP(rawAddress),
                       !coveredAddresses.contains(parsed),
-                      let name = cachedDNSNames[rawAddress]?.trimmingCharacters(in: .whitespacesAndNewlines),
-                      !name.isEmpty else
+                      let rawName = cachedDNSNames[rawAddress],
+                      let name = DNSNameSanitizer.sanitizedHostname(rawName) else
                 {
                     continue
                 }

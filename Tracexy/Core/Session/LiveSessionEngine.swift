@@ -59,7 +59,7 @@ actor LiveSessionEngine {
     /// nothing and older in-flight work is invalidated.
     func reset(epoch: Int, initialResolved: [String: String] = [:]) {
         self.epoch = epoch
-        accumulator.reset(initialResolved: initialResolved)
+        accumulator.reset(initialResolved: SessionBuilder.normalizedResolvedMap(initialResolved))
         sequential = SequentialFrameDecoder()
         nextOrdinal = 1
     }

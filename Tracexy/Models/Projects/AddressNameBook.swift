@@ -211,8 +211,11 @@ final class AddressNameBook {
         var didChange = false
 
         func record(_ address: IPAddressValue, domain rawDomain: String) {
-            let domain = String(rawDomain.prefix(Self.maximumLearnedDomainCharacters))
-            guard !domain.isEmpty, IPAddressValue(parsing: domain) == nil else {
+            guard DNSNameSanitizer.isValidUnicastTargetIP(address) else {
+                return
+            }
+            let capped = String(rawDomain.prefix(Self.maximumLearnedDomainCharacters))
+            guard let domain = DNSNameSanitizer.sanitizedHostname(capped) else {
                 return
             }
             let key = address.compressedText.lowercased()
@@ -225,20 +228,26 @@ final class AddressNameBook {
         }
 
         for session in sessions {
-            if let query = session.dnsQuery?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !query.isEmpty,
-               IPAddressValue(parsing: query) == nil
+            if !session.dnsResolvedBindings.isEmpty {
+                for binding in session.dnsResolvedBindings {
+                    if let parsed = DNSNameSanitizer.sanitizedUnicastIP(binding.ip),
+                       let domain = DNSNameSanitizer.sanitizedHostname(binding.hostname)
+                    {
+                        record(parsed, domain: domain)
+                    }
+                }
+            } else if let rawQuery = session.dnsQuery,
+                      let query = DNSNameSanitizer.sanitizedHostname(rawQuery)
             {
                 for answer in session.dnsAnswers {
-                    if let parsed = IPAddressValue(parsing: answer) {
+                    if let parsed = DNSNameSanitizer.sanitizedUnicastIP(answer) {
                         record(parsed, domain: query)
                     }
                 }
             }
 
-            if let sni = session.sni?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !sni.isEmpty,
-               IPAddressValue(parsing: sni) == nil
+            if let rawSNI = session.sni,
+               let sni = DNSNameSanitizer.sanitizedHostname(rawSNI)
             {
                 let destination = Self.parsedEndpoint(
                     session.destinationEndpointValue,
@@ -295,41 +304,53 @@ final class AddressNameBook {
         }
 
         var workingNames: [String: String] = [:]
+        var needsScrubPersist = false
         let decoder = JSONDecoder()
         if let entries = try? decoder.decode([LearnedAddressEntry].self, from: data) {
             for entry in entries {
-                insertLoadedLearnedEntry(address: entry.address, name: entry.name, into: &workingNames)
+                if !insertLoadedLearnedEntry(address: entry.address, name: entry.name, into: &workingNames) {
+                    needsScrubPersist = true
+                }
             }
         } else if let dictionary = try? decoder.decode([String: String].self, from: data) {
             for key in dictionary.keys.sorted() {
                 if let name = dictionary[key] {
-                    insertLoadedLearnedEntry(address: key, name: name, into: &workingNames)
+                    if !insertLoadedLearnedEntry(address: key, name: name, into: &workingNames) {
+                        needsScrubPersist = true
+                    }
                 }
             }
         }
         trimLearnedCapacity(&workingNames)
         learnedNames = workingNames
+        if needsScrubPersist {
+            persistLearnedNames()
+        }
     }
 
+    @discardableResult
     private func insertLoadedLearnedEntry(
         address: String,
         name: String,
         into workingNames: inout [String: String]
-    ) {
-        guard let parsed = IPAddressValue(parsing: address) else {
-            return
+    )
+        -> Bool
+    {
+        guard let parsed = DNSNameSanitizer.sanitizedUnicastIP(address) else {
+            return false
         }
-        let trimmed = String(
+        let capped = String(
             name.trimmingCharacters(in: .whitespacesAndNewlines)
                 .prefix(Self.maximumLearnedDomainCharacters)
         )
-        guard !trimmed.isEmpty, IPAddressValue(parsing: trimmed) == nil else {
-            return
+        guard let sanitized = DNSNameSanitizer.sanitizedHostname(capped) else {
+            return false
         }
         let key = parsed.compressedText.lowercased()
         learnedSequence &+= 1
         learnedTicks[key] = learnedSequence
-        workingNames[key] = trimmed
+        workingNames[key] = sanitized
+        return address == key && name == sanitized
     }
 
     private func trimLearnedCapacity(_ workingNames: inout [String: String]) {
@@ -372,7 +393,8 @@ final class AddressNameBook {
     }
 
     /// Router / TUN Fake-IP pools where each virtual address maps 1-to-1 to a domain:
-    /// IPv4 `198.18.0.0/15`, RFC 6598 `100.64.0.0/10`, and IPv6 ULA `fc00::/7`.
+    /// IPv4 `198.18.0.0/15`, RFC 6598 `100.64.0.0/10`, Sing-box IPv6 `fc00::/18`, and
+    /// Clash/Mihomo IPv6 `fdfe:dcba:9876::/48` (excluding standard `fd00::/8` SLAAC ULA).
     private static func isFakeIP(_ address: IPAddressValue) -> Bool {
         switch address.family {
         case .v4:
@@ -385,10 +407,7 @@ final class AddressNameBook {
             let isCGNATFakeIP = first == 100 && (second & 0xC0) == 64
             return isBenchmarkFakeIP || isCGNATFakeIP
         case .v6:
-            guard address.bytes.count == 16 else {
-                return false
-            }
-            return (address.bytes[0] & 0xFE) == 0xFC
+            return DNSNameSanitizer.isIPv6FakeIP(address)
         }
     }
 

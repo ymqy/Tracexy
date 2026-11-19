@@ -88,48 +88,96 @@ nonisolated enum SessionBuilder {
         return packet
     }
 
+    /// Canonical lowercase lookup key for `resolved` maps (`IPAddressValue.compressedText`
+    /// for IPv4/IPv6). Applied ONLY to `resolved` dictionary reads/writes — never to
+    /// `IPEndpoint.display` or `sessionID(for:)`.
+    static func canonicalAddressKey(_ ip: String) -> String {
+        IPAddressValue(parsing: ip)?.compressedText.lowercased() ?? ip.lowercased()
+    }
+
+    /// Normalizes and sanitizes a seeded IP→hostname dictionary (`initialResolved`) so
+    /// compressed and uncompressed IPv6 keys match identically and invalid service/non-unicast
+    /// entries are scrubbed before folding begins.
+    static func normalizedResolvedMap(_ map: [String: String]) -> [String: String] {
+        guard !map.isEmpty else {
+            return [:]
+        }
+        var normalized: [String: String] = [:]
+        normalized.reserveCapacity(map.count)
+        for key in map.keys.sorted() {
+            guard let rawName = map[key],
+                  let parsedIP = DNSNameSanitizer.sanitizedUnicastIP(key),
+                  let host = DNSNameSanitizer.sanitizedHostname(rawName) else
+            {
+                continue
+            }
+            normalized[parsedIP.compressedText.lowercased()] = host
+        }
+        return normalized
+    }
+
     /// Fold one packet's DNS answers and Fake-IP TLS/QUIC SNI into the IP→hostname
     /// map. Applied in packet order (last write wins), identical whether accumulated
     /// incrementally or in a single batch pass.
     static func learnResolved(from packet: DecodedPacket, into resolved: inout [String: String]) {
         // Multicast DNS answers are how Bonjour devices name themselves on the local
-        // network, so they teach names exactly like unicast DNS answers.
-        if [.dns, .mdns, .llmnr].contains(packet.appProtocol),
-           let name = packet.dnsQuery, !name.isEmpty
-        {
-            for answer in packet.dnsAnswers where !answer.hasPrefix("CNAME") {
-                resolved[answer] = name
+        // network, so they teach names through validated per-record owner bindings first,
+        // falling back to `dnsQuery` + `dnsAnswers` only when `dnsResolvedBindings` is
+        // empty and both pass the shared hostname/unicast-IP sanitizer.
+        if [.dns, .mdns, .llmnr].contains(packet.appProtocol) {
+            if !packet.dnsResolvedBindings.isEmpty {
+                for binding in packet.dnsResolvedBindings {
+                    guard let parsedIP = DNSNameSanitizer.sanitizedUnicastIP(binding.ip),
+                          let host = DNSNameSanitizer.sanitizedHostname(binding.hostname) else
+                    {
+                        continue
+                    }
+                    resolved[parsedIP.compressedText.lowercased()] = host
+                }
+            } else if let rawQuery = packet.dnsQuery,
+                      let host = DNSNameSanitizer.sanitizedHostname(rawQuery)
+            {
+                for answer in packet.dnsAnswers where !answer.hasPrefix("CNAME") {
+                    guard let parsedIP = DNSNameSanitizer.sanitizedUnicastIP(answer) else {
+                        continue
+                    }
+                    resolved[parsedIP.compressedText.lowercased()] = host
+                }
             }
         }
         // Transparent-proxy and TUN routers allocate virtual addresses from RFC 2544
-        // 198.18.0.0/15 or IPv6 ULA fc00::/7. Learning SNI against that Fake-IP lets
-        // sibling flows to the same virtual destination resolve their host in the same
-        // pass even when DNS happened before capture started.
-        if let sni = packet.sni, !sni.isEmpty {
+        // 198.18.0.0/15 or proxy IPv6 Fake-IP pools (fc00::/18, fdfe:dcba:9876::/48).
+        // Learning SNI against that Fake-IP lets sibling flows to the same virtual
+        // destination resolve their host in the same pass even when DNS happened before
+        // capture started, without mislabeling standard fd00::/8 SLAAC LAN peers.
+        if let rawSNI = packet.sni, let sni = DNSNameSanitizer.sanitizedHostname(rawSNI) {
             if let dstIP = packet.destinationEndpoint?.ip, isFakeIPAddress(dstIP) {
-                resolved[dstIP] = sni
+                resolved[canonicalAddressKey(dstIP)] = sni
             } else if let src = packet.sourceEndpoint, isFakeIPAddress(src.ip) {
                 let dstPort = packet.destinationEndpoint?.port ?? 0
                 let isClientDialingService = !SessionAccumulator.isLikelyServerPort(src.port)
                     && SessionAccumulator.isLikelyServerPort(dstPort)
                 if !isClientDialingService {
-                    resolved[src.ip] = sni
+                    resolved[canonicalAddressKey(src.ip)] = sni
                 }
             }
         }
     }
 
     /// Whether `ip` falls in a Fake-IP virtual address pool: RFC 2544 benchmarking
-    /// `198.18.0.0/15` (`198.18.0.0`–`198.19.255.255`) or IPv6 ULA `fc00::/7`.
+    /// `198.18.0.0/15` (`198.18.0.0`–`198.19.255.255`), Sing-box `fc00::/18`, or
+    /// Clash/Mihomo `fdfe:dcba:9876::/48` (excluding standard `fd00::/8` SLAAC ULA).
     static func isFakeIPAddress(_ ip: String) -> Bool {
-        guard let parsed = IPAddressValue(parsing: ip) else {
+        guard let parsed = IPAddressValue(parsing: ip),
+              DNSNameSanitizer.isValidUnicastTargetIP(parsed) else
+        {
             return false
         }
         switch parsed.family {
         case .v4:
             return parsed.bytes[0] == 198 && (parsed.bytes[1] & 0xFE) == 18
         case .v6:
-            return (parsed.bytes[0] & 0xFE) == 0xFC
+            return DNSNameSanitizer.isIPv6FakeIP(parsed)
         }
     }
 
@@ -143,16 +191,20 @@ nonisolated enum SessionBuilder {
     )
         -> String
     {
-        if appProto == .dns || appProto == .mdns || appProto == .llmnr, let query = dnsQuery {
+        if appProto == .dns || appProto == .mdns || appProto == .llmnr,
+           let query = dnsQuery, !query.isEmpty
+        {
             return query
         }
-        if let sni {
+        if let sni, !sni.isEmpty {
             return sni
         }
         if let host = httpHost, !host.isEmpty, host != "—" {
             return host
         }
-        if let name = resolved[serverIP] {
+        if !serverIP.isEmpty,
+           let name = resolved[canonicalAddressKey(serverIP)] ?? resolved[serverIP]
+        {
             return name
         }
         if !serverIP.isEmpty {
