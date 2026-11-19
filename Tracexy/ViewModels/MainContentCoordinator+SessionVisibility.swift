@@ -261,7 +261,7 @@ extension MainContentCoordinator {
                 return false
             }
             if let processMatcher,
-               !processMatcher(session, sessionProcessContext(for: session))
+               !processMatcher(session, effectiveSessionProcessContext(for: session))
             {
                 return false
             }

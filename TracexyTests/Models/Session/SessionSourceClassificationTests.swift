@@ -1347,6 +1347,281 @@ struct SessionSourceClassificationTests {
         )
     }
 
+    // MARK: - 12. Round 3 — Unified Fallback Provenance, mDNS Sanitization, Framework Python & Localization
+
+    @MainActor
+    @Test("Sticky session with nil direct context inherits caller provenance consistently across group, filter matcher, and coordinator")
+    func unifiedFallbackContextAcrossGroupMatcherAndCoordinator() throws {
+        let embeddedCurlWithProvenance = makeSession(
+            processName: "curl",
+            host: "api.example.com",
+            processProvenance: ProcessProvenance(
+                executablePath: "/usr/bin/curl",
+                parentProcessName: "Antigravity",
+                originProcessName: "curl",
+                hostAppName: "Antigravity",
+                spawnerProcessName: "language_server_macos_arm",
+                viaShellName: "zsh",
+                callerKind: .app
+            )
+        )
+        let stickyCurlWithoutDirectContext = makeSession(
+            processName: "curl",
+            host: "cdn.example.com",
+            processProvenance: nil
+        )
+        let sessions = [embeddedCurlWithProvenance, stickyCurlWithoutDirectContext]
+        let directProvider: (SessionSummary) -> SessionProcessContext? = {
+            $0.processProvenance.map(SessionProcessContext.init)
+        }
+
+        // 1. Pure classifier fallback + effectiveProcessContext + group + makeFilterMatcher agree.
+        let fallbacks = SessionSourceClassifier.fallbackContextsByProcessName(
+            for: sessions,
+            contextProvider: directProvider
+        )
+        let effectiveSticky = SessionSourceClassifier.effectiveProcessContext(
+            for: stickyCurlWithoutDirectContext,
+            direct: nil,
+            fallbacks: fallbacks
+        )
+        #expect(effectiveSticky?.hostAppName == "Antigravity")
+        #expect(effectiveSticky?.callerKind == .app)
+
+        let groups = SessionSourceClassifier.group(
+            sessions: sessions,
+            contextProvider: directProvider,
+            localIPs: Self.liveLocalIPs
+        )
+        let cliCategory = try #require(groups.first { $0.category == .cli })
+        let curlItem = try #require(cliCategory.items.first { $0.filterKey == "cli:app:Antigravity:curl" })
+        #expect(curlItem.count == 2)
+
+        let matcher = SessionSourceClassifier.makeFilterMatcher(
+            for: "cli:app:Antigravity:curl",
+            localIPs: Self.liveLocalIPs
+        )
+        let matchedPure = sessions.filter { session in
+            let eff = SessionSourceClassifier.effectiveProcessContext(
+                for: session,
+                direct: directProvider(session),
+                fallbacks: fallbacks
+            )
+            return matcher(session, eff)
+        }
+        #expect(matchedPure.count == curlItem.count)
+
+        // 2. MainContentCoordinator classifiedSource, sourceCategoryGroups, and visibleSessions agree (badge count == row count).
+        let suiteName = "tracexy.test.r3.fallback.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let coordinator = MainContentCoordinator(settingsDefaults: defaults)
+        coordinator.sessions = sessions
+
+        let stickyRow = coordinator.classifiedSource(for: stickyCurlWithoutDirectContext)
+        #expect(stickyRow.category == .cli)
+        #expect(stickyRow.filterKey == "cli:app:Antigravity:curl")
+        #expect(stickyRow.tableLabel == "Antigravity · curl")
+
+        let coordGroups = coordinator.sourceCategoryGroups
+        let coordCLI = try #require(coordGroups.first { $0.category == .cli })
+        let coordCurlItem = try #require(coordCLI.items.first { $0.filterKey == "cli:app:Antigravity:curl" })
+        #expect(coordCurlItem.count == 2)
+
+        coordinator.activeWorkspace.processFilter = "cli:app:Antigravity:curl"
+        let visible = coordinator.visibleSessions(in: coordinator.activeWorkspace)
+        #expect(visible.count == coordCurlItem.count)
+        #expect(Set(visible.map(\.id)) == Set(sessions.map(\.id)))
+
+        // 3. Cache invalidates cleanly when conflicting caller provenance arrives on a new session.
+        let terminalCurl = makeSession(
+            processName: "curl",
+            host: "brew.sh",
+            processProvenance: ProcessProvenance(
+                executablePath: "/usr/bin/curl",
+                parentProcessName: "Terminal",
+                originProcessName: "curl",
+                viaShellName: "zsh",
+                callerKind: .terminal,
+                hasControllingTTY: true
+            )
+        )
+        coordinator.sessions = [embeddedCurlWithProvenance, stickyCurlWithoutDirectContext, terminalCurl]
+        let stickyAfterConflict = coordinator.effectiveSessionProcessContext(for: stickyCurlWithoutDirectContext)
+        #expect(stickyAfterConflict?.hostAppName == nil)
+        #expect(stickyAfterConflict?.callerKind == nil)
+        #expect(coordinator.classifiedSource(for: stickyCurlWithoutDirectContext).filterKey == "curl")
+        #expect(coordinator.visibleSessions(in: coordinator.activeWorkspace).map(\.id) == [embeddedCurlWithProvenance.id])
+    }
+
+    @Test("mdnsPeerNameHint rejects DNS-SD service labels and prefers sanitized dnsResolvedBindings")
+    func mdnsPeerNameHintSanitizationAndBindingsPriority() {
+        // 1. Service / meta queries in dnsQuery are NEVER appended as LAN peer device hints.
+        let companionLink = makeSession(
+            processName: nil,
+            host: "_companion-link._tcp.local",
+            src: ("192.0.2.10", 5_353),
+            dst: ("224.0.0.251", 5_353),
+            protos: [.udp, .mdns],
+            dnsQuery: "_companion-link._tcp.local.",
+            dnsAnswers: ["192.0.2.10"]
+        )
+        let companionClassified = SessionSourceClassifier.classify(companionLink, localIPs: Self.liveLocalIPs)
+        #expect(companionClassified.category == .lanDiscovery)
+        #expect(companionClassified.filterKey == "lan:mdns")
+        #expect(
+            companionClassified.childTarget
+                == SourceChildTarget(kind: .peerIP, value: "192.0.2.10", label: "192.0.2.10")
+        )
+
+        let browseMeta = makeSession(
+            processName: nil,
+            host: "lb._dns-sd._udp.local",
+            src: ("192.0.2.11", 5_353),
+            dst: ("224.0.0.251", 5_353),
+            protos: [.udp, .mdns],
+            dnsQuery: "lb._dns-sd._udp.local",
+            dnsAnswers: ["192.0.2.11"]
+        )
+        let browseClassified = SessionSourceClassifier.classify(browseMeta, localIPs: Self.liveLocalIPs)
+        #expect(
+            browseClassified.childTarget
+                == SourceChildTarget(kind: .peerIP, value: "192.0.2.11", label: "192.0.2.11")
+        )
+
+        // 2. Prefers sanitized dnsResolvedBindings over raw dnsQuery (even when dnsQuery is a service name).
+        let withBindings = makeSession(
+            processName: nil,
+            host: "_companion-link._tcp.local",
+            src: ("192.0.2.10", 5_353),
+            dst: ("224.0.0.251", 5_353),
+            protos: [.udp, .mdns],
+            dnsQuery: "_companion-link._tcp.local",
+            dnsAnswers: ["192.0.2.10"],
+            dnsResolvedBindings: [
+                DNSAddressBinding(ip: "192.0.2.10", hostname: "_companion-link._tcp.local"),
+                DNSAddressBinding(ip: "192.0.2.10", hostname: "TestPhone.local."),
+            ]
+        )
+        let bindingsClassified = SessionSourceClassifier.classify(withBindings, localIPs: Self.liveLocalIPs)
+        #expect(
+            bindingsClassified.childTarget
+                == SourceChildTarget(kind: .peerIP, value: "192.0.2.10", label: "192.0.2.10 · TestPhone.local")
+        )
+
+        // 3. When dnsResolvedBindings is non-empty but has no valid binding for peerIP, does NOT fall back to dnsQuery.
+        let unmatchedBindings = makeSession(
+            processName: nil,
+            host: "TestPhone.local",
+            src: ("192.0.2.12", 5_353),
+            dst: ("224.0.0.251", 5_353),
+            protos: [.udp, .mdns],
+            dnsQuery: "TestPhone.local",
+            dnsAnswers: ["192.0.2.12"],
+            dnsResolvedBindings: [
+                DNSAddressBinding(ip: "192.0.2.99", hostname: "OtherDevice.local"),
+            ]
+        )
+        let unmatchedClassified = SessionSourceClassifier.classify(unmatchedBindings, localIPs: Self.liveLocalIPs)
+        #expect(
+            unmatchedClassified.childTarget
+                == SourceChildTarget(kind: .peerIP, value: "192.0.2.12", label: "192.0.2.12")
+        )
+    }
+
+    @Test("Classifies framework-embedded Python.app and non-standard path CLI commands as .cli")
+    func classifiesFrameworkPythonAndNonStandardPathCLI() {
+        let mockHome = "/var/tmp/mockhome"
+
+        let condaPython = SessionSourceClassifier.classify(
+            makeSession(processName: "Python", host: "pypi.org"),
+            context: SessionProcessContext(
+                executablePath: "\(mockHome)/miniconda3/envs/dev/lib/Python.framework/Versions/3.11/Resources/Python.app/Contents/MacOS/Python",
+                hasControllingTTY: false
+            ),
+            localIPs: Self.liveLocalIPs,
+            homeDirectoryPath: mockHome,
+            appBundleExistsLookup: { _ in false }
+        )
+        #expect(condaPython.category == .cli)
+        #expect(condaPython.filterKey == "Python")
+
+        let frameworkPython = SessionSourceClassifier.classify(
+            makeSession(processName: "Python", host: "pypi.org"),
+            context: SessionProcessContext(
+                executablePath: "/Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
+                hasControllingTTY: false
+            ),
+            localIPs: Self.liveLocalIPs,
+            homeDirectoryPath: mockHome,
+            appBundleExistsLookup: { _ in false }
+        )
+        #expect(frameworkPython.category == .cli)
+        #expect(frameworkPython.filterKey == "Python")
+
+        let nixCurl = SessionSourceClassifier.classify(
+            makeSession(processName: "curl", host: "example.org"),
+            context: SessionProcessContext(
+                executablePath: "/nix/store/00000000000000000000000000000000-curl/bin/curl",
+                hasControllingTTY: false
+            ),
+            localIPs: Self.liveLocalIPs,
+            homeDirectoryPath: mockHome,
+            appBundleExistsLookup: { _ in false }
+        )
+        #expect(nixCurl.category == .cli)
+        #expect(nixCurl.filterKey == "curl")
+    }
+
+    @Test("Threads explicit localization bundle through TrafficSourceCategory, classify, group, and displayTitle")
+    func supportsExplicitLocalizationBundle() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tracexy-source-classify-lproj-\(UUID().uuidString)", isDirectory: true)
+        let lprojDir = tempDir.appendingPathComponent("zh-Hans.lproj", isDirectory: true)
+        try FileManager.default.createDirectory(at: lprojDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let strings: [String: String] = [
+            "Apps": "应用",
+            "LAN & Discovery": "局域网与发现",
+            "Bonjour / mDNS": "Bonjour / mDNS 发现",
+            "LAN · Bonjour": "局域网 · Bonjour",
+            "System CLI": "系统命令行",
+        ]
+        let plist = try PropertyListSerialization.data(fromPropertyList: strings, format: .binary, options: 0)
+        try plist.write(to: lprojDir.appendingPathComponent("Localizable.strings"))
+        let zhBundle = try #require(Bundle(url: lprojDir))
+
+        #expect(TrafficSourceCategory.app.title(in: zhBundle) == "应用")
+        #expect(TrafficSourceCategory.lanDiscovery.title(in: zhBundle) == "局域网与发现")
+        #expect(SessionSourceClassifier.displayTitle(forFilterKey: "lan:mdns", bundle: zhBundle) == "Bonjour / mDNS 发现")
+
+        let mdnsSession = makeSession(
+            processName: nil,
+            host: "224.0.0.251",
+            src: ("192.0.2.10", 5_353),
+            dst: ("224.0.0.251", 5_353),
+            protos: [.udp, .mdns]
+        )
+        let classified = SessionSourceClassifier.classify(
+            mdnsSession,
+            localIPs: Self.liveLocalIPs,
+            bundle: zhBundle
+        )
+        #expect(classified.title == "Bonjour / mDNS 发现")
+        #expect(classified.tableLabel == "局域网 · Bonjour")
+
+        let curlSession = makeSession(processName: "curl", host: "example.com")
+        let grouped = SessionSourceClassifier.group(
+            sessions: [curlSession],
+            contextsBySessionID: [curlSession.id: SessionProcessContext(executablePath: "/usr/bin/curl")],
+            localIPs: Self.liveLocalIPs,
+            bundle: zhBundle
+        )
+        #expect(grouped.first?.items.first?.subtitle == "系统命令行")
+    }
+
     private func agyHelperDNSCtxSession(_ session: SessionSummary) -> SessionSummary {
         session
     }
@@ -1366,7 +1641,9 @@ struct SessionSourceClassificationTests {
         tcpCompleteness: TCPCompleteness = [.syn, .synAck, .ack, .data],
         decodedLayers: [DecodedLayer] = [],
         dnsQuery: String? = nil,
-        dnsAnswers: [String] = []
+        dnsAnswers: [String] = [],
+        dnsResolvedBindings: [DNSAddressBinding] = [],
+        processProvenance: ProcessProvenance? = nil
     )
         -> SessionSummary
     {
@@ -1377,6 +1654,7 @@ struct SessionSourceClassificationTests {
             startTime: Date(timeIntervalSince1970: 1_700_000_000),
             duration: 0.25,
             processName: processName,
+            processProvenance: processProvenance,
             host: host,
             sourceEndpoint: srcEndpoint.display,
             destinationEndpoint: dstEndpoint.display,
@@ -1392,7 +1670,8 @@ struct SessionSourceClassificationTests {
             tcpCompleteness: tcpCompleteness,
             decodedLayers: decodedLayers,
             dnsQuery: dnsQuery,
-            dnsAnswers: dnsAnswers
+            dnsAnswers: dnsAnswers,
+            dnsResolvedBindings: dnsResolvedBindings
         )
     }
 }

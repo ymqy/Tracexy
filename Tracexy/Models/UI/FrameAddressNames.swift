@@ -16,13 +16,14 @@ enum FrameAddressNames {
         -> (String) -> String
     {
         var learned: [String: String] = [:]
-        for row in ResolvedAddresses.rows(sessions: sessions, namedAddresses: [:])
-            where learned[row.address] == nil
-        {
-            learned[row.address] = row.name
+        for row in ResolvedAddresses.rows(sessions: sessions, namedAddresses: [:]) {
+            let key = normalizedKey(for: row.address)
+            if learned[key] == nil {
+                learned[key] = row.name
+            }
         }
         for record in captureFileRecords {
-            guard let address = IPAddressValue(parsing: record.address)?.compressedText,
+            guard let address = IPAddressValue(parsing: record.address)?.compressedText.lowercased(),
                   learned[address] == nil, !record.name.text.isEmpty else
             {
                 continue
@@ -30,7 +31,12 @@ enum FrameAddressNames {
             learned[address] = record.name.text
         }
         return { address in
-            book.name(for: address) ?? learned[address] ?? book.displayName(for: address) ?? address
+            let key = normalizedKey(for: address)
+            return book.name(for: address) ?? learned[key] ?? book.displayName(for: address) ?? address
         }
+    }
+
+    nonisolated private static func normalizedKey(for address: String) -> String {
+        IPAddressValue(parsing: address)?.compressedText.lowercased() ?? address.lowercased()
     }
 }

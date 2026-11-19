@@ -276,6 +276,25 @@ struct LocalDiscoveryNameClassifierTests {
         #expect(nat64.detailTitle == "NAT64 / DNS64 prefix discovery (RFC 7050)")
         #expect(nat64.symbolName == "network")
         #expect(nat64.tooltip == "ipv4only.arpa — NAT64 / DNS64 prefix discovery (RFC 7050)")
+
+        let homeApex = try #require(LocalDiscoveryNameClassifier.classify("home.arpa.", bundle: en.bundle))
+        #expect(homeApex.kind == .specialSystemDNS)
+        #expect(homeApex.badgeTitle == "Home LAN")
+        #expect(homeApex.detailTitle == "Residential home network domain (RFC 8375)")
+        #expect(homeApex.symbolName == "house")
+        #expect(homeApex.tooltip == "home.arpa — Residential home network domain (RFC 8375)")
+        #expect(!LocalDiscoveryNameClassifier.isPublicOrUnicastDomainName("home.arpa"))
+
+        let homeDevice = try #require(LocalDiscoveryNameClassifier.classify("nas.home.arpa", bundle: en.bundle))
+        #expect(homeDevice.kind == .localDeviceHost)
+        #expect(homeDevice.badgeTitle == "Home LAN")
+        #expect(homeDevice.detailTitle == "Home network device hostname (RFC 8375)")
+        #expect(homeDevice.symbolName == "house")
+        #expect(
+            homeDevice.tooltip ==
+                "nas.home.arpa — Home network device hostname (RFC 8375) (local LAN discovery only, not public internet)"
+        )
+        #expect(!LocalDiscoveryNameClassifier.isPublicOrUnicastDomainName("nas.home.arpa"))
     }
 
     // MARK: - 6. Custom Bundle Localization & Search Haystack
@@ -462,6 +481,180 @@ struct LocalDiscoveryNameClassifierTests {
         coordinator.restoreHiddenSourceLocalNames()
         #expect(coordinator.hiddenSourceLocalNames.isEmpty)
         #expect(SourceVisibilityPreferences.loadLocalNames(defaults: defaultsA).isEmpty)
+    }
+
+    // MARK: - 8. Round 3 — FrameAddressNames IPv6 Normalization, Project Runtime Isolation, and IPv6 Deduplication
+
+    @MainActor
+    @Test("FrameAddressNames.resolver normalizes uncompressed and compressed IPv6 addresses across sessions and capture records")
+    func frameAddressNamesNormalizesIPv6Keys() {
+        let book = AddressNameBook()
+        let uncompressed = "fd00:0060:0000:0000:0000:0000:0000:0001"
+        let compressed = "fd00:60::1"
+
+        let dnsSession = makeSession(
+            processName: "mDNSResponder",
+            host: "nas.home.arpa",
+            src: ("192.0.2.10", 53_000),
+            dst: ("192.0.2.1", 53),
+            protos: [.udp, .dns],
+            dnsAnswers: [compressed]
+        )
+        var sessionWithBindings = dnsSession
+        sessionWithBindings.dnsResolvedBindings = [
+            DNSAddressBinding(ip: compressed, hostname: "nas.home.arpa"),
+        ]
+
+        let resolverFromSession = FrameAddressNames.resolver(sessions: [sessionWithBindings], book: book)
+        #expect(resolverFromSession(compressed) == "nas.home.arpa")
+        #expect(resolverFromSession(uncompressed) == "nas.home.arpa")
+        #expect(resolverFromSession(uncompressed.uppercased()) == "nas.home.arpa")
+
+        let nrbName = CaptureBoundedText(bytes: Array("TestPhone.local".utf8), declaredLength: "TestPhone.local".utf8.count)
+        let resolverFromCaptureRecord = FrameAddressNames.resolver(
+            sessions: [],
+            book: book,
+            captureFileRecords: [
+                CaptureNameResolutionRecord(address: uncompressed, name: nrbName),
+            ]
+        )
+        #expect(resolverFromCaptureRecord(compressed) == "TestPhone.local")
+        #expect(resolverFromCaptureRecord(uncompressed) == "TestPhone.local")
+    }
+
+    @MainActor
+    @Test("hiddenSourceLocalNames parks and restores independently across Project runtimes and seeds default keys")
+    func hiddenSourceLocalNamesProjectRuntimeIsolation() throws {
+        // 1. Safe default allowlist includes hiddenSourceLocalNames so new Projects never fall through to .standard.
+        let safeDefaults = ProjectSettingsSeeding.safeDefaultValues()
+        let seededLocalNames = try #require(safeDefaults[ProjectScopedSettingsKeys.hiddenSourceLocalNames] as? [String])
+        #expect(seededLocalNames.isEmpty)
+
+        // 2. Two independent ProjectRuntimeStates park and adopt hiddenSourceLocalNames symmetrically.
+        let suiteAName = "tracexy.test.r3.runtimeA.\(UUID().uuidString)"
+        let suiteBName = "tracexy.test.r3.runtimeB.\(UUID().uuidString)"
+        let defaultsA = try #require(UserDefaults(suiteName: suiteAName))
+        let defaultsB = try #require(UserDefaults(suiteName: suiteBName))
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tracexy-r3-runtime-test-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            defaultsA.removePersistentDomain(forName: suiteAName)
+            defaultsB.removePersistentDomain(forName: suiteBName)
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        let coordinator = MainContentCoordinator(settingsDefaults: defaultsA)
+        let projectA = UUID()
+        let projectB = UUID()
+        let layoutA = WorkspaceLayoutPreferences(defaults: defaultsA)
+        let layoutB = WorkspaceLayoutPreferences(defaults: defaultsB)
+
+        let runtimeA = ProjectRuntimeState(
+            projectID: projectA,
+            location: nil,
+            settingsDefaults: defaultsA,
+            layoutPreferences: layoutA,
+            workspaces: WorkspaceStore(maxWorkspaces: 4, layoutPreferences: layoutA, defaults: defaultsA),
+            sessionStore: nil,
+            liveCaptureSpool: LiveCaptureSpool(directory: tempDir.appendingPathComponent("spoolA", isDirectory: true)),
+            capturesDirectory: nil,
+            captureInterface: "en0"
+        )
+        runtimeA.loadPreferenceBackedState()
+
+        let runtimeB = ProjectRuntimeState(
+            projectID: projectB,
+            location: nil,
+            settingsDefaults: defaultsB,
+            layoutPreferences: layoutB,
+            workspaces: WorkspaceStore(maxWorkspaces: 4, layoutPreferences: layoutB, defaults: defaultsB),
+            sessionStore: nil,
+            liveCaptureSpool: LiveCaptureSpool(directory: tempDir.appendingPathComponent("spoolB", isDirectory: true)),
+            capturesDirectory: nil,
+            captureInterface: "en0"
+        )
+        runtimeB.loadPreferenceBackedState()
+
+        coordinator.adoptProjectRuntime(runtimeA)
+        coordinator.hideSourceLocalName("TestPhone.local")
+        #expect(coordinator.hiddenSourceLocalNames == ["TestPhone.local"])
+
+        coordinator.parkActiveProjectRuntime()
+        #expect(runtimeA.hiddenSourceLocalNames == ["TestPhone.local"])
+
+        coordinator.adoptProjectRuntime(runtimeB)
+        #expect(coordinator.hiddenSourceLocalNames.isEmpty)
+        coordinator.hideSourceLocalName("nas.home.arpa")
+        #expect(coordinator.hiddenSourceLocalNames == ["nas.home.arpa"])
+
+        coordinator.parkActiveProjectRuntime()
+        #expect(runtimeB.hiddenSourceLocalNames == ["nas.home.arpa"])
+
+        coordinator.adoptProjectRuntime(runtimeA)
+        #expect(coordinator.hiddenSourceLocalNames == ["TestPhone.local"])
+        #expect(SourceVisibilityPreferences.loadLocalNames(defaults: defaultsA) == ["TestPhone.local"])
+        #expect(SourceVisibilityPreferences.loadLocalNames(defaults: defaultsB) == ["nas.home.arpa"])
+    }
+
+    @MainActor
+    @Test("localDiscoveryGroups deduplicates compressed and uncompressed IPv6 addresses and includes RFC 8375 home.arpa")
+    func localDiscoveryGroupsIPv6DedupAndHomeArpa() throws {
+        let suiteName = "tracexy.test.r3.ipv6dedup.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let coordinator = MainContentCoordinator(settingsDefaults: defaults)
+        coordinator.sessions = [
+            makeSession(
+                processName: "mDNSResponder",
+                host: "TestPhone.local",
+                src: ("fd00:0060:0000:0000:0000:0000:0000:0001", 5_353),
+                dst: ("ff02::fb", 5_353),
+                protos: [.udp, .mdns],
+                dnsAnswers: ["fd00:0060:0000:0000:0000:0000:0000:0001", "fd00:60::1"]
+            ),
+            makeSession(
+                processName: "mDNSResponder",
+                host: "TestPhone.local",
+                src: ("fd00:60::1", 5_353),
+                dst: ("ff02::fb", 5_353),
+                protos: [.udp, .mdns]
+            ),
+            makeSession(
+                processName: "mDNSResponder",
+                host: "nas.home.arpa",
+                src: ("192.0.2.10", 53_100),
+                dst: ("fd00:0060:0000:0000:0000:0000:0000:0002", 443),
+                protos: [.tcp],
+                dnsAnswers: ["fd00:60::2"]
+            ),
+            makeSession(
+                processName: "mDNSResponder",
+                host: "home.arpa",
+                src: ("192.0.2.10", 53_101),
+                dst: ("192.0.2.1", 53),
+                protos: [.udp, .dns]
+            ),
+        ]
+
+        let groups = coordinator.localDiscoveryGroups
+        #expect(Set(groups.map(\.name)) == ["TestPhone.local", "nas.home.arpa", "home.arpa"])
+
+        let phoneGroup = try #require(groups.first { $0.name == "TestPhone.local" })
+        #expect(phoneGroup.count == 2)
+        #expect(phoneGroup.ips == ["fd00:60::1"])
+
+        let nasGroup = try #require(groups.first { $0.name == "nas.home.arpa" })
+        #expect(nasGroup.count == 1)
+        #expect(nasGroup.ips == ["fd00:60::2"])
+        #expect(nasGroup.symbolName == "house")
+
+        let homeApexGroup = try #require(groups.first { $0.name == "home.arpa" })
+        #expect(homeApexGroup.count == 1)
+        #expect(homeApexGroup.ips == ["192.0.2.1"])
+        #expect(homeApexGroup.symbolName == "house")
+
+        #expect(coordinator.domainGroups.isEmpty)
     }
 
     // MARK: - Helpers

@@ -100,7 +100,7 @@ final class MainContentCoordinator {
         mutedProtocols = bootRuntime.mutedProtocols
         hiddenSourceApps = bootRuntime.hiddenSourceApps
         hiddenSourceDomains = bootRuntime.hiddenSourceDomains
-        hiddenSourceLocalNames = SourceVisibilityPreferences.loadLocalNames(defaults: bootDefaults)
+        hiddenSourceLocalNames = bootRuntime.hiddenSourceLocalNames
         hiddenSourceIPs = bootRuntime.hiddenSourceIPs
         investigationNotes.bind(to: bootDefaults)
         expressionLibrary.bind(to: bootDefaults)
@@ -650,7 +650,12 @@ final class MainContentCoordinator {
     /// save/export source stay intact, while every UI-derived surface reads
     /// ``presentedSessions`` so a removed sensitive row cannot reappear in an
     /// Overview rollup, Flow Map, Sources, finding, or related-session card.
-    var removedSessionIDs: Set<UUID> = []
+    var removedSessionIDs: Set<UUID> = [] {
+        didSet {
+            processContextGeneration &+= 1
+        }
+    }
+
     /// Sessions pinned above the Sessions table for this capture (Wireshark's pinned
     /// packets). Capture-scoped like ``removedSessionIDs`` and never persisted.
     var pinnedSessionIDs: [UUID] = []
@@ -658,7 +663,11 @@ final class MainContentCoordinator {
     /// closed sockets never revert to unattributed on subsequent live snapshots.
     var attributedProcessesBySessionID: [UUID: String] = [:]
     /// Sticky session → process provenance resolved alongside ``attributedProcessesBySessionID``.
-    var attributedProvenancesBySessionID: [UUID: ProcessProvenance] = [:]
+    var attributedProvenancesBySessionID: [UUID: ProcessProvenance] = [:] {
+        didSet {
+            processContextGeneration &+= 1
+        }
+    }
 
     /// The *active Project's* complete local raw-frame retention for save/export.
     /// Every Project keeps its own spool actor while parked, so starting, clearing
@@ -819,6 +828,7 @@ final class MainContentCoordinator {
     /// All sessions decoded from the current capture's real frames.
     var sessions: [SessionSummary] = [] {
         didSet {
+            processContextGeneration &+= 1
             rebuildActivities()
             if !isHistoryDemoMode, !sessions.isEmpty {
                 addressNames.learn(from: sessions)
@@ -925,14 +935,14 @@ final class MainContentCoordinator {
                let destParsed = IPAddressValue(parsing: destText)
             {
                 if !Self.isMulticastOrUnspecified(destParsed) {
-                    entry.ips.insert(destText)
+                    entry.ips.insert(destParsed.compressedText)
                 } else {
                     let srcCandidate = session.sourceEndpointValue?.ip ?? Self.ipPart(session.sourceEndpoint)
                     if let srcText = srcCandidate.map(Self.stripIPv6Brackets),
                        let srcParsed = IPAddressValue(parsing: srcText),
                        !Self.isMulticastOrUnspecified(srcParsed)
                     {
-                        entry.ips.insert(srcText)
+                        entry.ips.insert(srcParsed.compressedText)
                     }
                 }
             }
@@ -987,11 +997,25 @@ final class MainContentCoordinator {
         (session.processProvenance ?? attributedProvenancesBySessionID[session.id]).map(SessionProcessContext.init)
     }
 
+    /// Effective per-session process provenance, inheriting the cached process-level fallback
+    /// when a sticky-attributed session lacks direct provenance so sidebar badges, filter
+    /// matching, and table rows stay consistent in O(1) per row.
+    func effectiveSessionProcessContext(for session: SessionSummary) -> SessionProcessContext? {
+        if let direct = sessionProcessContext(for: session) {
+            return direct
+        }
+        return SessionSourceClassifier.effectiveProcessContext(
+            for: session,
+            direct: nil,
+            fallbacks: cachedProcessContextFallbacks()
+        )
+    }
+
     /// Classifies a single session into one of the 7 traffic source dimensions with role annotations.
     func classifiedSource(for session: SessionSummary) -> ClassifiedSessionSource {
         SessionSourceClassifier.classify(
             session,
-            context: sessionProcessContext(for: session),
+            context: effectiveSessionProcessContext(for: session),
             localIPs: ProcessResolver.shared.currentLocalIPs,
             isViewingSavedCapture: isViewingSavedCapture,
             resolvedNames: mergedResolvedNames
@@ -1507,6 +1531,12 @@ final class MainContentCoordinator {
 
     // MARK: Private
 
+    @ObservationIgnored private var processContextFallbackCache: (
+        generation: UInt64,
+        map: [String: SessionProcessContext]
+    )?
+    @ObservationIgnored private var processContextGeneration: UInt64 = 0
+
     private let live = try? LiveCapture()
     private var lastSessionsUpdate = Date.distantPast
 
@@ -1547,7 +1577,20 @@ final class MainContentCoordinator {
         {
             return nil
         }
-        return stripped
+        return parsed.compressedText
+    }
+
+    private func cachedProcessContextFallbacks() -> [String: SessionProcessContext] {
+        let generation = processContextGeneration
+        if let cached = processContextFallbackCache, cached.generation == generation {
+            return cached.map
+        }
+        let map = SessionSourceClassifier.fallbackContextsByProcessName(
+            for: presentedSessions,
+            contextProvider: { sessionProcessContext(for: $0) }
+        )
+        processContextFallbackCache = (generation: generation, map: map)
+        return map
     }
 
     private static func isMulticastOrUnspecified(_ address: IPAddressValue) -> Bool {

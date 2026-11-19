@@ -111,6 +111,7 @@ final class ProjectRuntimeState {
     var mutedProtocols: Set<ProtocolKind> = []
     var hiddenSourceApps: Set<String> = []
     var hiddenSourceDomains: Set<String> = []
+    var hiddenSourceLocalNames: Set<String> = []
     var hiddenSourceIPs: Set<String> = []
 
     // MARK: Parked History read/write state
@@ -147,6 +148,7 @@ final class ProjectRuntimeState {
         )
         hiddenSourceApps = SourceVisibilityPreferences.loadApps(defaults: settingsDefaults)
         hiddenSourceDomains = SourceVisibilityPreferences.loadDomains(defaults: settingsDefaults)
+        hiddenSourceLocalNames = SourceVisibilityPreferences.loadLocalNames(defaults: settingsDefaults)
         hiddenSourceIPs = SourceVisibilityPreferences.loadIPs(defaults: settingsDefaults)
         historyAutoClear = HistoryRetentionSettingsResolver.autoClear(defaults: settingsDefaults)
     }

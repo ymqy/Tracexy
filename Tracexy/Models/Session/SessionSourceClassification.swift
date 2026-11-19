@@ -17,14 +17,18 @@ nonisolated enum TrafficSourceCategory: String, CaseIterable, Identifiable, Hash
     nonisolated var id: String { rawValue }
 
     nonisolated var title: String {
+        title(in: .main)
+    }
+
+    nonisolated func title(in bundle: Bundle) -> String {
         switch self {
-        case .app: String(localized: "Apps")
-        case .cli: String(localized: "CLI Tools")
-        case .thirdPartyService: String(localized: "Third-Party Services")
-        case .systemService: String(localized: "System Services")
-        case .lanDiscovery: String(localized: "LAN & Discovery")
-        case .kernelAndLink: String(localized: "Kernel & Link")
-        case .unattributed: String(localized: "Unattributed")
+        case .app: String(localized: "Apps", bundle: bundle)
+        case .cli: String(localized: "CLI Tools", bundle: bundle)
+        case .thirdPartyService: String(localized: "Third-Party Services", bundle: bundle)
+        case .systemService: String(localized: "System Services", bundle: bundle)
+        case .lanDiscovery: String(localized: "LAN & Discovery", bundle: bundle)
+        case .kernelAndLink: String(localized: "Kernel & Link", bundle: bundle)
+        case .unattributed: String(localized: "Unattributed", bundle: bundle)
         }
     }
 
@@ -244,36 +248,36 @@ nonisolated private enum LanSubkind {
         }
     }
 
-    var title: String {
+    func title(in bundle: Bundle) -> String {
         switch self {
-        case .mdns: String(localized: "Bonjour / mDNS")
-        case .ssdp: String(localized: "SSDP / UPnP")
-        case .dhcp: String(localized: "DHCP Lease Broadcast")
-        case .naming: String(localized: "NetBIOS / LLMNR")
-        case .arp: String(localized: "Peer ARP Resolution")
-        case .multicast: String(localized: "LAN Broadcast / Multicast")
+        case .mdns: String(localized: "Bonjour / mDNS", bundle: bundle)
+        case .ssdp: String(localized: "SSDP / UPnP", bundle: bundle)
+        case .dhcp: String(localized: "DHCP Lease Broadcast", bundle: bundle)
+        case .naming: String(localized: "NetBIOS / LLMNR", bundle: bundle)
+        case .arp: String(localized: "Peer ARP Resolution", bundle: bundle)
+        case .multicast: String(localized: "LAN Broadcast / Multicast", bundle: bundle)
         }
     }
 
-    var subtitle: String {
+    func subtitle(in bundle: Bundle) -> String {
         switch self {
-        case .mdns: String(localized: "Local network service discovery (UDP 5353)")
-        case .ssdp: String(localized: "Media, smart-device & router discovery (UDP 1900)")
-        case .dhcp: String(localized: "Dynamic IP address configuration broadcast")
-        case .naming: String(localized: "Windows & NAS local name broadcast")
-        case .arp: String(localized: "Layer-2 MAC lookup between other LAN devices")
-        case .multicast: String(localized: "Broadcast or multicast from nearby LAN devices")
+        case .mdns: String(localized: "Local network service discovery (UDP 5353)", bundle: bundle)
+        case .ssdp: String(localized: "Media, smart-device & router discovery (UDP 1900)", bundle: bundle)
+        case .dhcp: String(localized: "Dynamic IP address configuration broadcast", bundle: bundle)
+        case .naming: String(localized: "Windows & NAS local name broadcast", bundle: bundle)
+        case .arp: String(localized: "Layer-2 MAC lookup between other LAN devices", bundle: bundle)
+        case .multicast: String(localized: "Broadcast or multicast from nearby LAN devices", bundle: bundle)
         }
     }
 
-    var tableLabel: String {
+    func tableLabel(in bundle: Bundle) -> String {
         switch self {
-        case .mdns: String(localized: "LAN · Bonjour")
-        case .ssdp: String(localized: "LAN · SSDP")
-        case .dhcp: String(localized: "LAN · DHCP")
-        case .naming: String(localized: "LAN · Naming")
-        case .arp: String(localized: "LAN · Peer ARP")
-        case .multicast: String(localized: "LAN · Multicast")
+        case .mdns: String(localized: "LAN · Bonjour", bundle: bundle)
+        case .ssdp: String(localized: "LAN · SSDP", bundle: bundle)
+        case .dhcp: String(localized: "LAN · DHCP", bundle: bundle)
+        case .naming: String(localized: "LAN · Naming", bundle: bundle)
+        case .arp: String(localized: "LAN · Peer ARP", bundle: bundle)
+        case .multicast: String(localized: "LAN · Multicast", bundle: bundle)
         }
     }
 }
@@ -304,36 +308,36 @@ nonisolated private enum KernelSubkind {
         }
     }
 
-    var title: String {
+    func title(in bundle: Bundle) -> String {
         switch self {
-        case .arp: String(localized: "ARP Resolution")
-        case .ndp: String(localized: "IPv6 Neighbor & Router Discovery")
-        case .igmp: String(localized: "IGMP / MLD Multicast Control")
-        case .icmp: String(localized: "ICMP Probe & Diagnostics")
-        case .tcpTeardown: String(localized: "Kernel TCP Teardown / Reset")
-        case .inbound: String(localized: "Inbound Unanswered Port")
+        case .arp: String(localized: "ARP Resolution", bundle: bundle)
+        case .ndp: String(localized: "IPv6 Neighbor & Router Discovery", bundle: bundle)
+        case .igmp: String(localized: "IGMP / MLD Multicast Control", bundle: bundle)
+        case .icmp: String(localized: "ICMP Probe & Diagnostics", bundle: bundle)
+        case .tcpTeardown: String(localized: "Kernel TCP Teardown / Reset", bundle: bundle)
+        case .inbound: String(localized: "Inbound Unanswered Port", bundle: bundle)
         }
     }
 
-    var subtitle: String {
+    func subtitle(in bundle: Bundle) -> String {
         switch self {
-        case .arp: String(localized: "Local Mac & gateway Layer-2 MAC resolution")
-        case .ndp: String(localized: "ICMPv6 router advertisements & neighbor solicitation")
-        case .igmp: String(localized: "Kernel multicast group membership reports")
-        case .icmp: String(localized: "Echo ping & unreachable / TTL network diagnostics")
-        case .tcpTeardown: String(localized: "Late RST, FIN-ACK or TIME_WAIT handled by macOS kernel")
-        case .inbound: String(localized: "Unsolicited packet to a closed local port")
+        case .arp: String(localized: "Local Mac & gateway Layer-2 MAC resolution", bundle: bundle)
+        case .ndp: String(localized: "ICMPv6 router advertisements & neighbor solicitation", bundle: bundle)
+        case .igmp: String(localized: "Kernel multicast group membership reports", bundle: bundle)
+        case .icmp: String(localized: "Echo ping & unreachable / TTL network diagnostics", bundle: bundle)
+        case .tcpTeardown: String(localized: "Late RST, FIN-ACK or TIME_WAIT handled by macOS kernel", bundle: bundle)
+        case .inbound: String(localized: "Unsolicited packet to a closed local port", bundle: bundle)
         }
     }
 
-    var tableLabel: String {
+    func tableLabel(in bundle: Bundle) -> String {
         switch self {
-        case .arp: String(localized: "Kernel · ARP")
-        case .ndp: String(localized: "Kernel · IPv6 NDP")
-        case .igmp: String(localized: "Kernel · Multicast")
-        case .icmp: String(localized: "Kernel · ICMP")
-        case .tcpTeardown: String(localized: "Kernel · TCP Reset")
-        case .inbound: String(localized: "Kernel · Closed Port")
+        case .arp: String(localized: "Kernel · ARP", bundle: bundle)
+        case .ndp: String(localized: "Kernel · IPv6 NDP", bundle: bundle)
+        case .igmp: String(localized: "Kernel · Multicast", bundle: bundle)
+        case .icmp: String(localized: "Kernel · ICMP", bundle: bundle)
+        case .tcpTeardown: String(localized: "Kernel · TCP Reset", bundle: bundle)
+        case .inbound: String(localized: "Kernel · Closed Port", bundle: bundle)
         }
     }
 }
@@ -427,13 +431,13 @@ nonisolated private struct SubprocessAccumulator {
         }
     }
 
-    func buildSubprocessGroup() -> SourceSubprocessGroup {
+    func buildSubprocessGroup(bundle: Bundle) -> SourceSubprocessGroup {
         let subtitle: String?
         if delegatedViaNames.isEmpty {
             subtitle = baseSubtitle
         } else {
             let viaText = String(
-                format: String(localized: "via %@"),
+                format: String(localized: "via %@", bundle: bundle),
                 delegatedViaNames.prefix(2).joined(separator: ", ")
             )
             if let baseSubtitle, !baseSubtitle.isEmpty {
@@ -575,16 +579,19 @@ nonisolated private struct ItemAccumulator {
         }
     }
 
-    func buildItemGroup() -> SourceItemGroup {
+    func buildItemGroup(bundle: Bundle) -> SourceItemGroup {
         let mergedSubtitle: String? = if category == .app {
             viaProcessNames.isEmpty
                 ? nil
-                : String(format: String(localized: "via %@"), viaProcessNames.prefix(2).joined(separator: ", "))
+                : String(
+                    format: String(localized: "via %@", bundle: bundle),
+                    viaProcessNames.prefix(2).joined(separator: ", ")
+                )
         } else {
             baseSubtitle
         }
         let sortedSubprocesses = subprocessesByKey.values
-            .map { $0.buildSubprocessGroup() }
+            .map { $0.buildSubprocessGroup(bundle: bundle) }
             .sorted { lhs, rhs in
                 if lhs.count != rhs.count { return lhs.count > rhs.count }
                 if lhs.title != rhs.title { return lhs.title < rhs.title }
@@ -620,7 +627,8 @@ nonisolated enum SessionSourceClassifier {
         isViewingSavedCapture: Bool = false,
         resolvedNames: [String: String] = [:],
         homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
-        appBundleExistsLookup: (String) -> Bool = defaultAppBundleExists(_:)
+        appBundleExistsLookup: (String) -> Bool = defaultAppBundleExists(_:),
+        bundle: Bundle = .main
     )
         -> ClassifiedSessionSource
     {
@@ -631,56 +639,22 @@ nonisolated enum SessionSourceClassifier {
             isViewingSavedCapture: isViewingSavedCapture,
             normalizedResolvedNames: normalizeResolvedNames(resolvedNames),
             homeDirectoryPath: homeDirectoryPath,
-            appBundleExistsLookup: appBundleExistsLookup
+            appBundleExistsLookup: appBundleExistsLookup,
+            bundle: bundle
         )
     }
 
-    /// Aggregates sessions into ordered `SourceCategoryGroup` sections and sorted `SourceItemGroup` rows.
-    static func group(
-        sessions: [SessionSummary],
-        contextsBySessionID: [UUID: SessionProcessContext] = [:],
-        localIPs: Set<String> = [],
-        isViewingSavedCapture: Bool = false,
-        resolvedNames: [String: String] = [:],
-        includeEmptyCategories: Bool = false,
-        homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
-        appBundleExistsLookup: (String) -> Bool = defaultAppBundleExists(_:)
+    /// Pre-indexes the richest known provenance per `processName` so sticky-attributed
+    /// sessions whose per-session context was `nil` still inherit their process provenance.
+    /// If two sessions with the same binary name (e.g. `curl`) came from different callers,
+    /// strips caller-specific fields from the shared fallback so an unscoped session never
+    /// steals another caller's `hostAppName` or `callerKind`.
+    static func fallbackContextsByProcessName(
+        for sessions: [SessionSummary],
+        contextProvider: (SessionSummary) -> SessionProcessContext?
     )
-        -> [SourceCategoryGroup]
+        -> [String: SessionProcessContext]
     {
-        group(
-            sessions: sessions,
-            contextProvider: { contextsBySessionID[$0.id] },
-            localIPs: localIPs,
-            isViewingSavedCapture: isViewingSavedCapture,
-            resolvedNames: resolvedNames,
-            includeEmptyCategories: includeEmptyCategories,
-            homeDirectoryPath: homeDirectoryPath,
-            appBundleExistsLookup: appBundleExistsLookup
-        )
-    }
-
-    /// Aggregates sessions using a custom per-session `SessionProcessContext` lookup closure.
-    static func group(
-        sessions: [SessionSummary],
-        contextProvider: (SessionSummary) -> SessionProcessContext?,
-        localIPs: Set<String> = [],
-        isViewingSavedCapture: Bool = false,
-        resolvedNames: [String: String] = [:],
-        includeEmptyCategories: Bool = false,
-        homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
-        appBundleExistsLookup: (String) -> Bool = defaultAppBundleExists(_:)
-    )
-        -> [SourceCategoryGroup]
-    {
-        let normalizedLocal = normalizeIPSet(localIPs)
-        let normalizedNames = normalizeResolvedNames(resolvedNames)
-
-        // Pre-index richest known provenance per processName so sticky-attributed
-        // sessions whose per-session context was nil still inherit their process provenance.
-        // If two sessions with the same binary name (e.g. `curl`) came from different callers,
-        // strip caller-specific fields from the shared fallback so an unscoped session never
-        // steals another caller's `hostAppName` or `callerKind`.
         var fallbackContextByProcessName: [String: SessionProcessContext] = [:]
         var callerSignatureByProcessName: [String: String] = [:]
         var conflictingCallerProcesses: Set<String> = []
@@ -715,17 +689,86 @@ nonisolated enum SessionSourceClassifier {
                 fallbackContextByProcessName[name] = stripped
             }
         }
+        return fallbackContextByProcessName
+    }
+
+    /// Resolves the effective process context for `session`, returning `direct` when present
+    /// and otherwise falling back to `fallbacks` keyed by normalized process name.
+    static func effectiveProcessContext(
+        for session: SessionSummary,
+        direct: SessionProcessContext?,
+        fallbacks: [String: SessionProcessContext]
+    )
+        -> SessionProcessContext?
+    {
+        if let direct {
+            return direct
+        }
+        guard let name = normalizedProcessName(session.processName),
+              name != "kernel_task" else
+        {
+            return nil
+        }
+        return fallbacks[name]
+    }
+
+    /// Aggregates sessions into ordered `SourceCategoryGroup` sections and sorted `SourceItemGroup` rows.
+    static func group(
+        sessions: [SessionSummary],
+        contextsBySessionID: [UUID: SessionProcessContext] = [:],
+        localIPs: Set<String> = [],
+        isViewingSavedCapture: Bool = false,
+        resolvedNames: [String: String] = [:],
+        includeEmptyCategories: Bool = false,
+        homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
+        appBundleExistsLookup: (String) -> Bool = defaultAppBundleExists(_:),
+        bundle: Bundle = .main
+    )
+        -> [SourceCategoryGroup]
+    {
+        group(
+            sessions: sessions,
+            contextProvider: { contextsBySessionID[$0.id] },
+            localIPs: localIPs,
+            isViewingSavedCapture: isViewingSavedCapture,
+            resolvedNames: resolvedNames,
+            includeEmptyCategories: includeEmptyCategories,
+            homeDirectoryPath: homeDirectoryPath,
+            appBundleExistsLookup: appBundleExistsLookup,
+            bundle: bundle
+        )
+    }
+
+    /// Aggregates sessions using a custom per-session `SessionProcessContext` lookup closure.
+    static func group(
+        sessions: [SessionSummary],
+        contextProvider: (SessionSummary) -> SessionProcessContext?,
+        localIPs: Set<String> = [],
+        isViewingSavedCapture: Bool = false,
+        resolvedNames: [String: String] = [:],
+        includeEmptyCategories: Bool = false,
+        homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
+        appBundleExistsLookup: (String) -> Bool = defaultAppBundleExists(_:),
+        bundle: Bundle = .main
+    )
+        -> [SourceCategoryGroup]
+    {
+        let normalizedLocal = normalizeIPSet(localIPs)
+        let normalizedNames = normalizeResolvedNames(resolvedNames)
+
+        let fallbackContextByProcessName = fallbackContextsByProcessName(
+            for: sessions,
+            contextProvider: contextProvider
+        )
 
         var accumulatorsByKey: [String: ItemAccumulator] = [:]
         for session in sessions {
             let directContext = contextProvider(session)
-            let effectiveContext: SessionProcessContext? = if let directContext {
-                directContext
-            } else if let name = normalizedProcessName(session.processName) {
-                fallbackContextByProcessName[name]
-            } else {
-                nil
-            }
+            let effectiveContext = effectiveProcessContext(
+                for: session,
+                direct: directContext,
+                fallbacks: fallbackContextByProcessName
+            )
 
             let classified = classifyNormalized(
                 session,
@@ -734,7 +777,8 @@ nonisolated enum SessionSourceClassifier {
                 isViewingSavedCapture: isViewingSavedCapture,
                 normalizedResolvedNames: normalizedNames,
                 homeDirectoryPath: homeDirectoryPath,
-                appBundleExistsLookup: appBundleExistsLookup
+                appBundleExistsLookup: appBundleExistsLookup,
+                bundle: bundle
             )
 
             let richness = contextRichness(effectiveContext)
@@ -771,8 +815,8 @@ nonisolated enum SessionSourceClassifier {
                     category: isMain ? .app : .thirdPartyService,
                     title: origin,
                     baseSubtitle: isMain
-                        ? String(localized: "App Main Process")
-                        : String(localized: "App Helper Process"),
+                        ? String(localized: "App Main Process", bundle: bundle)
+                        : String(localized: "App Helper Process", bundle: bundle),
                     iconTitle: origin,
                     symbolName: isMain ? nil : "gearshape.2",
                     delegatedViaName: delegatedVia,
@@ -802,7 +846,11 @@ nonisolated enum SessionSourceClassifier {
                     filterKey: classified.filterKey,
                     category: .cli,
                     title: cmdName,
-                    baseSubtitle: embeddedCLISubprocessSubtitle(rawName: cmdName, context: effectiveContext),
+                    baseSubtitle: embeddedCLISubprocessSubtitle(
+                        rawName: cmdName,
+                        context: effectiveContext,
+                        bundle: bundle
+                    ),
                     iconTitle: cmdName,
                     symbolName: TrafficSourceCategory.cli.systemImage,
                     delegatedViaName: cliDelegatedVia,
@@ -814,7 +862,7 @@ nonisolated enum SessionSourceClassifier {
 
         var itemsByCategory: [TrafficSourceCategory: [SourceItemGroup]] = [:]
         for accumulator in accumulatorsByKey.values {
-            let item = accumulator.buildItemGroup()
+            let item = accumulator.buildItemGroup(bundle: bundle)
             itemsByCategory[item.category, default: []].append(item)
         }
 
@@ -841,23 +889,23 @@ nonisolated enum SessionSourceClassifier {
     /// Human-readable localized title for any `filterKey` (e.g. `"lan:mdns"` -> `"Bonjour / mDNS"`,
     /// `"app-proc:Antigravity:language_server_macos_arm"` -> `"Antigravity › language_server_macos_arm"`,
     /// `"cli:app:Antigravity:curl"` -> `"Antigravity · curl"`).
-    static func displayTitle(forFilterKey key: String) -> String {
+    static func displayTitle(forFilterKey key: String, bundle: Bundle = .main) -> String {
         if let lanKind = LanSubkind(filterKey: key) {
-            return lanKind.title
+            return lanKind.title(in: bundle)
         }
         if let kernelKind = KernelSubkind(filterKey: key) {
-            return kernelKind.title
+            return kernelKind.title(in: bundle)
         }
         switch parseFilterKey(key) {
         case .synthetic:
             let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty || trimmed == "—" {
-                return String(localized: "Unattributed")
+                return String(localized: "Unattributed", bundle: bundle)
             }
             return key
         case let .appProcess(app, origin):
             if origin == app {
-                return "\(app) (\(String(localized: "App Main Process")))"
+                return "\(app) (\(String(localized: "App Main Process", bundle: bundle)))"
             }
             return "\(app) › \(origin)"
         case let .cliApp(app, command):
@@ -866,14 +914,14 @@ nonisolated enum SessionSourceClassifier {
             return "\(command) · \(terminal)"
         case let .cliSystem(caller, command):
             if caller == "launchd" {
-                return "\(command) · \(String(localized: "System Call"))"
+                return "\(command) · \(String(localized: "System Call", bundle: bundle))"
             }
             return "\(command) · \(caller)"
         case let .cliDaemon(daemon, command):
             return "\(command) · \(daemon)"
         case let .namedProcessOrApp(name):
             let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? String(localized: "Unattributed") : trimmed
+            return trimmed.isEmpty ? String(localized: "Unattributed", bundle: bundle) : trimmed
         }
     }
 
@@ -890,14 +938,16 @@ nonisolated enum SessionSourceClassifier {
         session: SessionSummary,
         context: SessionProcessContext? = nil,
         localIPs: Set<String> = [],
-        isViewingSavedCapture: Bool = false
+        isViewingSavedCapture: Bool = false,
+        bundle: Bundle = .main
     )
         -> Bool
     {
         let matcher = makeFilterMatcher(
             for: filterKey,
             localIPs: localIPs,
-            isViewingSavedCapture: isViewingSavedCapture
+            isViewingSavedCapture: isViewingSavedCapture,
+            bundle: bundle
         )
         return matcher(session, context)
     }
@@ -908,7 +958,8 @@ nonisolated enum SessionSourceClassifier {
     static func makeFilterMatcher(
         for filterKey: String,
         localIPs: Set<String> = [],
-        isViewingSavedCapture: Bool = false
+        isViewingSavedCapture: Bool = false,
+        bundle: Bundle = .main
     )
         -> (SessionSummary, SessionProcessContext?) -> Bool
     {
@@ -945,7 +996,7 @@ nonisolated enum SessionSourceClassifier {
                 {
                     return false
                 }
-                return effectiveTerminalCallerName(context: context) == targetTerminal
+                return effectiveTerminalCallerName(context: context, bundle: bundle) == targetTerminal
             }
 
         case let .cliSystem(targetCaller, targetCommand):
@@ -1004,7 +1055,8 @@ nonisolated enum SessionSourceClassifier {
                     isViewingSavedCapture: isViewingSavedCapture,
                     normalizedResolvedNames: [:],
                     homeDirectoryPath: "",
-                    appBundleExistsLookup: { _ in false }
+                    appBundleExistsLookup: { _ in false },
+                    bundle: bundle
                 )
                 return classified.filterKey == syntheticKey
             }
@@ -1080,7 +1132,8 @@ nonisolated enum SessionSourceClassifier {
         isViewingSavedCapture: Bool,
         normalizedResolvedNames: [String: String],
         homeDirectoryPath: String,
-        appBundleExistsLookup: (String) -> Bool
+        appBundleExistsLookup: (String) -> Bool,
+        bundle: Bundle
     )
         -> ClassifiedSessionSource
     {
@@ -1094,7 +1147,7 @@ nonisolated enum SessionSourceClassifier {
         if isKernelTaskSession(rawName: rawName, context: context) {
             let subkind = classifyKernelSubkind(session, endpoints: endpoints, forceFallbackToTeardown: true)
                 ?? .tcpTeardown
-            return makeKernelSource(subkind: subkind, session: session)
+            return makeKernelSource(subkind: subkind, session: session, bundle: bundle)
         }
 
         if let rawName {
@@ -1103,14 +1156,16 @@ nonisolated enum SessionSourceClassifier {
                 session: session,
                 context: context,
                 homeDirectoryPath: homeDirectoryPath,
-                appBundleExistsLookup: appBundleExistsLookup
+                appBundleExistsLookup: appBundleExistsLookup,
+                bundle: bundle
             )
         }
 
         return classifyUnattributedSession(
             session,
             endpoints: endpoints,
-            normalizedResolvedNames: normalizedResolvedNames
+            normalizedResolvedNames: normalizedResolvedNames,
+            bundle: bundle
         )
     }
 
@@ -1128,7 +1183,8 @@ nonisolated enum SessionSourceClassifier {
         session: SessionSummary,
         context: SessionProcessContext?,
         homeDirectoryPath: String,
-        appBundleExistsLookup: (String) -> Bool
+        appBundleExistsLookup: (String) -> Bool,
+        bundle: Bundle
     )
         -> ClassifiedSessionSource
     {
@@ -1144,7 +1200,7 @@ nonisolated enum SessionSourceClassifier {
             context: context,
             appBundleExistsLookup: appBundleExistsLookup
         ) {
-            let subtitle = systemServiceSubtitle(rawName: rawName, executablePath: path)
+            let subtitle = systemServiceSubtitle(rawName: rawName, executablePath: path, bundle: bundle)
             return ClassifiedSessionSource(
                 category: .systemService,
                 filterKey: rawName,
@@ -1167,12 +1223,12 @@ nonisolated enum SessionSourceClassifier {
             let hasDistinctOrigin = explicitOrigin != nil && explicitOrigin != "—" && explicitOrigin != rawName
             let subtitle: String? = if let explicitOrigin, hasDistinctOrigin {
                 if let via, via != explicitOrigin {
-                    String(format: String(localized: "via %@"), "\(explicitOrigin), \(via)")
+                    String(format: String(localized: "via %@", bundle: bundle), "\(explicitOrigin), \(via)")
                 } else {
-                    String(format: String(localized: "via %@"), explicitOrigin)
+                    String(format: String(localized: "via %@", bundle: bundle), explicitOrigin)
                 }
             } else {
-                via.map { String(format: String(localized: "via %@"), $0) }
+                via.map { String(format: String(localized: "via %@", bundle: bundle), $0) }
             }
             let tableLabel = if let explicitOrigin, hasDistinctOrigin {
                 formattedAppProcessTableLabel(appTitle: rawName, originProcess: explicitOrigin)
@@ -1196,11 +1252,12 @@ nonisolated enum SessionSourceClassifier {
                 rawName: rawName,
                 executablePath: path,
                 context: context,
-                childTarget: child
+                childTarget: child,
+                bundle: bundle
             )
         }
 
-        let subtitle = thirdPartyServiceSubtitle(executablePath: path, context: context)
+        let subtitle = thirdPartyServiceSubtitle(executablePath: path, context: context, bundle: bundle)
         return ClassifiedSessionSource(
             category: .thirdPartyService,
             filterKey: rawName,
@@ -1261,7 +1318,12 @@ nonisolated enum SessionSourceClassifier {
         -> Bool
     {
         if let path = executablePath {
-            guard path.contains(".app/"), !path.hasPrefix("/System/Library/") else {
+            guard path.contains(".app/"),
+                  !path.hasPrefix("/System/Library/"),
+                  !path.contains(".framework/"),
+                  !path.hasPrefix("/Library/Developer/"),
+                  !path.contains(".xctoolchain/") else
+            {
                 return false
             }
             if path.hasPrefix("/Applications/")
@@ -1300,7 +1362,7 @@ nonisolated enum SessionSourceClassifier {
             {
                 return true
             }
-            return cliToolchainPathFragments.contains { path.contains($0) }
+            return cliToolchainPathFragments.contains { path.contains($0) } || isKnownCLICommand(rawName)
         }
         return isKnownCLICommand(rawName)
     }
@@ -1314,12 +1376,18 @@ nonisolated enum SessionSourceClassifier {
         rawName: String,
         executablePath: String?,
         context: SessionProcessContext?,
-        childTarget: SourceChildTarget?
+        childTarget: SourceChildTarget?,
+        bundle: Bundle
     )
         -> ClassifiedSessionSource
     {
         if let hostApp = effectiveEmbeddedHostApp(rawName: rawName, context: context) {
-            let subtitle = embeddedCLISidebarSubtitle(rawName: rawName, hostApp: hostApp, context: context)
+            let subtitle = embeddedCLISidebarSubtitle(
+                rawName: rawName,
+                hostApp: hostApp,
+                context: context,
+                bundle: bundle
+            )
             return ClassifiedSessionSource(
                 category: .cli,
                 filterKey: "cli:app:\(hostApp):\(rawName)",
@@ -1338,12 +1406,12 @@ nonisolated enum SessionSourceClassifier {
                 break
 
             case .terminal:
-                let terminal = effectiveTerminalCallerName(context: context)
+                let terminal = effectiveTerminalCallerName(context: context, bundle: bundle)
                 let shell = normalizedShellName(context?.viaShellName, excluding: rawName)
                 let subtitle = if let shell {
-                    String(format: String(localized: "Interactive terminal · via %@"), shell)
+                    String(format: String(localized: "Interactive terminal · via %@", bundle: bundle), shell)
                 } else {
-                    String(localized: "Interactive terminal")
+                    String(localized: "Interactive terminal", bundle: bundle)
                 }
                 return ClassifiedSessionSource(
                     category: .cli,
@@ -1361,22 +1429,26 @@ nonisolated enum SessionSourceClassifier {
                 let shell = normalizedShellName(context?.viaShellName, excluding: rawName)
                 let isDirectLaunchd = spawnerKey == "launchd"
                 let title = isDirectLaunchd
-                    ? "\(rawName) · \(String(localized: "System Call"))"
+                    ? "\(rawName) · \(String(localized: "System Call", bundle: bundle))"
                     : "\(rawName) · \(spawnerKey)"
                 let tableLabel = isDirectLaunchd
-                    ? "\(String(localized: "System")) · \(rawName)"
+                    ? "\(String(localized: "System", bundle: bundle)) · \(rawName)"
                     : "\(spawnerKey) · \(rawName)"
                 let subtitle: String = if isDirectLaunchd {
                     if let shell {
-                        String(format: String(localized: "Direct system call · via %@"), shell)
+                        String(format: String(localized: "Direct system call · via %@", bundle: bundle), shell)
                     } else {
-                        String(localized: "Direct system call")
+                        String(localized: "Direct system call", bundle: bundle)
                     }
                 } else {
                     if let shell {
-                        String(format: String(localized: "System service %@ · via %@"), spawnerKey, shell)
+                        String(
+                            format: String(localized: "System service %@ · via %@", bundle: bundle),
+                            spawnerKey,
+                            shell
+                        )
                     } else {
-                        String(format: String(localized: "Launched by system service %@"), spawnerKey)
+                        String(format: String(localized: "Launched by system service %@", bundle: bundle), spawnerKey)
                     }
                 }
                 return ClassifiedSessionSource(
@@ -1394,9 +1466,9 @@ nonisolated enum SessionSourceClassifier {
                 let daemon = effectiveDaemonCallerKey(rawName: rawName, context: context)
                 let shell = normalizedShellName(context?.viaShellName, excluding: rawName)
                 let subtitle = if let shell {
-                    String(format: String(localized: "Daemon %@ · via %@"), daemon, shell)
+                    String(format: String(localized: "Daemon %@ · via %@", bundle: bundle), daemon, shell)
                 } else {
-                    String(format: String(localized: "Launched by daemon %@"), daemon)
+                    String(format: String(localized: "Launched by daemon %@", bundle: bundle), daemon)
                 }
                 return ClassifiedSessionSource(
                     category: .cli,
@@ -1411,7 +1483,7 @@ nonisolated enum SessionSourceClassifier {
             }
         }
 
-        let subtitle = cliSubtitle(rawName: rawName, executablePath: executablePath, context: context)
+        let subtitle = cliSubtitle(rawName: rawName, executablePath: executablePath, context: context, bundle: bundle)
         return ClassifiedSessionSource(
             category: .cli,
             filterKey: rawName,
@@ -1427,27 +1499,29 @@ nonisolated enum SessionSourceClassifier {
     private static func embeddedCLISidebarSubtitle(
         rawName: String,
         hostApp: String,
-        context: SessionProcessContext?
+        context: SessionProcessContext?,
+        bundle: Bundle
     )
         -> String
     {
         let spawner = normalizedSpawnerName(context?.spawnerProcessName, excludingApp: hostApp, command: rawName)
         let shell = normalizedShellName(context?.viaShellName, excluding: rawName)
         if let spawner, let shell {
-            return String(format: String(localized: "Embedded · by %@ via %@"), spawner, shell)
+            return String(format: String(localized: "Embedded · by %@ via %@", bundle: bundle), spawner, shell)
         }
         if let spawner {
-            return String(format: String(localized: "Embedded · by %@"), spawner)
+            return String(format: String(localized: "Embedded · by %@", bundle: bundle), spawner)
         }
         if let shell {
-            return String(format: String(localized: "Embedded in %@ · via %@"), hostApp, shell)
+            return String(format: String(localized: "Embedded in %@ · via %@", bundle: bundle), hostApp, shell)
         }
-        return String(format: String(localized: "Embedded in %@"), hostApp)
+        return String(format: String(localized: "Embedded in %@", bundle: bundle), hostApp)
     }
 
     private static func embeddedCLISubprocessSubtitle(
         rawName: String,
-        context: SessionProcessContext?
+        context: SessionProcessContext?,
+        bundle: Bundle
     )
         -> String
     {
@@ -1455,57 +1529,77 @@ nonisolated enum SessionSourceClassifier {
         let spawner = normalizedSpawnerName(context?.spawnerProcessName, excludingApp: hostApp, command: rawName)
         let shell = normalizedShellName(context?.viaShellName, excluding: rawName)
         if let spawner, let shell {
-            return String(format: String(localized: "Embedded CLI · by %@ via %@"), spawner, shell)
+            return String(format: String(localized: "Embedded CLI · by %@ via %@", bundle: bundle), spawner, shell)
         }
         if let spawner {
-            return String(format: String(localized: "Embedded CLI · by %@"), spawner)
+            return String(format: String(localized: "Embedded CLI · by %@", bundle: bundle), spawner)
         }
         if let shell {
-            return String(format: String(localized: "Embedded CLI · via %@"), shell)
+            return String(format: String(localized: "Embedded CLI · via %@", bundle: bundle), shell)
         }
-        return String(localized: "Embedded CLI")
+        return String(localized: "Embedded CLI", bundle: bundle)
     }
 
-    private static func systemServiceSubtitle(rawName: String, executablePath: String?) -> String {
-        if let curated = curatedSystemDaemonSubtitle(for: rawName) {
+    private static func systemServiceSubtitle(
+        rawName: String,
+        executablePath: String?,
+        bundle: Bundle
+    )
+        -> String
+    {
+        if let curated = curatedSystemDaemonSubtitle(for: rawName, bundle: bundle) {
             return curated
         }
         if let path = executablePath {
             let basename = (path as NSString).lastPathComponent
-            if let curatedByBasename = curatedSystemDaemonSubtitle(for: basename) {
+            if let curatedByBasename = curatedSystemDaemonSubtitle(for: basename, bundle: bundle) {
                 return curatedByBasename
             }
             if let frameworkName = extractFrameworkName(from: path) {
-                return String(format: String(localized: "macOS %@ service"), frameworkName)
+                return String(format: String(localized: "macOS %@ service", bundle: bundle), frameworkName)
             }
         }
-        return String(localized: "macOS System Service")
+        return String(localized: "macOS System Service", bundle: bundle)
     }
 
-    private static func curatedSystemDaemonSubtitle(for name: String) -> String? {
+    private static func curatedSystemDaemonSubtitle(for name: String, bundle: Bundle) -> String? {
         switch name {
-        case "mDNSResponder", "_mdnsresponder": String(localized: "System DNS & Bonjour resolver")
-        case "usbmuxd", "remoted", "remotepairingd": String(localized: "iOS device wireless & USB mux")
-        case "AMPDeviceDiscoveryAgent": String(localized: "Apple device discovery service")
-        case "rapportd", "sharingd": String(localized: "AirDrop, Handoff & Continuity")
-        case "apsd": String(localized: "Apple Push Notification service")
-        case "trustd", "ocspd": String(localized: "TLS certificate trust & revocation")
-        case "cloudd", "bird", "nsurlsessiond": String(localized: "iCloud sync & background transfer")
+        case "mDNSResponder", "_mdnsresponder":
+            String(localized: "System DNS & Bonjour resolver", bundle: bundle)
+        case "usbmuxd", "remoted", "remotepairingd":
+            String(localized: "iOS device wireless & USB mux", bundle: bundle)
+        case "AMPDeviceDiscoveryAgent":
+            String(localized: "Apple device discovery service", bundle: bundle)
+        case "rapportd", "sharingd":
+            String(localized: "AirDrop, Handoff & Continuity", bundle: bundle)
+        case "apsd":
+            String(localized: "Apple Push Notification service", bundle: bundle)
+        case "trustd", "ocspd":
+            String(localized: "TLS certificate trust & revocation", bundle: bundle)
+        case "cloudd", "bird", "nsurlsessiond":
+            String(localized: "iCloud sync & background transfer", bundle: bundle)
         case "amsengagementd", "amsondevicestoraged", "appstoreagent", "appstored":
-            String(localized: "App Store & media account service")
-        case "softwareupdated": String(localized: "macOS Software Update service")
+            String(localized: "App Store & media account service", bundle: bundle)
+        case "softwareupdated":
+            String(localized: "macOS Software Update service", bundle: bundle)
         case "configd", "symptomsd", "WiFiAgent", "airportd",
              "nesessionmanager", "nehelper", "networkserviceproxy":
-            String(localized: "Network configuration & diagnostics")
-        case "identityservicesd", "imagent": String(localized: "iMessage & FaceTime identity")
-        case "timed": String(localized: "Network time synchronization")
-        case "locationd", "geod": String(localized: "Location & Maps service")
-        case "parsecd", "siriknowledged": String(localized: "Spotlight & Siri suggestions")
-        case "Control Center", "ControlCenter": String(localized: "macOS Control Center")
-        case "WindowServer", "loginwindow": String(localized: "macOS Window & Login session")
+            String(localized: "Network configuration & diagnostics", bundle: bundle)
+        case "identityservicesd", "imagent":
+            String(localized: "iMessage & FaceTime identity", bundle: bundle)
+        case "timed":
+            String(localized: "Network time synchronization", bundle: bundle)
+        case "locationd", "geod":
+            String(localized: "Location & Maps service", bundle: bundle)
+        case "parsecd", "siriknowledged":
+            String(localized: "Spotlight & Siri suggestions", bundle: bundle)
+        case "Control Center", "ControlCenter":
+            String(localized: "macOS Control Center", bundle: bundle)
+        case "WindowServer", "loginwindow":
+            String(localized: "macOS Window & Login session", bundle: bundle)
         case "chronod", "weatherd", "pkd",
              "CalendarWidgetExtension", "PhotosReliveWidget", "WallpaperAerialsExtension":
-            String(localized: "Widget & System Extension")
+            String(localized: "Widget & System Extension", bundle: bundle)
         default: nil
         }
     }
@@ -1522,51 +1616,58 @@ nonisolated enum SessionSourceClassifier {
     private static func cliSubtitle(
         rawName: String,
         executablePath: String?,
-        context: SessionProcessContext?
+        context: SessionProcessContext?,
+        bundle: Bundle
     )
         -> String
     {
         var parts: [String] = []
         if let path = executablePath {
             if path.hasPrefix("/opt/homebrew/") || path.hasPrefix("/usr/local/") {
-                parts.append(String(localized: "Homebrew CLI"))
+                parts.append(String(localized: "Homebrew CLI", bundle: bundle))
             } else if path.hasPrefix("/usr/bin/")
                 || path.hasPrefix("/bin/")
                 || path.hasPrefix("/sbin/")
                 || path.hasPrefix("/usr/sbin/")
             {
-                parts.append(String(localized: "System CLI"))
+                parts.append(String(localized: "System CLI", bundle: bundle))
             } else if path.hasPrefix("/Library/Developer/")
                 || cliToolchainPathFragments.contains(where: { path.contains($0) })
             {
-                parts.append(String(localized: "Developer Toolchain"))
+                parts.append(String(localized: "Developer Toolchain", bundle: bundle))
             } else if context?.hasControllingTTY == true {
-                parts.append(String(localized: "Terminal CLI"))
+                parts.append(String(localized: "Terminal CLI", bundle: bundle))
             }
         } else if context?.hasControllingTTY == true {
-            parts.append(String(localized: "Terminal CLI"))
+            parts.append(String(localized: "Terminal CLI", bundle: bundle))
         }
 
         if let parent = normalizedNonEmpty(context?.parentProcessName),
            !ignoredParentLauncherNames.contains(parent),
            parent != rawName
         {
-            parts.append(String(format: String(localized: "Launched by %@"), parent))
+            parts.append(String(format: String(localized: "Launched by %@", bundle: bundle), parent))
         }
-        return parts.isEmpty ? String(localized: "Terminal CLI") : parts.joined(separator: " · ")
+        return parts.isEmpty ? String(localized: "Terminal CLI", bundle: bundle) : parts.joined(separator: " · ")
     }
 
-    private static func thirdPartyServiceSubtitle(executablePath: String?, context: SessionProcessContext?) -> String {
+    private static func thirdPartyServiceSubtitle(
+        executablePath: String?,
+        context: SessionProcessContext?,
+        bundle: Bundle
+    )
+        -> String
+    {
         if executablePath?.contains("/Library/SystemExtensions/") == true {
-            return String(localized: "System Network Extension")
+            return String(localized: "System Network Extension", bundle: bundle)
         }
         if context?.isRootUser == true
             || executablePath?.hasPrefix("/Library/LaunchDaemons/") == true
             || executablePath?.hasPrefix("/Library/PrivilegedHelperTools/") == true
         {
-            return String(localized: "Root Background Daemon")
+            return String(localized: "Root Background Daemon", bundle: bundle)
         }
-        return String(localized: "Background Agent")
+        return String(localized: "Background Agent", bundle: bundle)
     }
 
     // MARK: Unattributed wire classification (Rule C)
@@ -1574,7 +1675,8 @@ nonisolated enum SessionSourceClassifier {
     private static func classifyUnattributedSession(
         _ session: SessionSummary,
         endpoints: ParsedEndpoints,
-        normalizedResolvedNames: [String: String]
+        normalizedResolvedNames: [String: String],
+        bundle: Bundle
     )
         -> ClassifiedSessionSource
     {
@@ -1582,47 +1684,81 @@ nonisolated enum SessionSourceClassifier {
 
         if protos.contains(.arp) {
             if endpoints.hasReliableLocalIPs, !endpoints.involvesLocal {
-                return makeLanSource(.arp, session: session, endpoints: endpoints, names: normalizedResolvedNames)
+                return makeLanSource(
+                    .arp,
+                    session: session,
+                    endpoints: endpoints,
+                    names: normalizedResolvedNames,
+                    bundle: bundle
+                )
             }
-            return makeKernelSource(subkind: .arp, session: session)
+            return makeKernelSource(subkind: .arp, session: session, bundle: bundle)
         }
 
         if protos.contains(.icmpv6) {
-            return makeKernelSource(subkind: classifyICMPv6Subkind(session, endpoints: endpoints), session: session)
+            return makeKernelSource(
+                subkind: classifyICMPv6Subkind(session, endpoints: endpoints),
+                session: session,
+                bundle: bundle
+            )
         }
         if protos.contains(.icmp) {
-            return makeKernelSource(subkind: .icmp, session: session)
+            return makeKernelSource(subkind: .icmp, session: session, bundle: bundle)
         }
         if isIPv4IGMP(session, endpoints: endpoints) {
-            return makeKernelSource(subkind: .igmp, session: session)
+            return makeKernelSource(subkind: .igmp, session: session, bundle: bundle)
         }
 
         if endpoints.hasReliableLocalIPs {
             let isDHCPTraffic = protos.contains(.dhcp) || endpoints.hasAnyPort(dhcpPorts)
             if isDHCPTraffic, !endpoints.srcIsLocal || endpoints.dstIsMulticastOrBroadcast {
-                return makeLanSource(.dhcp, session: session, endpoints: endpoints, names: normalizedResolvedNames)
+                return makeLanSource(
+                    .dhcp,
+                    session: session,
+                    endpoints: endpoints,
+                    names: normalizedResolvedNames,
+                    bundle: bundle
+                )
             }
             if (!endpoints.srcIsLocal && !endpoints.dstIsLocal)
                 || (!endpoints.srcIsLocal && endpoints.dstIsMulticastOrBroadcast)
             {
                 let subkind = classifyLiveLanSubkind(endpoints: endpoints)
-                return makeLanSource(subkind, session: session, endpoints: endpoints, names: normalizedResolvedNames)
+                return makeLanSource(
+                    subkind,
+                    session: session,
+                    endpoints: endpoints,
+                    names: normalizedResolvedNames,
+                    bundle: bundle
+                )
             }
             if endpoints.srcIsLocal, isDHCPTraffic {
-                return makeLanSource(.dhcp, session: session, endpoints: endpoints, names: normalizedResolvedNames)
+                return makeLanSource(
+                    .dhcp,
+                    session: session,
+                    endpoints: endpoints,
+                    names: normalizedResolvedNames,
+                    bundle: bundle
+                )
             }
         } else if let savedLan = classifySavedCaptureLanSubkind(endpoints: endpoints) {
-            return makeLanSource(savedLan, session: session, endpoints: endpoints, names: normalizedResolvedNames)
+            return makeLanSource(
+                savedLan,
+                session: session,
+                endpoints: endpoints,
+                names: normalizedResolvedNames,
+                bundle: bundle
+            )
         }
 
         if let kernelSubkind = classifyKernelSubkind(session, endpoints: endpoints, forceFallbackToTeardown: false) {
-            return makeKernelSource(subkind: kernelSubkind, session: session)
+            return makeKernelSource(subkind: kernelSubkind, session: session, bundle: bundle)
         }
 
         return ClassifiedSessionSource(
             category: .unattributed,
             filterKey: "—",
-            title: String(localized: "Unattributed"),
+            title: String(localized: "Unattributed", bundle: bundle),
             subtitle: nil,
             tableLabel: "—",
             tableDetail: nil,
@@ -1797,30 +1933,42 @@ nonisolated enum SessionSourceClassifier {
         _ subkind: LanSubkind,
         session: SessionSummary,
         endpoints: ParsedEndpoints,
-        names: [String: String]
+        names: [String: String],
+        bundle: Bundle
     )
         -> ClassifiedSessionSource
     {
         ClassifiedSessionSource(
             category: .lanDiscovery,
             filterKey: subkind.filterKey,
-            title: subkind.title,
-            subtitle: subkind.subtitle,
-            tableLabel: subkind.tableLabel,
-            tableDetail: subkind.subtitle,
+            title: subkind.title(in: bundle),
+            subtitle: subkind.subtitle(in: bundle),
+            tableLabel: subkind.tableLabel(in: bundle),
+            tableDetail: subkind.subtitle(in: bundle),
             symbolName: TrafficSourceCategory.lanDiscovery.systemImage,
-            childTarget: peerChildTarget(session: session, endpoints: endpoints, normalizedResolvedNames: names)
+            childTarget: peerChildTarget(
+                session: session,
+                endpoints: endpoints,
+                normalizedResolvedNames: names,
+                bundle: bundle
+            )
         )
     }
 
-    private static func makeKernelSource(subkind: KernelSubkind, session: SessionSummary) -> ClassifiedSessionSource {
+    private static func makeKernelSource(
+        subkind: KernelSubkind,
+        session: SessionSummary,
+        bundle: Bundle
+    )
+        -> ClassifiedSessionSource
+    {
         ClassifiedSessionSource(
             category: .kernelAndLink,
             filterKey: subkind.filterKey,
-            title: subkind.title,
-            subtitle: subkind.subtitle,
-            tableLabel: subkind.tableLabel,
-            tableDetail: subkind.subtitle,
+            title: subkind.title(in: bundle),
+            subtitle: subkind.subtitle(in: bundle),
+            tableLabel: subkind.tableLabel(in: bundle),
+            tableDetail: subkind.subtitle(in: bundle),
             symbolName: TrafficSourceCategory.kernelAndLink.systemImage,
             childTarget: hostChildTarget(for: session)
         )
@@ -1837,7 +1985,8 @@ nonisolated enum SessionSourceClassifier {
     private static func peerChildTarget(
         session: SessionSummary,
         endpoints: ParsedEndpoints,
-        normalizedResolvedNames: [String: String]
+        normalizedResolvedNames: [String: String],
+        bundle: Bundle
     )
         -> SourceChildTarget?
     {
@@ -1867,23 +2016,30 @@ nonisolated enum SessionSourceClassifier {
             return SourceChildTarget(
                 kind: .peerIP,
                 value: peerText,
-                label: "\(peerText) · \(String(localized: "LAN Gateway"))"
+                label: "\(peerText) · \(String(localized: "LAN Gateway", bundle: bundle))"
             )
         }
         return SourceChildTarget(kind: .peerIP, value: peerText, label: peerText)
     }
 
     private static func mdnsPeerNameHint(for peerIP: IPAddressValue, in session: SessionSummary) -> String? {
-        guard var query = normalizedNonEmpty(session.dnsQuery) else {
+        if !session.dnsResolvedBindings.isEmpty {
+            for binding in session.dnsResolvedBindings {
+                if IPAddressValue(parsing: binding.ip) == peerIP,
+                   let sanitized = DNSNameSanitizer.sanitizedHostname(binding.hostname)
+                {
+                    return sanitized
+                }
+            }
             return nil
         }
-        if query.hasSuffix(".") {
-            query.removeLast()
-        }
-        guard query.lowercased().hasSuffix(".local"), IPAddressValue(parsing: query) == nil else {
+        guard let rawQuery = normalizedNonEmpty(session.dnsQuery),
+              let sanitized = DNSNameSanitizer.sanitizedHostname(rawQuery),
+              sanitized.lowercased().hasSuffix(".local") else
+        {
             return nil
         }
-        return session.dnsAnswers.contains { parseBareIP($0) == peerIP } ? query : nil
+        return session.dnsAnswers.contains { parseBareIP($0) == peerIP } ? sanitized : nil
     }
 
     // MARK: Endpoint & IP helpers
@@ -2171,8 +2327,13 @@ nonisolated enum SessionSourceClassifier {
         return nil
     }
 
-    private static func effectiveTerminalCallerName(context: SessionProcessContext?) -> String {
-        normalizedNonEmpty(context?.parentProcessName) ?? String(localized: "Terminal")
+    private static func effectiveTerminalCallerName(
+        context: SessionProcessContext?,
+        bundle: Bundle
+    )
+        -> String
+    {
+        normalizedNonEmpty(context?.parentProcessName) ?? String(localized: "Terminal", bundle: bundle)
     }
 
     private static func effectiveSystemCallerKey(rawName: String, context: SessionProcessContext?) -> String {

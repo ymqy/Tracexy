@@ -229,6 +229,7 @@ enum ProjectSettingsSeeding {
             ProjectScopedSettingsKeys.mutedProtocols: [String](),
             ProjectScopedSettingsKeys.hiddenSourceApps: [String](),
             ProjectScopedSettingsKeys.hiddenSourceDomains: [String](),
+            ProjectScopedSettingsKeys.hiddenSourceLocalNames: [String](),
             ProjectScopedSettingsKeys.hiddenSourceIPs: [String](),
             ProjectScopedSettingsKeys.inspectorLayout: InspectorLayout.hidden.rawValue,
             ProjectScopedSettingsKeys.contextDockVisible: false,

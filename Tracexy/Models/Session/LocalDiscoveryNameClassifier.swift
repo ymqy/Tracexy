@@ -490,6 +490,30 @@ nonisolated enum LocalDiscoveryNameClassifier {
                 bundle: bundle
             )
         }
+        if lower == "home.arpa" {
+            return makeAnnotation(
+                kind: .specialSystemDNS,
+                cleanHost: cleanHost,
+                badgeTitle: String(localized: "Home LAN", bundle: bundle),
+                detailTitle: String(localized: "Residential home network domain (RFC 8375)", bundle: bundle),
+                symbolName: "house",
+                bundle: bundle
+            )
+        }
+        if hasNonEmptyPrefix(lower, beforeSuffix: ".home.arpa") {
+            let prefix = lower.dropLast(".home.arpa".count)
+            let labels = prefix.split(separator: ".", omittingEmptySubsequences: false)
+            if !labels.isEmpty, labels.allSatisfy({ !$0.isEmpty && !$0.hasPrefix("_") }) {
+                return makeAnnotation(
+                    kind: .localDeviceHost,
+                    cleanHost: cleanHost,
+                    badgeTitle: String(localized: "Home LAN", bundle: bundle),
+                    detailTitle: String(localized: "Home network device hostname (RFC 8375)", bundle: bundle),
+                    symbolName: "house",
+                    bundle: bundle
+                )
+            }
+        }
         return nil
     }
 

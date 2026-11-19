@@ -201,6 +201,7 @@ extension MainContentCoordinator {
         runtime.mutedProtocols = mutedProtocols
         runtime.hiddenSourceApps = hiddenSourceApps
         runtime.hiddenSourceDomains = hiddenSourceDomains
+        runtime.hiddenSourceLocalNames = hiddenSourceLocalNames
         runtime.hiddenSourceIPs = hiddenSourceIPs
 
         runtime.sessionStore = sessionStore
@@ -284,6 +285,7 @@ extension MainContentCoordinator {
         mutedProtocols = runtime.mutedProtocols
         hiddenSourceApps = runtime.hiddenSourceApps
         hiddenSourceDomains = runtime.hiddenSourceDomains
+        hiddenSourceLocalNames = runtime.hiddenSourceLocalNames
         hiddenSourceIPs = runtime.hiddenSourceIPs
 
         historyAvailability = runtime.historyAvailability
