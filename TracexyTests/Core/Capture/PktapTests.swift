@@ -958,6 +958,381 @@ struct PktapTests {
         #expect(selfInfo.uid == getuid())
         #expect(PktapHeader.inspectBSDProcess(pid: -1) == nil)
         #expect(PktapHeader.inspectBSDProcess(pid: 999_999) == nil)
+
+        let selfSnapshot = try #require(PktapHeader.inspectBSDProcessSnapshot(pid: getpid()))
+        #expect(selfSnapshot.ppid > 0)
+        #expect(selfSnapshot.uid == getuid())
+        #expect(selfSnapshot.startTimeSec > 0)
+        #expect(selfSnapshot.startTimeUsec >= 0)
+        #expect(selfSnapshot.startTimeUsec < 1_000_000)
+        #expect(selfSnapshot.basicInfo.ppid == selfInfo.ppid)
+        #expect(selfSnapshot.basicInfo.uid == selfInfo.uid)
+        #expect(selfSnapshot.basicInfo.hasTTY == selfInfo.hasTTY)
+        #expect(PktapHeader.inspectBSDProcessSnapshot(pid: -1) == nil)
+        #expect(PktapHeader.inspectBSDProcessSnapshot(pid: 999_999) == nil)
+    }
+
+    @Test
+    func attributionCacheDoesNotNegativeCacheShortLivedPIDAndResolvesFullAncestryOnReuse() throws {
+        let inner = [UInt8](repeating: 0x22, count: 40)
+        let reusedPID: Int32 = 8_100
+        var clock: UInt64 = 1_000_000_000
+
+        var execByPID: [Int32: String] = [:]
+        var bsdByPID: [Int32: PktapHeader.BSDProcessSnapshot] = [:]
+
+        var cache = PktapHeader.AttributionCache(
+            nowNanoseconds: { clock },
+            ttlNanoseconds: 10_000_000_000,
+            executablePathLookup: { execByPID[$0] },
+            bsdSnapshotLookup: { bsdByPID[$0] },
+            displayNameFromPath: { path in
+                if path.hasPrefix("/Applications/Antigravity.app/") {
+                    return "Antigravity"
+                }
+                return PktapHeader.displayName(fromExecutablePath: path)
+            },
+            bundleIdentifierFromPath: { path in
+                if path.hasPrefix("/Library/Frameworks/AcmeCLI.framework/") {
+                    return "com.example.acme.cli"
+                }
+                if path.hasPrefix("/Applications/Antigravity.app/") {
+                    return "com.amunx.antigravity"
+                }
+                return nil
+            },
+            outerMainExecutableFromAppPath: { appPath in
+                appPath == "/Applications/Antigravity.app" ? "Electron" : nil
+            }
+        )
+
+        // 1. Short-lived process has already exited (`execPath == nil && bsdSnapshot == nil`):
+        // falls back to `pth_comm` but MUST create zero negative entries in either cache.
+        let exitedPacket = makePktapPacket(
+            process: "shortlived",
+            pid: Int(reusedPID),
+            epid: Int(reusedPID),
+            effectiveProcess: "shortlived",
+            typeNext: PktapHeader.typeNextPacket,
+            interface: "en0",
+            innerDLT: 1,
+            frame: inner
+        )
+        let parsedExited = try #require(PktapHeader.parse(exitedPacket))
+        let exitedResult = cache.resolve(parsed: parsedExited)
+        #expect(exitedResult.processName == "shortlived")
+        #expect(exitedResult.provenance?.executablePath == nil)
+        #expect(exitedResult.provenance?.bundleIdentifier == nil)
+        #expect(cache.metadataCacheCount == 0)
+        #expect(cache.pairCacheCount == 0)
+
+        // 2. Immediately afterwards (well within TTL), macOS recycles `reusedPID` for a live
+        // process with a bundle ID and a full 12-hop ancestor chain rooted at Antigravity.app.
+        clock += 50_000_000
+        let leafExec = "/Library/Frameworks/AcmeCLI.framework/Versions/A/Helpers/acme-fetch"
+        let hostAppExec = "/Applications/Antigravity.app/Contents/MacOS/Electron"
+
+        // Build 12 ancestor hops above `reusedPID`:
+        // hop 1 (`8_101`): `/bin/zsh`
+        // hops 2..10 (`8_102`..`8_110`): `/usr/bin/env` (skipped launcher wrappers)
+        // hop 11 (`8_111`): `/opt/homebrew/bin/build-runner` (non-shell spawner)
+        // hop 12 (`8_112`): `/Applications/Antigravity.app/Contents/MacOS/Electron` (host app)
+        execByPID[reusedPID] = leafExec
+        bsdByPID[reusedPID] = PktapHeader.BSDProcessSnapshot(
+            ppid: 8_101, uid: 501, hasTTY: false, startTimeSec: 1_700_000_200, startTimeUsec: 11_000
+        )
+        execByPID[8_101] = "/bin/zsh"
+        bsdByPID[8_101] = PktapHeader.BSDProcessSnapshot(
+            ppid: 8_102, uid: 501, hasTTY: false, startTimeSec: 1_700_000_190, startTimeUsec: 10_000
+        )
+        for hop in 2 ... 10 {
+            let pid = Int32(8_100 + hop)
+            execByPID[pid] = "/usr/bin/env"
+            bsdByPID[pid] = PktapHeader.BSDProcessSnapshot(
+                ppid: pid + 1,
+                uid: 501,
+                hasTTY: false,
+                startTimeSec: 1_700_000_190 - Int64(hop),
+                startTimeUsec: 5_000
+            )
+        }
+        execByPID[8_111] = "/opt/homebrew/bin/build-runner"
+        bsdByPID[8_111] = PktapHeader.BSDProcessSnapshot(
+            ppid: 8_112, uid: 501, hasTTY: false, startTimeSec: 1_700_000_150, startTimeUsec: 2_000
+        )
+        execByPID[8_112] = hostAppExec
+        bsdByPID[8_112] = PktapHeader.BSDProcessSnapshot(
+            ppid: 1, uid: 501, hasTTY: false, startTimeSec: 1_700_000_100, startTimeUsec: 1_000
+        )
+
+        // Reuse the SAME PID (even with the same comm or a new comm) -> full attribution resolves.
+        let reusedPacket = makePktapPacket(
+            process: "shortlived",
+            pid: Int(reusedPID),
+            epid: Int(reusedPID),
+            effectiveProcess: "shortlived",
+            typeNext: PktapHeader.typeNextPacket,
+            interface: "en0",
+            innerDLT: 1,
+            frame: inner
+        )
+        let parsedReused = try #require(PktapHeader.parse(reusedPacket))
+        let reusedResult = cache.resolve(parsed: parsedReused)
+        #expect(reusedResult.processName == "acme-fetch")
+        #expect(reusedResult.provenance == ProcessProvenance(
+            executablePath: leafExec,
+            bundleIdentifier: "com.example.acme.cli",
+            viaProcessName: nil,
+            parentProcessName: "Antigravity",
+            originProcessName: "acme-fetch",
+            hostAppName: "Antigravity",
+            spawnerProcessName: "build-runner",
+            viaShellName: "zsh",
+            callerKind: .app,
+            hasControllingTTY: false,
+            isRootUser: false,
+            isKernelTask: false
+        ))
+        #expect(cache.pairCacheCount == 1)
+        #expect(cache.metadataCacheCount == 13)
+    }
+
+    @Test
+    func attributionCacheRefreshesSamePIDAfterExecveWithIdenticalStartTime() throws {
+        let inner = [UInt8](repeating: 0x33, count: 40)
+        let pid: Int32 = 6_001
+        let terminalPID: Int32 = 6_000
+        let sameStartSec: Int64 = 1_700_000_500
+        let sameStartUsec: Int32 = 77_000
+        var clock: UInt64 = 2_000_000_000
+
+        let itermExec = "/Applications/iTerm.app/Contents/MacOS/iTerm2"
+        var execByPID: [Int32: String] = [
+            pid: "/bin/zsh",
+            terminalPID: itermExec,
+        ]
+        let bsdByPID: [Int32: PktapHeader.BSDProcessSnapshot] = [
+            pid: PktapHeader.BSDProcessSnapshot(
+                ppid: terminalPID,
+                uid: 501,
+                hasTTY: true,
+                startTimeSec: sameStartSec,
+                startTimeUsec: sameStartUsec
+            ),
+            terminalPID: PktapHeader.BSDProcessSnapshot(
+                ppid: 1,
+                uid: 501,
+                hasTTY: false,
+                startTimeSec: 1_700_000_010,
+                startTimeUsec: 1_000
+            ),
+        ]
+
+        var cache = PktapHeader.AttributionCache(
+            nowNanoseconds: { clock },
+            ttlNanoseconds: 10_000_000_000,
+            executablePathLookup: { execByPID[$0] },
+            bsdSnapshotLookup: { bsdByPID[$0] },
+            displayNameFromPath: { path in
+                path == itermExec ? "iTerm2" : PktapHeader.displayName(fromExecutablePath: path)
+            },
+            bundleIdentifierFromPath: { path in
+                path == itermExec ? "com.googlecode.iterm2" : nil
+            },
+            outerMainExecutableFromAppPath: { _ in "iTerm2" }
+        )
+
+        // 1. Before `execve`: shell `zsh` owns PID 6001.
+        let zshPacket = makePktapPacket(
+            process: "zsh",
+            pid: Int(pid),
+            epid: Int(pid),
+            effectiveProcess: "zsh",
+            typeNext: PktapHeader.typeNextPacket,
+            interface: "en0",
+            innerDLT: 1,
+            frame: inner
+        )
+        let parsedZsh = try #require(PktapHeader.parse(zshPacket))
+        let zshResult = cache.resolve(parsed: parsedZsh)
+        #expect(zshResult.processName == "zsh")
+        #expect(zshResult.provenance?.executablePath == "/bin/zsh")
+        #expect(zshResult.provenance?.callerKind == .terminal)
+        #expect(zshResult.provenance?.parentProcessName == "iTerm2")
+
+        // 2. `zsh` calls `execve("/usr/bin/curl")`: SAME PID, SAME `p_starttime`,
+        // NEW `parsed.process` and NEW `executablePath`, well inside TTL.
+        clock += 200_000_000
+        execByPID[pid] = "/usr/bin/curl"
+
+        let curlPacket = makePktapPacket(
+            process: "curl",
+            pid: Int(pid),
+            epid: Int(pid),
+            effectiveProcess: "curl",
+            typeNext: PktapHeader.typeNextPacket,
+            interface: "en0",
+            innerDLT: 1,
+            frame: inner
+        )
+        let parsedCurl = try #require(PktapHeader.parse(curlPacket))
+        let curlResult = cache.resolve(parsed: parsedCurl)
+        #expect(curlResult.processName == "curl")
+        #expect(curlResult.provenance?.executablePath == "/usr/bin/curl")
+        #expect(curlResult.provenance?.originProcessName == "curl")
+        #expect(curlResult.provenance?.callerKind == .terminal)
+        #expect(curlResult.provenance?.parentProcessName == "iTerm2")
+    }
+
+    @Test
+    func attributionCacheRefreshesOnStartTimeChangeAndTTLExpirationForReusedPIDsAndAncestors() throws {
+        let inner = [UInt8](repeating: 0x44, count: 40)
+        let leafPID: Int32 = 7_500
+        let parentPID: Int32 = 7_400
+        let itermPID: Int32 = 7_100
+        let idePID: Int32 = 7_200
+        let ttl: UInt64 = 10_000_000_000
+        var clock: UInt64 = 5_000_000_000
+        var execLookupCount = 0
+
+        let itermExec = "/Applications/iTerm.app/Contents/MacOS/iTerm2"
+        let ideExec = "/Applications/Antigravity.app/Contents/MacOS/Antigravity"
+
+        var execByPID: [Int32: String] = [
+            leafPID: "/usr/bin/curl",
+            parentPID: "/bin/zsh",
+            itermPID: itermExec,
+            idePID: ideExec,
+        ]
+        var bsdByPID: [Int32: PktapHeader.BSDProcessSnapshot] = [
+            leafPID: PktapHeader.BSDProcessSnapshot(
+                ppid: parentPID, uid: 501, hasTTY: true, startTimeSec: 1_700_001_000, startTimeUsec: 100
+            ),
+            parentPID: PktapHeader.BSDProcessSnapshot(
+                ppid: itermPID, uid: 501, hasTTY: true, startTimeSec: 1_700_000_900, startTimeUsec: 200
+            ),
+            itermPID: PktapHeader.BSDProcessSnapshot(
+                ppid: 1, uid: 501, hasTTY: false, startTimeSec: 1_700_000_100, startTimeUsec: 300
+            ),
+            idePID: PktapHeader.BSDProcessSnapshot(
+                ppid: 1, uid: 501, hasTTY: false, startTimeSec: 1_700_000_200, startTimeUsec: 400
+            ),
+        ]
+
+        var cache = PktapHeader.AttributionCache(
+            nowNanoseconds: { clock },
+            ttlNanoseconds: ttl,
+            executablePathLookup: { pid in
+                execLookupCount += 1
+                return execByPID[pid]
+            },
+            bsdSnapshotLookup: { bsdByPID[$0] },
+            displayNameFromPath: { path in
+                switch path {
+                case itermExec: "iTerm2"
+                case ideExec: "Antigravity"
+                default: PktapHeader.displayName(fromExecutablePath: path)
+                }
+            },
+            bundleIdentifierFromPath: { path in
+                switch path {
+                case itermExec: "com.googlecode.iterm2"
+                case ideExec: "com.amunx.antigravity"
+                default: nil
+                }
+            },
+            outerMainExecutableFromAppPath: { appPath in
+                switch appPath {
+                case "/Applications/iTerm.app": "iTerm2"
+                case "/Applications/Antigravity.app": "Antigravity"
+                default: nil
+                }
+            }
+        )
+
+        let curlPacket = makePktapPacket(
+            process: "curl",
+            pid: Int(leafPID),
+            epid: Int(leafPID),
+            effectiveProcess: "curl",
+            typeNext: PktapHeader.typeNextPacket,
+            interface: "en0",
+            innerDLT: 1,
+            frame: inner
+        )
+        let parsedCurl = try #require(PktapHeader.parse(curlPacket))
+
+        // 1. Cold miss resolves `curl` under `iTerm2` via `zsh`.
+        let first = cache.resolve(parsed: parsedCurl)
+        #expect(first.processName == "curl")
+        #expect(first.provenance?.callerKind == .terminal)
+        #expect(first.provenance?.parentProcessName == "iTerm2")
+        #expect(first.provenance?.viaShellName == "zsh")
+        let lookupsAfterColdMiss = execLookupCount
+        #expect(lookupsAfterColdMiss == 3)
+
+        // 2. Warm hit within TTL with unchanged `startTime` avoids `executablePathLookup`.
+        clock += 1_000_000_000
+        let warmHit = cache.resolve(parsed: parsedCurl)
+        #expect(warmHit == first)
+        #expect(execLookupCount == lookupsAfterColdMiss)
+
+        // 3. Same PID reused with the SAME process name (`curl`), STILL within TTL,
+        //    but `startTimeUsec` changed and parent is now `Antigravity` (direct `.app` host).
+        clock += 1_000_000_000
+        execByPID[leafPID] = "/opt/homebrew/bin/curl"
+        bsdByPID[leafPID] = PktapHeader.BSDProcessSnapshot(
+            ppid: idePID, uid: 501, hasTTY: false, startTimeSec: 1_700_001_000, startTimeUsec: 999
+        )
+        let recycledSameName = cache.resolve(parsed: parsedCurl)
+        #expect(recycledSameName.processName == "curl")
+        #expect(recycledSameName.provenance?.executablePath == "/opt/homebrew/bin/curl")
+        #expect(recycledSameName.provenance?.callerKind == .app)
+        #expect(recycledSameName.provenance?.hostAppName == "Antigravity")
+        #expect(recycledSameName.provenance?.viaShellName == nil)
+        #expect(recycledSameName.provenance?.hasControllingTTY == false)
+
+        // 4. Ancestor PID `parentPID` is recycled within TTL (`startTimeSec` changed, now `node`
+        //    under `Antigravity`), and a new child PID `7_501` points to `parentPID`.
+        clock += 500_000_000
+        let childPID: Int32 = 7_501
+        execByPID[parentPID] = "/opt/homebrew/bin/node"
+        bsdByPID[parentPID] = PktapHeader.BSDProcessSnapshot(
+            ppid: idePID, uid: 501, hasTTY: false, startTimeSec: 1_700_002_000, startTimeUsec: 55
+        )
+        execByPID[childPID] = "/usr/bin/curl"
+        bsdByPID[childPID] = PktapHeader.BSDProcessSnapshot(
+            ppid: parentPID, uid: 501, hasTTY: false, startTimeSec: 1_700_002_100, startTimeUsec: 66
+        )
+        let childPacket = makePktapPacket(
+            process: "curl",
+            pid: Int(childPID),
+            epid: Int(childPID),
+            effectiveProcess: "curl",
+            typeNext: PktapHeader.typeNextPacket,
+            interface: "en0",
+            innerDLT: 1,
+            frame: inner
+        )
+        let parsedChild = try #require(PktapHeader.parse(childPacket))
+        let childResult = cache.resolve(parsed: parsedChild)
+        #expect(childResult.provenance?.hostAppName == "Antigravity")
+        #expect(childResult.provenance?.spawnerProcessName == "node")
+        #expect(childResult.provenance?.viaShellName == nil)
+
+        // 5. After `ttlNanoseconds` elapses, even a same-name + same-startTime entry expires
+        //    and refreshes cleanly to pick up new metadata & ancestry.
+        clock += ttl
+        execByPID[leafPID] = "/usr/bin/python3"
+        bsdByPID[leafPID] = PktapHeader.BSDProcessSnapshot(
+            ppid: 1, uid: 0, hasTTY: false, startTimeSec: 1_700_001_000, startTimeUsec: 999
+        )
+        let afterTTL = cache.resolve(parsed: parsedCurl)
+        #expect(afterTTL.processName == "python3")
+        #expect(afterTTL.provenance?.executablePath == "/usr/bin/python3")
+        #expect(afterTTL.provenance?.isRootUser == true)
+        #expect(afterTTL.provenance?.callerKind == .system)
+        #expect(afterTTL.provenance?.hostAppName == nil)
     }
 
     @Test

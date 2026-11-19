@@ -292,9 +292,24 @@ nonisolated enum PktapHeader {
         return displayName(fromExecutablePath: path)
     }
 
-    /// Inspects live BSD process credentials and controlling terminal state via
-    /// `Darwin.sysctl` (`[CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]`, `kinfo_proc`).
-    static func inspectBSDProcess(pid: Int32) -> (ppid: Int32, uid: UInt32, hasTTY: Bool)? {
+    /// Live BSD process snapshot from `sysctl` (`KERN_PROC_PID`, `kinfo_proc`),
+    /// including kernel process start time (`p_starttime`) to detect PID reuse.
+    struct BSDProcessSnapshot: Equatable, Hashable, Sendable {
+        let ppid: Int32
+        let uid: UInt32
+        let hasTTY: Bool
+        let startTimeSec: Int64
+        let startTimeUsec: Int32
+
+        var basicInfo: (ppid: Int32, uid: UInt32, hasTTY: Bool) {
+            (ppid: ppid, uid: uid, hasTTY: hasTTY)
+        }
+    }
+
+    /// Inspects live BSD process credentials, controlling terminal state, and
+    /// kernel process start time (`p_starttime`) via `Darwin.sysctl`
+    /// (`[CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]`, `kinfo_proc`).
+    static func inspectBSDProcessSnapshot(pid: Int32) -> BSDProcessSnapshot? {
         guard pid > 0 else {
             return nil
         }
@@ -310,7 +325,20 @@ nonisolated enum PktapHeader {
         let nodev = dev_t(-1)
         let tdev = kp.kp_eproc.e_tdev
         let hasTTY = tdev != nodev && tdev != 0
-        return (ppid: ppid, uid: uid, hasTTY: hasTTY)
+        let startTime = kp.kp_proc.p_un.__p_starttime
+        return BSDProcessSnapshot(
+            ppid: ppid,
+            uid: uid,
+            hasTTY: hasTTY,
+            startTimeSec: Int64(startTime.tv_sec),
+            startTimeUsec: Int32(startTime.tv_usec)
+        )
+    }
+
+    /// Inspects live BSD process credentials and controlling terminal state via
+    /// `Darwin.sysctl` (`[CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]`, `kinfo_proc`).
+    static func inspectBSDProcess(pid: Int32) -> (ppid: Int32, uid: UInt32, hasTTY: Bool)? {
+        inspectBSDProcessSnapshot(pid: pid)?.basicInfo
     }
 
     /// Resolves the `CFBundleIdentifier` of the outermost `.app` bundle (or outer
@@ -759,6 +787,330 @@ nonisolated enum PktapHeader {
             isKernelTask: false
         )
         return (processName: primaryName, provenance: provenance)
+    }
+
+    /// Monotonic TTL + process-identity-validated cache for per-packet `pktap`
+    /// attribution and multi-hop ancestor resolution.
+    ///
+    /// Thread-local to a capture loop (no internal locking) with injectable
+    /// clock and lookup closures for deterministic unit testing.
+    struct AttributionCache {
+        // MARK: Lifecycle
+
+        init(
+            nowNanoseconds: @escaping () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
+            ttlNanoseconds: UInt64 = defaultTTLNanoseconds,
+            maxEntries: Int = defaultMaxEntries,
+            executablePathLookup: @escaping (Int32) -> String? = PktapHeader.executablePath(forPID:),
+            bsdSnapshotLookup: @escaping (Int32) -> BSDProcessSnapshot? = PktapHeader.inspectBSDProcessSnapshot(pid:),
+            displayNameFromPath: @escaping (String) -> String? = PktapHeader.displayName(fromExecutablePath:),
+            bundleIdentifierFromPath: @escaping (String) -> String? = { PktapHeader.bundleIdentifier(fromExecutablePath: $0) },
+            outerMainExecutableFromAppPath: @escaping (String) -> String? = PktapHeader.bundleExecutableName(atBundlePath:)
+        ) {
+            self.nowNanoseconds = nowNanoseconds
+            self.ttlNanoseconds = ttlNanoseconds
+            self.maxEntries = max(1, maxEntries)
+            self.executablePathLookup = executablePathLookup
+            self.bsdSnapshotLookup = bsdSnapshotLookup
+            self.displayNameFromPath = displayNameFromPath
+            self.bundleIdentifierFromPath = bundleIdentifierFromPath
+            self.outerMainExecutableFromAppPath = outerMainExecutableFromAppPath
+        }
+
+        // MARK: Internal
+
+        struct Result: Equatable, Sendable {
+            let processName: String?
+            let provenance: ProcessProvenance?
+        }
+
+        static let defaultTTLNanoseconds: UInt64 = 10_000_000_000
+        static let defaultMaxEntries = 2_048
+
+        let ttlNanoseconds: UInt64
+        let maxEntries: Int
+
+        var pairCacheCount: Int { pidPairCache.count }
+        var metadataCacheCount: Int { pidMetadataCache.count }
+
+        mutating func resolve(parsed: Parsed) -> Result {
+            if parsed.pid == 0, parsed.effectivePID <= 0 {
+                let kernel = PktapHeader.resolveAttribution(parsed: parsed)
+                return Result(processName: kernel.processName, provenance: kernel.provenance)
+            }
+
+            let now = nowNanoseconds()
+            let hasLiveCandidatePID = parsed.pid > 0 || parsed.effectivePID > 0
+            let pair = PIDPair(
+                pid: parsed.pid,
+                effectivePID: parsed.effectivePID,
+                process: PktapHeader.trimmedNonEmpty(parsed.process),
+                effectiveProcess: PktapHeader.trimmedNonEmpty(parsed.effectiveProcess)
+            )
+
+            if hasLiveCandidatePID, let cached = pidPairCache[pair] {
+                if isPairEntryValid(cached, for: pair, now: now) {
+                    return cached.result
+                }
+                pidPairCache.removeValue(forKey: pair)
+            }
+
+            // Evict leaf PIDs before warming ancestors so `execve` on the same PID
+            // (where `p_starttime` stays identical while `executablePath` & `comm`
+            // change) and PID reuse always re-read fresh leaf metadata.
+            if parsed.effectivePID > 0 {
+                pidMetadataCache.removeValue(forKey: parsed.effectivePID)
+            }
+            if parsed.pid > 0 {
+                pidMetadataCache.removeValue(forKey: parsed.pid)
+            }
+
+            var pathMetadata: [String: CachedPIDMetadata] = [:]
+            var resolvedPIDs: [Int32: CachedPIDMetadata] = [:]
+            if parsed.effectivePID > 0 {
+                warmAncestorMetadata(
+                    startingAt: parsed.effectivePID,
+                    now: now,
+                    pathMetadata: &pathMetadata,
+                    resolvedPIDs: &resolvedPIDs
+                )
+            }
+            if parsed.pid > 0, parsed.pid != parsed.effectivePID {
+                warmAncestorMetadata(
+                    startingAt: parsed.pid,
+                    now: now,
+                    pathMetadata: &pathMetadata,
+                    resolvedPIDs: &resolvedPIDs
+                )
+            }
+
+            let resolved = PktapHeader.resolveAttribution(
+                parsed: parsed,
+                executablePathLookup: { resolvedPIDs[$0]?.executablePath },
+                bsdProcessLookup: { resolvedPIDs[$0]?.bsdSnapshot?.basicInfo },
+                displayNameFromPath: { path in
+                    if let meta = pathMetadata[path] {
+                        return meta.displayName
+                    }
+                    return displayNameFromPath(path)
+                },
+                bundleIdentifierFromPath: { path in
+                    if let meta = pathMetadata[path] {
+                        return meta.bundleIdentifier
+                    }
+                    return bundleIdentifierFromPath(path)
+                },
+                outerMainExecutableFromAppPath: { appPath in
+                    for meta in pathMetadata.values {
+                        if let execPath = meta.executablePath,
+                           PktapHeader.outermostAppBundlePath(fromExecutablePath: execPath) == appPath
+                        {
+                            return meta.outerMainExecutable
+                        }
+                    }
+                    return outerMainExecutableFromAppPath(appPath)
+                }
+            )
+            let result = Result(processName: resolved.processName, provenance: resolved.provenance)
+
+            // Never cache dead-leaf fallbacks in `pidPairCache`: only cache when
+            // at least one positive candidate leaf PID resolved live metadata.
+            let effectiveMeta = parsed.effectivePID > 0 ? resolvedPIDs[parsed.effectivePID] : nil
+            let directMeta = parsed.pid > 0 ? resolvedPIDs[parsed.pid] : nil
+            if hasLiveCandidatePID, effectiveMeta != nil || directMeta != nil {
+                if pidPairCache.count >= maxEntries {
+                    pidPairCache.removeAll(keepingCapacity: true)
+                }
+                pidPairCache[pair] = CachedAttributionEntry(
+                    result: result,
+                    capturedAtNanoseconds: now,
+                    pidStartTime: directMeta?.startTime,
+                    effectivePIDStartTime: effectiveMeta?.startTime
+                )
+            }
+            return result
+        }
+
+        // MARK: Private
+
+        private struct ProcessStartTime: Equatable, Hashable, Sendable {
+            let sec: Int64
+            let usec: Int32
+        }
+
+        private struct PIDPair: Hashable {
+            let pid: Int32
+            let effectivePID: Int32
+            let process: String?
+            let effectiveProcess: String?
+        }
+
+        private struct CachedAttributionEntry {
+            let result: Result
+            let capturedAtNanoseconds: UInt64
+            let pidStartTime: ProcessStartTime?
+            let effectivePIDStartTime: ProcessStartTime?
+        }
+
+        private struct CachedPIDMetadata {
+            let executablePath: String?
+            let displayName: String?
+            let bundleIdentifier: String?
+            let outerMainExecutable: String?
+            var bsdSnapshot: BSDProcessSnapshot?
+            let capturedAtNanoseconds: UInt64
+
+            var startTime: ProcessStartTime? {
+                bsdSnapshot.map { ProcessStartTime(sec: $0.startTimeSec, usec: $0.startTimeUsec) }
+            }
+        }
+
+        private let nowNanoseconds: () -> UInt64
+        private let executablePathLookup: (Int32) -> String?
+        private let bsdSnapshotLookup: (Int32) -> BSDProcessSnapshot?
+        private let displayNameFromPath: (String) -> String?
+        private let bundleIdentifierFromPath: (String) -> String?
+        private let outerMainExecutableFromAppPath: (String) -> String?
+
+        private var pidPairCache: [PIDPair: CachedAttributionEntry] = [:]
+        private var pidMetadataCache: [Int32: CachedPIDMetadata] = [:]
+
+        private func isPairEntryValid(
+            _ entry: CachedAttributionEntry,
+            for pair: PIDPair,
+            now: UInt64
+        )
+            -> Bool
+        {
+            guard now &- entry.capturedAtNanoseconds < ttlNanoseconds else {
+                return false
+            }
+            if pair.effectivePID > 0,
+               !matchesLeafStartTime(pid: pair.effectivePID, recorded: entry.effectivePIDStartTime)
+            {
+                return false
+            }
+            if pair.pid > 0,
+               pair.pid != pair.effectivePID,
+               !matchesLeafStartTime(pid: pair.pid, recorded: entry.pidStartTime)
+            {
+                return false
+            }
+            return true
+        }
+
+        private func matchesLeafStartTime(pid: Int32, recorded: ProcessStartTime?) -> Bool {
+            let liveSnapshot = bsdSnapshotLookup(pid)
+            let liveStartTime = liveSnapshot.map {
+                ProcessStartTime(sec: $0.startTimeSec, usec: $0.startTimeUsec)
+            }
+            switch (recorded, liveStartTime) {
+            case let (cached?, live?):
+                return cached == live
+            case (_?, nil):
+                // Process exited after sending buffered frames; keep the fresh
+                // within-TTL attribution until the PID is recycled or TTL expires.
+                return true
+            case (nil, _?):
+                // Process now has a live BSD snapshot where none existed before.
+                return false
+            case (nil, nil):
+                return true
+            }
+        }
+
+        private mutating func cachedMetadata(for pid: Int32, now: UInt64) -> CachedPIDMetadata? {
+            guard pid > 0 else {
+                return nil
+            }
+
+            var probedSnapshot: BSDProcessSnapshot?
+            var hasProbedSnapshot = false
+
+            if let existing = pidMetadataCache[pid] {
+                if now &- existing.capturedAtNanoseconds < ttlNanoseconds {
+                    let liveSnapshot = bsdSnapshotLookup(pid)
+                    probedSnapshot = liveSnapshot
+                    hasProbedSnapshot = true
+
+                    if let existingStartTime = existing.startTime {
+                        if let liveSnapshot,
+                           ProcessStartTime(sec: liveSnapshot.startTimeSec, usec: liveSnapshot.startTimeUsec)
+                               == existingStartTime
+                        {
+                            if liveSnapshot == existing.bsdSnapshot {
+                                return existing
+                            }
+                            var updated = existing
+                            updated.bsdSnapshot = liveSnapshot
+                            pidMetadataCache[pid] = updated
+                            return updated
+                        }
+                        pidMetadataCache.removeValue(forKey: pid)
+                    } else if liveSnapshot == nil {
+                        return existing
+                    } else {
+                        pidMetadataCache.removeValue(forKey: pid)
+                    }
+                } else {
+                    pidMetadataCache.removeValue(forKey: pid)
+                }
+            }
+
+            let execPath = PktapHeader.trimmedNonEmpty(executablePathLookup(pid))
+            let bsdSnapshot = hasProbedSnapshot ? probedSnapshot : bsdSnapshotLookup(pid)
+            // Never negative-cache exited/missing PIDs.
+            guard execPath != nil || bsdSnapshot != nil else {
+                pidMetadataCache.removeValue(forKey: pid)
+                return nil
+            }
+
+            let displayName = execPath.flatMap(displayNameFromPath)
+            let bundleIdentifier = execPath.flatMap(bundleIdentifierFromPath)
+            let outerMainExecutable = execPath
+                .flatMap(PktapHeader.outermostAppBundlePath(fromExecutablePath:))
+                .flatMap(outerMainExecutableFromAppPath)
+            let entry = CachedPIDMetadata(
+                executablePath: execPath,
+                displayName: displayName,
+                bundleIdentifier: bundleIdentifier,
+                outerMainExecutable: outerMainExecutable,
+                bsdSnapshot: bsdSnapshot,
+                capturedAtNanoseconds: now
+            )
+            if pidMetadataCache.count >= maxEntries {
+                pidMetadataCache.removeAll(keepingCapacity: true)
+            }
+            pidMetadataCache[pid] = entry
+            return entry
+        }
+
+        private mutating func warmAncestorMetadata(
+            startingAt startPID: Int32,
+            now: UInt64,
+            pathMetadata: inout [String: CachedPIDMetadata],
+            resolvedPIDs: inout [Int32: CachedPIDMetadata]
+        ) {
+            var currentPID = startPID
+            var visited: Set<Int32> = []
+            for _ in 0 ... PktapHeader.maxAncestorHops {
+                guard currentPID > 0, !visited.contains(currentPID) else {
+                    break
+                }
+                visited.insert(currentPID)
+                guard let meta = cachedMetadata(for: currentPID, now: now) else {
+                    break
+                }
+                resolvedPIDs[currentPID] = meta
+                if let path = meta.executablePath {
+                    pathMetadata[path] = meta
+                }
+                guard let ppid = meta.bsdSnapshot?.ppid, ppid > 1 else {
+                    break
+                }
+                currentPID = ppid
+            }
+        }
     }
 
     // MARK: - Inbound Packet Target Parsing & Root libproc Socket Map
