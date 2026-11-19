@@ -4030,6 +4030,26 @@
         }
       }
     },
+    "App Helper Process": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "应用内辅助进程"
+          }
+        }
+      }
+    },
+    "App Main Process": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "应用主进程"
+          }
+        }
+      }
+    },
     "App Store & media account service": {
       "localizations": {
         "zh-Hans": {
@@ -8896,6 +8916,16 @@
         }
       }
     },
+    "Daemon %@ · via %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "后台服务 %@ · 经 %@"
+          }
+        }
+      }
+    },
     "Daily": {
       "localizations": {
         "vi": {
@@ -9474,6 +9504,26 @@
         }
       }
     },
+    "Direct system call": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "系统直接调用"
+          }
+        }
+      }
+    },
+    "Direct system call · via %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "系统直接调用 · 经 %@"
+          }
+        }
+      }
+    },
     "Direction": {
       "localizations": {
         "vi": {
@@ -10040,6 +10090,86 @@
           "stringUnit": {
             "state": "translated",
             "value": "电子邮件 (IMF)"
+          }
+        }
+      }
+    },
+    "Embedded CLI": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内嵌终端命令"
+          }
+        }
+      }
+    },
+    "Embedded CLI · by %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内嵌终端命令 · 由 %@"
+          }
+        }
+      }
+    },
+    "Embedded CLI · by %@ via %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内嵌终端命令 · 由 %@ 经 %@"
+          }
+        }
+      }
+    },
+    "Embedded CLI · via %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内嵌终端命令 · 经 %@"
+          }
+        }
+      }
+    },
+    "Embedded in %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "由 %@ 内嵌调用"
+          }
+        }
+      }
+    },
+    "Embedded in %@ · via %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "由 %@ 内嵌 · 经 %@"
+          }
+        }
+      }
+    },
+    "Embedded · by %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内嵌调用 · 由 %@"
+          }
+        }
+      }
+    },
+    "Embedded · by %@ via %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内嵌调用 · 由 %@ 经 %@"
           }
         }
       }
@@ -14975,6 +15105,26 @@
         }
       }
     },
+    "Interactive terminal": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "终端交互执行"
+          }
+        }
+      }
+    },
+    "Interactive terminal · via %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "终端交互执行 · 经 %@"
+          }
+        }
+      }
+    },
     "Interface": {
       "localizations": {
         "vi": {
@@ -16037,6 +16187,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "由 %@ 启动"
+          }
+        }
+      }
+    },
+    "Launched by daemon %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "由后台服务 %@ 调用"
+          }
+        }
+      }
+    },
+    "Launched by system service %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "由系统服务 %@ 调用"
           }
         }
       }
@@ -30520,6 +30690,16 @@
         }
       }
     },
+    "System Call": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "系统调用"
+          }
+        }
+      }
+    },
     "System DNS & Bonjour resolver": {
       "localizations": {
         "zh-Hans": {
@@ -30562,6 +30742,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "系统服务"
+          }
+        }
+      }
+    },
+    "System service %@ · via %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "系统服务 %@ · 经 %@"
           }
         }
       }
@@ -30669,6 +30859,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "带标签的命令与响应；从不显示凭据"
+          }
+        }
+      }
+    },
+    "Terminal": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "终端"
           }
         }
       }

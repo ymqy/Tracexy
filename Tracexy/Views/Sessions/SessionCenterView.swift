@@ -492,7 +492,7 @@ struct SessionCenterView: View {
             TableColumn("Client", value: \.sortableProcessName) { session in
                 clientCell(session)
             }
-            .width(min: 100, ideal: 145)
+            .width(min: 105, ideal: 175)
             .customizationID("client")
             TableColumn("Protocol", value: \.primaryProtocolLabel) { session in
                 protocolPill(session.primaryProtocol)
@@ -875,6 +875,14 @@ struct SessionCenterView: View {
                 systemImage: classifiedSource.symbolName ?? classifiedSource.category.systemImage
             ) {
                 coordinator.selectProcess(classifiedSource.filterKey)
+            }
+            if classifiedSource.category == .cli,
+               let hostApp = coordinator.sessionProcessContext(for: session)?.hostAppName,
+               !hostApp.isEmpty
+            {
+                Button("Show Sessions for \(hostApp)", systemImage: "app.badge") {
+                    coordinator.selectProcess(hostApp)
+                }
             }
         }
 

@@ -1097,6 +1097,260 @@ struct SessionSourceClassificationTests {
         #expect(appleXPCService.subtitle == String(localized: "macOS System Service"))
     }
 
+    // MARK: - 11. Scheme A Caller-Scoped CLI Separation & App Per-Process Breakdown
+
+    @Test("Separates CLI tools by caller scope (App embedded vs Terminal vs System) and aggregates all related App subprocesses")
+    func separatesCallerScopedCLIAccordingToSchemeAAndBreaksDownAppSubprocesses() throws {
+        // 1. Antigravity main binary session
+        let agyMain = makeSession(processName: "Antigravity", host: "update.antigravity.dev")
+        // 2. Antigravity nested helper (`language_server_macos_arm`) sessions (direct + delegated DNS)
+        let agyHelper1 = makeSession(processName: "Antigravity", host: "daily-cloudcode-pa.googleapis.com")
+        let agyHelper2 = makeSession(processName: "Antigravity", host: "oauth2.googleapis.com")
+        // 3. Antigravity embedded `curl` (spawned via `language_server_macos_arm -> zsh -> curl`)
+        let agyCurl1 = makeSession(processName: "curl", host: "example.com")
+        let agyCurl2 = makeSession(processName: "curl", host: "api.github.com")
+        // 4. Antigravity embedded `ping` (`/sbin/ping` via `sh`)
+        let agyPing = makeSession(processName: "ping", host: "1.1.1.1")
+        // 5. Interactive Terminal `curl` (`Terminal -> zsh -> curl`) — MUST NOT mix into Antigravity!
+        let termCurl = makeSession(processName: "curl", host: "brew.sh")
+        // 6. System-invoked `curl` (`launchd -> softwareupdated -> sh -> curl`) — MUST NOT mix into Antigravity!
+        let sysDaemonCurl = makeSession(processName: "curl", host: "swscan.apple.com")
+        // 7. Direct `launchd -> sh` call
+        let directSysSh = makeSession(processName: "sh", host: "time.apple.com")
+        // 8. OrbStack helper (`OrbStack Helper`) — table label deduplicates prefix to `OrbStack · Helper`
+        let orbHelper = makeSession(processName: "OrbStack", host: "cdn.orbstack.dev")
+
+        let agyMainCtx = SessionProcessContext(
+            executablePath: "/Applications/Antigravity.app/Contents/MacOS/Electron",
+            bundleIdentifier: "com.amunx.antigravity",
+            originProcessName: "Antigravity"
+        )
+        let agyHelperDirectCtx = SessionProcessContext(
+            executablePath: "/Applications/Antigravity.app/Contents/Resources/app/bin/language_server_macos_arm",
+            bundleIdentifier: "com.amunx.antigravity",
+            viaProcessName: "language_server_macos_arm",
+            originProcessName: "language_server_macos_arm"
+        )
+        let agyHelperDNSCtx = SessionProcessContext(
+            executablePath: "/Applications/Antigravity.app/Contents/Resources/app/bin/language_server_macos_arm",
+            bundleIdentifier: "com.amunx.antigravity",
+            viaProcessName: "mDNSResponder",
+            originProcessName: "language_server_macos_arm"
+        )
+        let agyCurlCtx = SessionProcessContext(
+            executablePath: "/usr/bin/curl",
+            parentProcessName: "Antigravity",
+            originProcessName: "curl",
+            hostAppName: "Antigravity",
+            spawnerProcessName: "language_server_macos_arm",
+            viaShellName: "zsh",
+            callerKind: .app
+        )
+        let agyPingCtx = SessionProcessContext(
+            executablePath: "/sbin/ping",
+            parentProcessName: "Antigravity",
+            originProcessName: "ping",
+            hostAppName: "Antigravity",
+            viaShellName: "sh",
+            callerKind: .app
+        )
+        let termCurlCtx = SessionProcessContext(
+            executablePath: "/usr/bin/curl",
+            parentProcessName: "Terminal",
+            originProcessName: "curl",
+            viaShellName: "zsh",
+            callerKind: .terminal,
+            hasControllingTTY: true
+        )
+        let sysDaemonCurlCtx = SessionProcessContext(
+            executablePath: "/usr/bin/curl",
+            parentProcessName: "softwareupdated",
+            originProcessName: "curl",
+            spawnerProcessName: "softwareupdated",
+            viaShellName: "sh",
+            callerKind: .system
+        )
+        let directSysShCtx = SessionProcessContext(
+            executablePath: "/bin/sh",
+            originProcessName: "sh",
+            callerKind: .system
+        )
+        let orbHelperCtx = SessionProcessContext(
+            executablePath: "/Applications/OrbStack.app/Contents/Frameworks/OrbStack Helper.app/Contents/MacOS/OrbStack Helper",
+            bundleIdentifier: "dev.kdrag0n.MacVirt",
+            viaProcessName: "OrbStack Helper",
+            originProcessName: "OrbStack Helper"
+        )
+
+        // Verify per-session table labels and caller-scoped CLI keys.
+        let classifiedHelper = SessionSourceClassifier.classify(agyHelperDNSCtxSession(agyHelper2), context: agyHelperDNSCtx)
+        #expect(classifiedHelper.tableLabel == "Antigravity · language_server_macos_arm")
+        #expect(classifiedHelper.subtitle == String(format: String(localized: "via %@"), "language_server_macos_arm, mDNSResponder"))
+
+        let classifiedOrb = SessionSourceClassifier.classify(orbHelper, context: orbHelperCtx)
+        #expect(classifiedOrb.tableLabel == "OrbStack · Helper")
+
+        let classifiedAgyCurl = SessionSourceClassifier.classify(agyCurl1, context: agyCurlCtx)
+        #expect(classifiedAgyCurl.category == .cli)
+        #expect(classifiedAgyCurl.filterKey == "cli:app:Antigravity:curl")
+        #expect(classifiedAgyCurl.title == "curl · Antigravity")
+        #expect(classifiedAgyCurl.tableLabel == "Antigravity · curl")
+
+        let classifiedTermCurl = SessionSourceClassifier.classify(termCurl, context: termCurlCtx)
+        #expect(classifiedTermCurl.filterKey == "cli:term:Terminal:curl")
+        #expect(classifiedTermCurl.title == "curl · Terminal")
+        #expect(classifiedTermCurl.tableLabel == "Terminal · curl")
+
+        let classifiedSysCurl = SessionSourceClassifier.classify(sysDaemonCurl, context: sysDaemonCurlCtx)
+        #expect(classifiedSysCurl.filterKey == "cli:sys:softwareupdated:curl")
+        #expect(classifiedSysCurl.title == "curl · softwareupdated")
+        #expect(classifiedSysCurl.tableLabel == "softwareupdated · curl")
+
+        let classifiedDirectSh = SessionSourceClassifier.classify(directSysSh, context: directSysShCtx)
+        #expect(classifiedDirectSh.filterKey == "cli:sys:launchd:sh")
+        #expect(classifiedDirectSh.title == "sh · \(String(localized: "System Call"))")
+        #expect(classifiedDirectSh.tableLabel == "\(String(localized: "System")) · sh")
+
+        // Verify sidebar grouping:
+        let contexts: [UUID: SessionProcessContext] = [
+            agyMain.id: agyMainCtx,
+            agyHelper1.id: agyHelperDirectCtx,
+            agyHelper2.id: agyHelperDNSCtx,
+            agyCurl1.id: agyCurlCtx,
+            agyCurl2.id: agyCurlCtx,
+            agyPing.id: agyPingCtx,
+            termCurl.id: termCurlCtx,
+            sysDaemonCurl.id: sysDaemonCurlCtx,
+            directSysSh.id: directSysShCtx,
+            orbHelper.id: orbHelperCtx,
+        ]
+        let allSessions = [
+            agyMain, agyHelper1, agyHelper2, agyCurl1, agyCurl2, agyPing,
+            termCurl, sysDaemonCurl, directSysSh, orbHelper,
+        ]
+        let groups = SessionSourceClassifier.group(
+            sessions: allSessions,
+            contextsBySessionID: contexts,
+            localIPs: Self.liveLocalIPs
+        )
+
+        let appCategory = try #require(groups.first { $0.category == .app })
+        let agyItem = try #require(appCategory.items.first { $0.filterKey == "Antigravity" })
+        // 1 main + 2 helper + 2 embedded curl + 1 embedded ping = 6 total related sessions!
+        #expect(agyItem.count == 6)
+        #expect(agyItem.subprocesses.count == 4)
+        // Sorted by count desc, then title asc: curl (2), language_server_macos_arm (2), Antigravity (1), ping (1)
+        #expect(agyItem.subprocesses.map(\.title) == [
+            "curl",
+            "language_server_macos_arm",
+            "Antigravity",
+            "ping",
+        ])
+        #expect(agyItem.subprocesses.map(\.count) == [2, 2, 1, 1])
+        #expect(agyItem.subprocesses.map(\.filterKey) == [
+            "cli:app:Antigravity:curl",
+            "app-proc:Antigravity:language_server_macos_arm",
+            "app-proc:Antigravity:Antigravity",
+            "cli:app:Antigravity:ping",
+        ])
+
+        // CLI category has 5 distinct caller-scoped items (never merging Antigravity curl, Terminal curl, and softwareupdated curl!).
+        let cliCategory = try #require(groups.first { $0.category == .cli })
+        #expect(cliCategory.items.map(\.filterKey) == [
+            "cli:app:Antigravity:curl",
+            "cli:term:Terminal:curl",
+            "cli:sys:softwareupdated:curl",
+            "cli:app:Antigravity:ping",
+            "cli:sys:launchd:sh",
+        ])
+
+        // Verify filter matching across App top-level, App subprocess, and Caller-scoped CLI keys:
+        let matchedAgyAll = allSessions.filter {
+            SessionSourceClassifier.matchesFilterKey("Antigravity", session: $0, context: contexts[$0.id])
+        }
+        #expect(matchedAgyAll.count == 6)
+
+        let matchedLangServerOnly = allSessions.filter {
+            SessionSourceClassifier.matchesFilterKey(
+                "app-proc:Antigravity:language_server_macos_arm",
+                session: $0,
+                context: contexts[$0.id]
+            )
+        }
+        #expect(matchedLangServerOnly.map(\.id) == [agyHelper1.id, agyHelper2.id])
+
+        let matchedAgyMainOnly = allSessions.filter {
+            SessionSourceClassifier.matchesFilterKey(
+                "app-proc:Antigravity:Antigravity",
+                session: $0,
+                context: contexts[$0.id]
+            )
+        }
+        #expect(matchedAgyMainOnly.map(\.id) == [agyMain.id])
+
+        let matchedAgyCurlOnly = allSessions.filter {
+            SessionSourceClassifier.matchesFilterKey(
+                "cli:app:Antigravity:curl",
+                session: $0,
+                context: contexts[$0.id]
+            )
+        }
+        #expect(matchedAgyCurlOnly.map(\.id) == [agyCurl1.id, agyCurl2.id])
+
+        let matchedTermCurlOnly = allSessions.filter {
+            SessionSourceClassifier.matchesFilterKey(
+                "cli:term:Terminal:curl",
+                session: $0,
+                context: contexts[$0.id]
+            )
+        }
+        #expect(matchedTermCurlOnly.map(\.id) == [termCurl.id])
+
+        // Verify displayTitle(forFilterKey:) and SourceIconView symbol resolution:
+        #expect(
+            SessionSourceClassifier.displayTitle(forFilterKey: "app-proc:Antigravity:language_server_macos_arm")
+                == "Antigravity › language_server_macos_arm"
+        )
+        #expect(
+            SessionSourceClassifier.displayTitle(forFilterKey: "cli:app:Antigravity:curl")
+                == "Antigravity · curl"
+        )
+        #expect(
+            SourceIconView.resolvedSymbolName(
+                category: .cli,
+                filterKey: "cli:app:Antigravity:curl",
+                title: "curl · Antigravity"
+            ) == "arrow.up.arrow.down"
+        )
+        #expect(
+            SourceIconView.resolvedSymbolName(
+                category: .cli,
+                filterKey: "cli:app:Antigravity:Python",
+                title: "Python · Antigravity"
+            ) == "curlybraces"
+        )
+        #expect(
+            SourceIconView.resolvedSymbolName(
+                category: .cli,
+                filterKey: "cli:app:Antigravity:ping",
+                title: "ping · Antigravity"
+            ) == "waveform.path.ecg"
+        )
+        #expect(
+            SourceIconView.resolvedSymbolName(
+                category: .thirdPartyService,
+                filterKey: "app-proc:Antigravity:language_server_macos_arm",
+                title: "language_server_macos_arm",
+                subtitle: String(localized: "App Helper Process"),
+                fallbackSymbol: "gearshape.2"
+            ) == "gearshape.2"
+        )
+    }
+
+    private func agyHelperDNSCtxSession(_ session: SessionSummary) -> SessionSummary {
+        session
+    }
+
     // MARK: - Helpers
 
     private func makeSession(

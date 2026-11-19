@@ -1,5 +1,20 @@
 import Foundation
 
+// MARK: - ProcessCallerKind
+
+/// Root caller environment that spawned a process (especially CLI tools and helpers).
+nonisolated enum ProcessCallerKind: String, Equatable, Hashable, Sendable, Codable {
+    /// Spawned inside or by a GUI `.app` bundle (excluding interactive terminal emulators),
+    /// e.g. `Antigravity.app -> language_server_macos_arm -> zsh -> curl`.
+    case app
+    /// Spawned inside an interactive terminal emulator `.app` (`Terminal`, `iTerm2`, `Ghostty`, `Warp`, etc.).
+    case terminal
+    /// Spawned directly by `launchd` (PID 1) or a macOS system daemon/service without a GUI `.app` host.
+    case system
+    /// Spawned by a non-Apple background daemon/agent outside any `.app` bundle.
+    case thirdPartyDaemon
+}
+
 // MARK: - ProcessProvenance
 
 /// Rich process origin metadata resolved alongside a packet or socket's display
@@ -14,6 +29,11 @@ nonisolated struct ProcessProvenance: Equatable, Hashable, Sendable, Codable {
         bundleIdentifier: String? = nil,
         viaProcessName: String? = nil,
         parentProcessName: String? = nil,
+        originProcessName: String? = nil,
+        hostAppName: String? = nil,
+        spawnerProcessName: String? = nil,
+        viaShellName: String? = nil,
+        callerKind: ProcessCallerKind? = nil,
         hasControllingTTY: Bool = false,
         isRootUser: Bool = false,
         isKernelTask: Bool = false
@@ -22,6 +42,11 @@ nonisolated struct ProcessProvenance: Equatable, Hashable, Sendable, Codable {
         self.bundleIdentifier = bundleIdentifier
         self.viaProcessName = viaProcessName
         self.parentProcessName = parentProcessName
+        self.originProcessName = originProcessName
+        self.hostAppName = hostAppName
+        self.spawnerProcessName = spawnerProcessName
+        self.viaShellName = viaShellName
+        self.callerKind = callerKind
         self.hasControllingTTY = hasControllingTTY
         self.isRootUser = isRootUser
         self.isKernelTask = isKernelTask
@@ -33,6 +58,17 @@ nonisolated struct ProcessProvenance: Equatable, Hashable, Sendable, Codable {
     var bundleIdentifier: String?
     var viaProcessName: String?
     var parentProcessName: String?
+    /// Concrete initiating executable name before `.app` collapsing (e.g., `"language_server_macos_arm"`,
+    /// `"OrbStack Helper"`, `"Antigravity"`, `"curl"`), preserved even when DNS/URLSession is delegated.
+    var originProcessName: String?
+    /// Outermost non-terminal GUI `.app` ancestor that spawned this process (e.g., `"Antigravity"`).
+    var hostAppName: String?
+    /// Immediate non-shell/non-launcher process that spawned a CLI command (e.g., `"language_server_macos_arm"`, `"softwareupdated"`).
+    var spawnerProcessName: String?
+    /// Intermediate shell traversed between the spawner and the CLI binary (e.g., `"zsh"`, `"sh"`).
+    var viaShellName: String?
+    /// Classified root caller environment (`app`, `terminal`, `system`, `thirdPartyDaemon`).
+    var callerKind: ProcessCallerKind?
     var hasControllingTTY: Bool
     var isRootUser: Bool
     var isKernelTask: Bool
@@ -95,10 +131,21 @@ nonisolated final class CapturedFrameMessage: NSObject, NSSecureCoding, @uncheck
         let bundleIdentifier = coder.decodeObject(of: NSString.self, forKey: Key.bundleIdentifier) as? String
         let viaProcessName = coder.decodeObject(of: NSString.self, forKey: Key.viaProcessName) as? String
         let parentProcessName = coder.decodeObject(of: NSString.self, forKey: Key.parentProcessName) as? String
+        let originProcessName = coder.decodeObject(of: NSString.self, forKey: Key.originProcessName) as? String
+        let hostAppName = coder.decodeObject(of: NSString.self, forKey: Key.hostAppName) as? String
+        let spawnerProcessName = coder.decodeObject(of: NSString.self, forKey: Key.spawnerProcessName) as? String
+        let viaShellName = coder.decodeObject(of: NSString.self, forKey: Key.viaShellName) as? String
+        let callerKindRaw = coder.decodeObject(of: NSString.self, forKey: Key.callerKind) as? String
+        let callerKind = callerKindRaw.flatMap(ProcessCallerKind.init(rawValue:))
         let hasProvenance = executablePath != nil
             || bundleIdentifier != nil
             || viaProcessName != nil
             || parentProcessName != nil
+            || originProcessName != nil
+            || hostAppName != nil
+            || spawnerProcessName != nil
+            || viaShellName != nil
+            || callerKind != nil
             || coder.containsValue(forKey: Key.hasControllingTTY)
             || coder.containsValue(forKey: Key.isRootUser)
             || coder.containsValue(forKey: Key.isKernelTask)
@@ -108,6 +155,11 @@ nonisolated final class CapturedFrameMessage: NSObject, NSSecureCoding, @uncheck
                 bundleIdentifier: bundleIdentifier,
                 viaProcessName: viaProcessName,
                 parentProcessName: parentProcessName,
+                originProcessName: originProcessName,
+                hostAppName: hostAppName,
+                spawnerProcessName: spawnerProcessName,
+                viaShellName: viaShellName,
+                callerKind: callerKind,
                 hasControllingTTY: coder.decodeBool(forKey: Key.hasControllingTTY),
                 isRootUser: coder.decodeBool(forKey: Key.isRootUser),
                 isKernelTask: coder.decodeBool(forKey: Key.isKernelTask)
@@ -168,6 +220,21 @@ nonisolated final class CapturedFrameMessage: NSObject, NSSecureCoding, @uncheck
             if let parentProcessName = provenance.parentProcessName {
                 coder.encode(parentProcessName as NSString, forKey: Key.parentProcessName)
             }
+            if let originProcessName = provenance.originProcessName {
+                coder.encode(originProcessName as NSString, forKey: Key.originProcessName)
+            }
+            if let hostAppName = provenance.hostAppName {
+                coder.encode(hostAppName as NSString, forKey: Key.hostAppName)
+            }
+            if let spawnerProcessName = provenance.spawnerProcessName {
+                coder.encode(spawnerProcessName as NSString, forKey: Key.spawnerProcessName)
+            }
+            if let viaShellName = provenance.viaShellName {
+                coder.encode(viaShellName as NSString, forKey: Key.viaShellName)
+            }
+            if let callerKind = provenance.callerKind {
+                coder.encode(callerKind.rawValue as NSString, forKey: Key.callerKind)
+            }
             coder.encode(provenance.hasControllingTTY, forKey: Key.hasControllingTTY)
             coder.encode(provenance.isRootUser, forKey: Key.isRootUser)
             coder.encode(provenance.isKernelTask, forKey: Key.isKernelTask)
@@ -188,6 +255,11 @@ nonisolated final class CapturedFrameMessage: NSObject, NSSecureCoding, @uncheck
         static let bundleIdentifier = "bi"
         static let viaProcessName = "vp"
         static let parentProcessName = "pp"
+        static let originProcessName = "op"
+        static let hostAppName = "ha"
+        static let spawnerProcessName = "sp"
+        static let viaShellName = "sh"
+        static let callerKind = "ck"
         static let hasControllingTTY = "tty"
         static let isRootUser = "rt"
         static let isKernelTask = "kt"

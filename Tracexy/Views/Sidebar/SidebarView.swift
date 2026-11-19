@@ -126,6 +126,27 @@ struct SidebarView: View {
                 guard !coordinator.isSourceAppHidden(item.filterKey) else {
                     return nil
                 }
+                let subprocesses: [SourceSubprocessGroup] = item.subprocesses.compactMap { sub in
+                    guard !coordinator.isSourceAppHidden(sub.filterKey) else {
+                        return nil
+                    }
+                    let subChildren = sub.children.filter { child in
+                        switch child.kind {
+                        case .host: !coordinator.isSourceHostHidden(child.value)
+                        case .peerIP: !coordinator.isSourceIPHidden(child.value)
+                        }
+                    }
+                    return SourceSubprocessGroup(
+                        filterKey: sub.filterKey,
+                        category: sub.category,
+                        title: sub.title,
+                        subtitle: sub.subtitle,
+                        iconTitle: sub.iconTitle,
+                        symbolName: sub.symbolName,
+                        children: subChildren,
+                        count: sub.count
+                    )
+                }
                 let children = item.children.filter { child in
                     switch child.kind {
                     case .host: !coordinator.isSourceHostHidden(child.value)
@@ -138,6 +159,7 @@ struct SidebarView: View {
                     title: item.title,
                     subtitle: item.subtitle,
                     symbolName: item.symbolName,
+                    subprocesses: subprocesses,
                     children: children,
                     count: item.count
                 )
@@ -163,10 +185,31 @@ struct SidebarView: View {
                     if matches(item.title) || (item.subtitle.map(matches) ?? false) {
                         return item
                     }
+                    let matchingSubprocesses: [SourceSubprocessGroup] = item.subprocesses.compactMap { sub in
+                        if matches(sub.title) || (sub.subtitle.map(matches) ?? false) {
+                            return sub
+                        }
+                        let matchingSubChildren = sub.children.filter {
+                            matches($0.label) || matches($0.value)
+                        }
+                        guard !matchingSubChildren.isEmpty else {
+                            return nil
+                        }
+                        return SourceSubprocessGroup(
+                            filterKey: sub.filterKey,
+                            category: sub.category,
+                            title: sub.title,
+                            subtitle: sub.subtitle,
+                            iconTitle: sub.iconTitle,
+                            symbolName: sub.symbolName,
+                            children: matchingSubChildren,
+                            count: sub.count
+                        )
+                    }
                     let matchingChildren = item.children.filter {
                         matches($0.label) || matches($0.value)
                     }
-                    guard !matchingChildren.isEmpty else {
+                    guard !matchingSubprocesses.isEmpty || !matchingChildren.isEmpty else {
                         return nil
                     }
                     return SourceItemGroup(
@@ -175,6 +218,7 @@ struct SidebarView: View {
                         title: item.title,
                         subtitle: item.subtitle,
                         symbolName: item.symbolName,
+                        subprocesses: matchingSubprocesses,
                         children: matchingChildren,
                         count: item.count
                     )
@@ -1253,12 +1297,24 @@ private struct SourceItemRow: View {
     var forceExpanded = false
 
     var body: some View {
-        if item.children.isEmpty {
+        if !item.subprocesses.isEmpty {
+            DisclosureGroup(isExpanded: expansion) {
+                ForEach(item.subprocesses) { subprocess in
+                    SourceSubprocessRow(
+                        subprocess: subprocess,
+                        coordinator: coordinator,
+                        forceExpanded: forceExpanded
+                    )
+                }
+            } label: {
+                sourceItemLabel
+            }
+        } else if item.children.isEmpty {
             sourceItemLabel
         } else {
             DisclosureGroup(isExpanded: expansion) {
                 ForEach(item.children) { child in
-                    sourceChildRow(child)
+                    SourceChildTargetRow(child: child, coordinator: coordinator)
                 }
             } label: {
                 sourceItemLabel
@@ -1325,9 +1381,102 @@ private struct SourceItemRow: View {
             )
         }
     }
+}
 
-    private func sourceChildRow(_ child: SourceChildTarget) -> some View {
-        let isActive = isActiveChild(child)
+// MARK: - SourceSubprocessRow
+
+/// Concrete initiating process nested under an `.app` item (main binary, nested `.app` helper,
+/// or embedded CLI command spawned by that app), expandable to the hosts/IPs it contacted.
+private struct SourceSubprocessRow: View {
+    // MARK: Internal
+
+    let subprocess: SourceSubprocessGroup
+    let coordinator: MainContentCoordinator
+    var forceExpanded = false
+
+    var body: some View {
+        if subprocess.children.isEmpty {
+            subprocessLabel
+        } else {
+            DisclosureGroup(isExpanded: expansion) {
+                ForEach(subprocess.children) { child in
+                    SourceChildTargetRow(child: child, coordinator: coordinator)
+                }
+            } label: {
+                subprocessLabel
+            }
+        }
+    }
+
+    // MARK: Private
+
+    @State private var expanded = false
+
+    private var expansion: Binding<Bool> {
+        Binding(get: { forceExpanded || expanded }, set: { expanded = $0 })
+    }
+
+    private var isActiveSubprocess: Bool {
+        coordinator.activeWorkspace.sidebarSelection == .sessions
+            && coordinator.activeWorkspace.processFilter == subprocess.filterKey
+    }
+
+    private var subprocessLabel: some View {
+        let hasSubtitle = (subprocess.subtitle?.isEmpty == false)
+        return HStack(alignment: hasSubtitle ? .top : .center, spacing: 7) {
+            SourceIconView(
+                category: subprocess.category,
+                filterKey: subprocess.filterKey,
+                title: subprocess.iconTitle,
+                subtitle: subprocess.subtitle,
+                fallbackSymbol: subprocess.symbolName,
+                isActive: isActiveSubprocess,
+                size: 17
+            )
+            VStack(alignment: .leading, spacing: 1.5) {
+                Text(subprocess.title)
+                    .font(isActiveSubprocess ? Theme.Typography.navigationMedium : Theme.Typography.navigation)
+                    .foregroundStyle(isActiveSubprocess ? Color.accentColor : .primary)
+                    .lineLimit(1)
+                if let subtitle = subprocess.subtitle, !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(Theme.Typography.micro)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, hasSubtitle ? 1.5 : 0.5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .badge(subprocess.count)
+        .contentShape(Rectangle())
+        .onTapGesture { coordinator.selectProcess(subprocess.filterKey) }
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAddTraits(isActiveSubprocess ? .isSelected : [])
+        .accessibilityAction { coordinator.selectProcess(subprocess.filterKey) }
+        .help(subprocess.subtitle.map { "\(subprocess.title) — \($0)" } ?? subprocess.title)
+        .contextMenu {
+            SidebarSourceContextMenu(
+                value: subprocess.title,
+                copyLabel: "Copy Source Name",
+                pinnedHost: nil,
+                coordinator: coordinator,
+                onShowSessions: { coordinator.selectProcess(subprocess.filterKey) },
+                onRemove: { coordinator.hideSourceApp(subprocess.filterKey) }
+            )
+        }
+    }
+}
+
+// MARK: - SourceChildTargetRow
+
+private struct SourceChildTargetRow: View {
+    let child: SourceChildTarget
+    let coordinator: MainContentCoordinator
+
+    var body: some View {
+        let isActive = isActiveChild
         let selectAction: () -> Void = switch child.kind {
         case .host: { coordinator.selectHost(child.value) }
         case .peerIP: { coordinator.selectIP(child.value) }
@@ -1361,7 +1510,7 @@ private struct SourceItemRow: View {
             }
     }
 
-    private func isActiveChild(_ child: SourceChildTarget) -> Bool {
+    private var isActiveChild: Bool {
         guard coordinator.activeWorkspace.sidebarSelection == .sessions else {
             return false
         }

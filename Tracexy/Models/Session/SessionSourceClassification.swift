@@ -66,6 +66,11 @@ nonisolated struct SessionProcessContext: Equatable, Hashable, Sendable, Codable
         bundleIdentifier: String? = nil,
         viaProcessName: String? = nil,
         parentProcessName: String? = nil,
+        originProcessName: String? = nil,
+        hostAppName: String? = nil,
+        spawnerProcessName: String? = nil,
+        viaShellName: String? = nil,
+        callerKind: ProcessCallerKind? = nil,
         hasControllingTTY: Bool = false,
         isRootUser: Bool = false,
         isKernelTask: Bool = false
@@ -74,6 +79,11 @@ nonisolated struct SessionProcessContext: Equatable, Hashable, Sendable, Codable
         self.bundleIdentifier = bundleIdentifier
         self.viaProcessName = viaProcessName
         self.parentProcessName = parentProcessName
+        self.originProcessName = originProcessName
+        self.hostAppName = hostAppName
+        self.spawnerProcessName = spawnerProcessName
+        self.viaShellName = viaShellName
+        self.callerKind = callerKind
         self.hasControllingTTY = hasControllingTTY
         self.isRootUser = isRootUser
         self.isKernelTask = isKernelTask
@@ -85,6 +95,11 @@ nonisolated struct SessionProcessContext: Equatable, Hashable, Sendable, Codable
             bundleIdentifier: provenance.bundleIdentifier,
             viaProcessName: provenance.viaProcessName,
             parentProcessName: provenance.parentProcessName,
+            originProcessName: provenance.originProcessName,
+            hostAppName: provenance.hostAppName,
+            spawnerProcessName: provenance.spawnerProcessName,
+            viaShellName: provenance.viaShellName,
+            callerKind: provenance.callerKind,
             hasControllingTTY: provenance.hasControllingTTY,
             isRootUser: provenance.isRootUser,
             isKernelTask: provenance.isKernelTask
@@ -97,6 +112,11 @@ nonisolated struct SessionProcessContext: Equatable, Hashable, Sendable, Codable
     var bundleIdentifier: String?
     var viaProcessName: String?
     var parentProcessName: String?
+    var originProcessName: String?
+    var hostAppName: String?
+    var spawnerProcessName: String?
+    var viaShellName: String?
+    var callerKind: ProcessCallerKind?
     var hasControllingTTY: Bool
     var isRootUser: Bool
     var isKernelTask: Bool
@@ -132,6 +152,23 @@ nonisolated struct ClassifiedSessionSource: Equatable, Hashable, Sendable {
     let childTarget: SourceChildTarget?
 }
 
+// MARK: - SourceSubprocessGroup
+
+/// Concrete initiating process under an `.app` source item (main binary, nested `.app` helper,
+/// or embedded CLI command spawned by that app), expandable to the hosts/IPs it contacted.
+nonisolated struct SourceSubprocessGroup: Identifiable, Equatable, Hashable, Sendable {
+    let filterKey: String
+    let category: TrafficSourceCategory
+    let title: String
+    let subtitle: String?
+    let iconTitle: String
+    let symbolName: String?
+    let children: [SourceChildTarget]
+    let count: Int
+
+    var id: String { filterKey }
+}
+
 // MARK: - SourceItemGroup
 
 /// Aggregated sidebar source row across all sessions sharing the same `filterKey`.
@@ -141,8 +178,29 @@ nonisolated struct SourceItemGroup: Identifiable, Equatable, Hashable, Sendable 
     let title: String
     let subtitle: String?
     let symbolName: String?
+    let subprocesses: [SourceSubprocessGroup]
     let children: [SourceChildTarget]
     let count: Int
+
+    init(
+        filterKey: String,
+        category: TrafficSourceCategory,
+        title: String,
+        subtitle: String? = nil,
+        symbolName: String? = nil,
+        subprocesses: [SourceSubprocessGroup] = [],
+        children: [SourceChildTarget] = [],
+        count: Int
+    ) {
+        self.filterKey = filterKey
+        self.category = category
+        self.title = title
+        self.subtitle = subtitle
+        self.symbolName = symbolName
+        self.subprocesses = subprocesses
+        self.children = children
+        self.count = count
+    }
 
     var id: String { filterKey }
 }
@@ -304,6 +362,102 @@ nonisolated private struct ParsedEndpoints {
     }
 }
 
+nonisolated private struct SubprocessAccumulator {
+    let filterKey: String
+    var category: TrafficSourceCategory
+    var title: String
+    var baseSubtitle: String?
+    var iconTitle: String
+    var symbolName: String?
+    var delegatedViaNames: [String] = []
+    var childrenByID: [String: SourceChildTarget] = [:]
+    var bestRichness: Int
+    var count = 1
+
+    init(
+        filterKey: String,
+        category: TrafficSourceCategory,
+        title: String,
+        baseSubtitle: String?,
+        iconTitle: String,
+        symbolName: String?,
+        delegatedViaName: String?,
+        childTarget: SourceChildTarget?,
+        richness: Int
+    ) {
+        self.filterKey = filterKey
+        self.category = category
+        self.title = title
+        self.baseSubtitle = baseSubtitle
+        self.iconTitle = iconTitle
+        self.symbolName = symbolName
+        self.bestRichness = richness
+        if let delegatedViaName {
+            delegatedViaNames.append(delegatedViaName)
+        }
+        if let childTarget {
+            childrenByID[childTarget.id] = childTarget
+        }
+    }
+
+    mutating func merge(
+        baseSubtitle: String?,
+        delegatedViaName: String?,
+        childTarget: SourceChildTarget?,
+        richness: Int
+    ) {
+        count += 1
+        if richness > bestRichness, let baseSubtitle {
+            bestRichness = richness
+            self.baseSubtitle = baseSubtitle
+        } else if self.baseSubtitle == nil, let baseSubtitle {
+            self.baseSubtitle = baseSubtitle
+        }
+        if let delegatedViaName, !delegatedViaNames.contains(delegatedViaName) {
+            delegatedViaNames.append(delegatedViaName)
+        }
+        if let child = childTarget {
+            if let existing = childrenByID[child.id] {
+                if existing.label == existing.value, child.label != child.value {
+                    childrenByID[child.id] = child
+                }
+            } else {
+                childrenByID[child.id] = child
+            }
+        }
+    }
+
+    func buildSubprocessGroup() -> SourceSubprocessGroup {
+        let subtitle: String?
+        if delegatedViaNames.isEmpty {
+            subtitle = baseSubtitle
+        } else {
+            let viaText = String(
+                format: String(localized: "via %@"),
+                delegatedViaNames.prefix(2).joined(separator: ", ")
+            )
+            if let baseSubtitle, !baseSubtitle.isEmpty {
+                subtitle = "\(baseSubtitle) · \(viaText)"
+            } else {
+                subtitle = viaText
+            }
+        }
+        let sortedChildren = childrenByID.values.sorted { lhs, rhs in
+            lhs.value != rhs.value ? lhs.value < rhs.value : lhs.kind.rawValue < rhs.kind.rawValue
+        }
+        return SourceSubprocessGroup(
+            filterKey: filterKey,
+            category: category,
+            title: title,
+            subtitle: subtitle,
+            iconTitle: iconTitle,
+            symbolName: symbolName,
+            children: sortedChildren,
+            count: count
+        )
+    }
+}
+
 nonisolated private struct ItemAccumulator {
     var category: TrafficSourceCategory
     let filterKey: String
@@ -312,6 +466,7 @@ nonisolated private struct ItemAccumulator {
     var symbolName: String?
     var bestContextRichness: Int
     var viaProcessNames: [String] = []
+    var subprocessesByKey: [String: SubprocessAccumulator] = [:]
     var childrenByID: [String: SourceChildTarget] = [:]
     var count = 1
 
@@ -330,6 +485,26 @@ nonisolated private struct ItemAccumulator {
         }
     }
 
+    init(
+        appTitle: String,
+        viaProcessName: String?,
+        childTarget: SourceChildTarget?,
+        contextRichness: Int
+    ) {
+        category = .app
+        filterKey = appTitle
+        title = appTitle
+        baseSubtitle = nil
+        symbolName = nil
+        bestContextRichness = contextRichness
+        if let viaProcessName {
+            viaProcessNames.append(viaProcessName)
+        }
+        if let childTarget {
+            childrenByID[childTarget.id] = childTarget
+        }
+    }
+
     mutating func merge(classified: ClassifiedSessionSource, viaProcessName: String?, contextRichness: Int) {
         count += 1
         if contextRichness > bestContextRichness {
@@ -344,14 +519,59 @@ nonisolated private struct ItemAccumulator {
         if let viaProcessName, !viaProcessNames.contains(viaProcessName) {
             viaProcessNames.append(viaProcessName)
         }
-        if let child = classified.childTarget {
-            if let existing = childrenByID[child.id] {
-                if existing.label == existing.value, child.label != child.value {
-                    childrenByID[child.id] = child
-                }
-            } else {
+        mergeChild(classified.childTarget)
+    }
+
+    mutating func mergeRelatedSession(viaProcessName: String?, childTarget: SourceChildTarget?) {
+        count += 1
+        if let viaProcessName, !viaProcessNames.contains(viaProcessName) {
+            viaProcessNames.append(viaProcessName)
+        }
+        mergeChild(childTarget)
+    }
+
+    mutating func recordSubprocess(
+        filterKey: String,
+        category: TrafficSourceCategory,
+        title: String,
+        baseSubtitle: String?,
+        iconTitle: String,
+        symbolName: String?,
+        delegatedViaName: String?,
+        childTarget: SourceChildTarget?,
+        richness: Int
+    ) {
+        if var existing = subprocessesByKey[filterKey] {
+            existing.merge(
+                baseSubtitle: baseSubtitle,
+                delegatedViaName: delegatedViaName,
+                childTarget: childTarget,
+                richness: richness
+            )
+            subprocessesByKey[filterKey] = existing
+        } else {
+            subprocessesByKey[filterKey] = SubprocessAccumulator(
+                filterKey: filterKey,
+                category: category,
+                title: title,
+                baseSubtitle: baseSubtitle,
+                iconTitle: iconTitle,
+                symbolName: symbolName,
+                delegatedViaName: delegatedViaName,
+                childTarget: childTarget,
+                richness: richness
+            )
+        }
+    }
+
+    private mutating func mergeChild(_ childTarget: SourceChildTarget?) {
+        guard let child = childTarget else { return }
+        if let existing = childrenByID[child.id] {
+            if existing.label == existing.value, child.label != child.value {
                 childrenByID[child.id] = child
             }
+        } else {
+            childrenByID[child.id] = child
         }
     }
 
@@ -363,6 +583,13 @@ nonisolated private struct ItemAccumulator {
         } else {
             baseSubtitle
         }
+        let sortedSubprocesses = subprocessesByKey.values
+            .map { $0.buildSubprocessGroup() }
+            .sorted { lhs, rhs in
+                if lhs.count != rhs.count { return lhs.count > rhs.count }
+                if lhs.title != rhs.title { return lhs.title < rhs.title }
+                return lhs.filterKey < rhs.filterKey
+            }
         let sortedChildren = childrenByID.values.sorted { lhs, rhs in
             lhs.value != rhs.value ? lhs.value < rhs.value : lhs.kind.rawValue < rhs.kind.rawValue
         }
@@ -372,6 +599,7 @@ nonisolated private struct ItemAccumulator {
             title: title,
             subtitle: mergedSubtitle,
             symbolName: symbolName,
+            subprocesses: sortedSubprocesses,
             children: sortedChildren,
             count: count
         )
@@ -450,7 +678,12 @@ nonisolated enum SessionSourceClassifier {
 
         // Pre-index richest known provenance per processName so sticky-attributed
         // sessions whose per-session context was nil still inherit their process provenance.
+        // If two sessions with the same binary name (e.g. `curl`) came from different callers,
+        // strip caller-specific fields from the shared fallback so an unscoped session never
+        // steals another caller's `hostAppName` or `callerKind`.
         var fallbackContextByProcessName: [String: SessionProcessContext] = [:]
+        var callerSignatureByProcessName: [String: String] = [:]
+        var conflictingCallerProcesses: Set<String> = []
         for session in sessions {
             guard let name = normalizedProcessName(session.processName),
                   name != "kernel_task",
@@ -458,12 +691,28 @@ nonisolated enum SessionSourceClassifier {
             {
                 continue
             }
+            let signature = "\(ctx.callerKind?.rawValue ?? "")|\(ctx.hostAppName ?? "")|\(ctx.parentProcessName ?? "")"
+            if let existingSig = callerSignatureByProcessName[name], existingSig != signature {
+                conflictingCallerProcesses.insert(name)
+            } else {
+                callerSignatureByProcessName[name] = signature
+            }
             if let existing = fallbackContextByProcessName[name] {
                 if contextRichness(ctx) > contextRichness(existing) {
                     fallbackContextByProcessName[name] = ctx
                 }
             } else {
                 fallbackContextByProcessName[name] = ctx
+            }
+        }
+        for name in conflictingCallerProcesses {
+            if var stripped = fallbackContextByProcessName[name] {
+                stripped.callerKind = nil
+                stripped.hostAppName = nil
+                stripped.parentProcessName = nil
+                stripped.spawnerProcessName = nil
+                stripped.viaShellName = nil
+                fallbackContextByProcessName[name] = stripped
             }
         }
 
@@ -489,10 +738,18 @@ nonisolated enum SessionSourceClassifier {
             )
 
             let richness = contextRichness(effectiveContext)
-            let viaCandidate = normalizedViaProcessName(
+            let rawVia = normalizedViaProcessName(
                 directContext?.viaProcessName ?? effectiveContext?.viaProcessName,
                 excludingProcessName: classified.title
             )
+            let viaCandidate: String?
+            if classified.category == .app {
+                let origin = concreteAppOriginProcessName(appTitle: classified.title, context: effectiveContext)
+                viaCandidate = origin != classified.title ? origin : rawVia
+            } else {
+                viaCandidate = rawVia
+            }
+
             if var existing = accumulatorsByKey[classified.filterKey] {
                 existing.merge(classified: classified, viaProcessName: viaCandidate, contextRichness: richness)
                 accumulatorsByKey[classified.filterKey] = existing
@@ -501,6 +758,56 @@ nonisolated enum SessionSourceClassifier {
                     classified: classified,
                     viaProcessName: viaCandidate,
                     contextRichness: richness
+                )
+            }
+
+            if classified.category == .app {
+                let appTitle = classified.title
+                let origin = concreteAppOriginProcessName(appTitle: appTitle, context: effectiveContext)
+                let isMain = origin == appTitle
+                let delegatedVia = (rawVia != nil && rawVia != origin) ? rawVia : nil
+                accumulatorsByKey[classified.filterKey]?.recordSubprocess(
+                    filterKey: "app-proc:\(appTitle):\(origin)",
+                    category: isMain ? .app : .thirdPartyService,
+                    title: origin,
+                    baseSubtitle: isMain
+                        ? String(localized: "App Main Process")
+                        : String(localized: "App Helper Process"),
+                    iconTitle: origin,
+                    symbolName: isMain ? nil : "gearshape.2",
+                    delegatedViaName: delegatedVia,
+                    childTarget: classified.childTarget,
+                    richness: richness
+                )
+            } else if classified.category == .cli,
+                      let cmdName = normalizedProcessName(session.processName),
+                      let hostApp = effectiveEmbeddedHostApp(rawName: cmdName, context: effectiveContext)
+            {
+                if var existingApp = accumulatorsByKey[hostApp] {
+                    existingApp.mergeRelatedSession(viaProcessName: cmdName, childTarget: classified.childTarget)
+                    accumulatorsByKey[hostApp] = existingApp
+                } else {
+                    accumulatorsByKey[hostApp] = ItemAccumulator(
+                        appTitle: hostApp,
+                        viaProcessName: cmdName,
+                        childTarget: classified.childTarget,
+                        contextRichness: richness
+                    )
+                }
+                let cliDelegatedVia = normalizedViaProcessName(
+                    directContext?.viaProcessName ?? effectiveContext?.viaProcessName,
+                    excludingProcessName: cmdName
+                )
+                accumulatorsByKey[hostApp]?.recordSubprocess(
+                    filterKey: classified.filterKey,
+                    category: .cli,
+                    title: cmdName,
+                    baseSubtitle: embeddedCLISubprocessSubtitle(rawName: cmdName, context: effectiveContext),
+                    iconTitle: cmdName,
+                    symbolName: TrafficSourceCategory.cli.systemImage,
+                    delegatedViaName: cliDelegatedVia,
+                    childTarget: classified.childTarget,
+                    richness: richness
                 )
             }
         }
@@ -531,7 +838,9 @@ nonisolated enum SessionSourceClassifier {
         return categoryGroups
     }
 
-    /// Human-readable localized title for any `filterKey` (e.g. `"lan:mdns"` -> `"Bonjour / mDNS"`).
+    /// Human-readable localized title for any `filterKey` (e.g. `"lan:mdns"` -> `"Bonjour / mDNS"`,
+    /// `"app-proc:Antigravity:language_server_macos_arm"` -> `"Antigravity › language_server_macos_arm"`,
+    /// `"cli:app:Antigravity:curl"` -> `"Antigravity · curl"`).
     static func displayTitle(forFilterKey key: String) -> String {
         if let lanKind = LanSubkind(filterKey: key) {
             return lanKind.title
@@ -539,11 +848,33 @@ nonisolated enum SessionSourceClassifier {
         if let kernelKind = KernelSubkind(filterKey: key) {
             return kernelKind.title
         }
-        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty || trimmed == "—" {
-            return String(localized: "Unattributed")
+        switch parseFilterKey(key) {
+        case .synthetic:
+            let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty || trimmed == "—" {
+                return String(localized: "Unattributed")
+            }
+            return key
+        case let .appProcess(app, origin):
+            if origin == app {
+                return "\(app) (\(String(localized: "App Main Process")))"
+            }
+            return "\(app) › \(origin)"
+        case let .cliApp(app, command):
+            return "\(app) · \(command)"
+        case let .cliTerminal(terminal, command):
+            return "\(command) · \(terminal)"
+        case let .cliSystem(caller, command):
+            if caller == "launchd" {
+                return "\(command) · \(String(localized: "System Call"))"
+            }
+            return "\(command) · \(caller)"
+        case let .cliDaemon(daemon, command):
+            return "\(command) · \(daemon)"
+        case let .namedProcessOrApp(name):
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? String(localized: "Unattributed") : trimmed
         }
-        return key
     }
 
     /// Whether `key` is a synthetic non-process `filterKey` (`lan:*`, `kernel:*`, or `"—"`).
@@ -551,8 +882,9 @@ nonisolated enum SessionSourceClassifier {
         key == "—" || key.hasPrefix("lan:") || key.hasPrefix("kernel:")
     }
 
-    /// Evaluates whether `session` belongs to `filterKey`, preserving 100% compatibility
-    /// with named process filters (`"Safari"`, `"curl"`) and synthetic LAN/Kernel/Unattributed keys.
+    /// Evaluates whether `session` belongs to `filterKey`, supporting top-level App keys
+    /// (including embedded CLI processes), concrete App subprocess keys (`app-proc:*`),
+    /// caller-scoped CLI keys (`cli:*`), and synthetic LAN/Kernel/Unattributed keys.
     static func matchesFilterKey(
         _ filterKey: String,
         session: SessionSummary,
@@ -562,24 +894,15 @@ nonisolated enum SessionSourceClassifier {
     )
         -> Bool
     {
-        let rawName = normalizedProcessName(session.processName)
-        let isKernel = isKernelTaskSession(rawName: rawName, context: context)
-        if !isSyntheticFilterKey(filterKey) {
-            return !isKernel && rawName == filterKey
-        }
-        if rawName != nil, !isKernel {
-            return false
-        }
-        let classified = classify(
-            session,
-            context: context,
+        let matcher = makeFilterMatcher(
+            for: filterKey,
             localIPs: localIPs,
             isViewingSavedCapture: isViewingSavedCapture
         )
-        return classified.filterKey == filterKey
+        return matcher(session, context)
     }
 
-    /// Pre-normalizes `localIPs` once outside a session-filtering loop so evaluating
+    /// Pre-normalizes `localIPs` and `filterKey` once outside a session-filtering loop so evaluating
     /// `workspace.processFilter` across thousands of sessions is O(N) with zero per-session
     /// IP-set allocations.
     static func makeFilterMatcher(
@@ -589,29 +912,102 @@ nonisolated enum SessionSourceClassifier {
     )
         -> (SessionSummary, SessionProcessContext?) -> Bool
     {
-        if !isSyntheticFilterKey(filterKey) {
+        let parsedKey = parseFilterKey(filterKey)
+        switch parsedKey {
+        case let .appProcess(targetApp, targetOrigin):
             return { session, context in
                 let rawName = normalizedProcessName(session.processName)
-                return !isKernelTaskSession(rawName: rawName, context: context) && rawName == filterKey
+                guard !isKernelTaskSession(rawName: rawName, context: context),
+                      rawName == targetApp else
+                {
+                    return false
+                }
+                return concreteAppOriginProcessName(appTitle: targetApp, context: context) == targetOrigin
             }
-        }
-        let normalizedLocal = normalizeIPSet(localIPs)
-        return { session, context in
-            let rawName = normalizedProcessName(session.processName)
-            let isKernel = isKernelTaskSession(rawName: rawName, context: context)
-            if rawName != nil, !isKernel {
+
+        case let .cliApp(targetApp, targetCommand):
+            return { session, context in
+                let rawName = normalizedProcessName(session.processName)
+                guard !isKernelTaskSession(rawName: rawName, context: context),
+                      rawName == targetCommand else
+                {
+                    return false
+                }
+                return effectiveEmbeddedHostApp(rawName: targetCommand, context: context) == targetApp
+            }
+
+        case let .cliTerminal(targetTerminal, targetCommand):
+            return { session, context in
+                let rawName = normalizedProcessName(session.processName)
+                guard !isKernelTaskSession(rawName: rawName, context: context),
+                      rawName == targetCommand,
+                      context?.callerKind == .terminal else
+                {
+                    return false
+                }
+                return effectiveTerminalCallerName(context: context) == targetTerminal
+            }
+
+        case let .cliSystem(targetCaller, targetCommand):
+            return { session, context in
+                let rawName = normalizedProcessName(session.processName)
+                guard !isKernelTaskSession(rawName: rawName, context: context),
+                      rawName == targetCommand,
+                      context?.callerKind == .system else
+                {
+                    return false
+                }
+                return effectiveSystemCallerKey(rawName: targetCommand, context: context) == targetCaller
+            }
+
+        case let .cliDaemon(targetDaemon, targetCommand):
+            return { session, context in
+                let rawName = normalizedProcessName(session.processName)
+                guard !isKernelTaskSession(rawName: rawName, context: context),
+                      rawName == targetCommand,
+                      context?.callerKind == .thirdPartyDaemon else
+                {
+                    return false
+                }
+                return effectiveDaemonCallerKey(rawName: targetCommand, context: context) == targetDaemon
+            }
+
+        case let .namedProcessOrApp(targetName):
+            return { session, context in
+                let rawName = normalizedProcessName(session.processName)
+                guard !isKernelTaskSession(rawName: rawName, context: context) else {
+                    return false
+                }
+                if rawName == targetName {
+                    return true
+                }
+                if let rawName,
+                   effectiveEmbeddedHostApp(rawName: rawName, context: context) == targetName
+                {
+                    return true
+                }
                 return false
             }
-            let classified = classifyNormalized(
-                session,
-                context: context,
-                normalizedLocalIPs: normalizedLocal,
-                isViewingSavedCapture: isViewingSavedCapture,
-                normalizedResolvedNames: [:],
-                homeDirectoryPath: "",
-                appBundleExistsLookup: { _ in false }
-            )
-            return classified.filterKey == filterKey
+
+        case let .synthetic(syntheticKey):
+            let normalizedLocal = normalizeIPSet(localIPs)
+            return { session, context in
+                let rawName = normalizedProcessName(session.processName)
+                let isKernel = isKernelTaskSession(rawName: rawName, context: context)
+                if rawName != nil, !isKernel {
+                    return false
+                }
+                let classified = classifyNormalized(
+                    session,
+                    context: context,
+                    normalizedLocalIPs: normalizedLocal,
+                    isViewingSavedCapture: isViewingSavedCapture,
+                    normalizedResolvedNames: [:],
+                    homeDirectoryPath: "",
+                    appBundleExistsLookup: { _ in false }
+                )
+                return classified.filterKey == syntheticKey
+            }
         }
     }
 
@@ -654,10 +1050,11 @@ nonisolated enum SessionSourceClassifier {
     ]
 
     private static let knownCLICommands: Set<String> = [
+        "sh", "zsh", "bash", "fish", "dash", "csh", "tcsh", "ksh",
         "curl", "wget", "ssh", "git", "node", "python", "python3", "codex", "go", "ruby",
         "java", "nc", "dig", "ping", "ping6", "traceroute", "traceroute6", "tcpdump",
         "netstat", "lsof", "arp", "ndp", "ifconfig", "route", "scutil", "networksetup",
-        "networkQuality", "dscacheutil", "dns-sd", "nslookup", "host", "whois", "telnet",
+        "networkquality", "dscacheutil", "dns-sd", "nslookup", "host", "whois", "telnet",
         "ftp", "tftp", "rsync", "scp", "brew", "npm", "pnpm", "bun", "deno", "cargo",
         "rustc", "swift", "swiftc", "clang", "lldb", "openssl", "sftp", "gh", "pip",
         "pip3", "uv",
@@ -766,13 +1163,28 @@ nonisolated enum SessionSourceClassifier {
             homeDirectoryPath: homeDirectoryPath,
             appBundleExistsLookup: appBundleExistsLookup
         ) {
-            let subtitle = via.map { String(format: String(localized: "via %@"), $0) }
+            let explicitOrigin = normalizedNonEmpty(context?.originProcessName)
+            let hasDistinctOrigin = explicitOrigin != nil && explicitOrigin != "—" && explicitOrigin != rawName
+            let subtitle: String? = if let explicitOrigin, hasDistinctOrigin {
+                if let via, via != explicitOrigin {
+                    String(format: String(localized: "via %@"), "\(explicitOrigin), \(via)")
+                } else {
+                    String(format: String(localized: "via %@"), explicitOrigin)
+                }
+            } else {
+                via.map { String(format: String(localized: "via %@"), $0) }
+            }
+            let tableLabel = if let explicitOrigin, hasDistinctOrigin {
+                formattedAppProcessTableLabel(appTitle: rawName, originProcess: explicitOrigin)
+            } else {
+                rawName
+            }
             return ClassifiedSessionSource(
                 category: .app,
                 filterKey: rawName,
                 title: rawName,
                 subtitle: subtitle,
-                tableLabel: rawName,
+                tableLabel: tableLabel,
                 tableDetail: subtitle,
                 symbolName: nil,
                 childTarget: child
@@ -780,15 +1192,10 @@ nonisolated enum SessionSourceClassifier {
         }
 
         if isCLITool(rawName: rawName, executablePath: path, context: context) {
-            let subtitle = cliSubtitle(rawName: rawName, executablePath: path, context: context)
-            return ClassifiedSessionSource(
-                category: .cli,
-                filterKey: rawName,
-                title: rawName,
-                subtitle: subtitle,
-                tableLabel: rawName,
-                tableDetail: subtitle,
-                symbolName: TrafficSourceCategory.cli.systemImage,
+            return makeClassifiedCLISource(
+                rawName: rawName,
+                executablePath: path,
+                context: context,
                 childTarget: child
             )
         }
@@ -826,7 +1233,7 @@ nonisolated enum SessionSourceClassifier {
             }
             if path.hasPrefix("/usr/sbin/") || path.hasPrefix("/sbin/") {
                 let isInteractiveOrKnownCLI = !knownSystemDaemonNames.contains(rawName)
-                    && (knownCLICommands.contains(rawName) || context?.hasControllingTTY == true)
+                    && (isKnownCLICommand(rawName) || context?.hasControllingTTY == true)
                 return !isInteractiveOrKnownCLI
             }
             if bundleIdentifier?.hasPrefix("com.apple.") == true {
@@ -876,6 +1283,9 @@ nonisolated enum SessionSourceClassifier {
         if context?.hasControllingTTY == true {
             return true
         }
+        if context?.callerKind == .app || context?.callerKind == .terminal {
+            return true
+        }
         if let path = executablePath {
             if path.hasPrefix("/opt/homebrew/")
                 || path.hasPrefix("/usr/local/")
@@ -886,13 +1296,174 @@ nonisolated enum SessionSourceClassifier {
                 return true
             }
             if (path.hasPrefix("/sbin/") || path.hasPrefix("/usr/sbin/"))
-                && knownCLICommands.contains(rawName)
+                && isKnownCLICommand(rawName)
             {
                 return true
             }
             return cliToolchainPathFragments.contains { path.contains($0) }
         }
-        return knownCLICommands.contains(rawName)
+        return isKnownCLICommand(rawName)
+    }
+
+    private static func isKnownCLICommand(_ rawName: String) -> Bool {
+        let lower = rawName.lowercased()
+        return knownCLICommands.contains(lower) || lower.hasPrefix("python3.") || lower.hasPrefix("python2.")
+    }
+
+    private static func makeClassifiedCLISource(
+        rawName: String,
+        executablePath: String?,
+        context: SessionProcessContext?,
+        childTarget: SourceChildTarget?
+    )
+        -> ClassifiedSessionSource
+    {
+        if let hostApp = effectiveEmbeddedHostApp(rawName: rawName, context: context) {
+            let subtitle = embeddedCLISidebarSubtitle(rawName: rawName, hostApp: hostApp, context: context)
+            return ClassifiedSessionSource(
+                category: .cli,
+                filterKey: "cli:app:\(hostApp):\(rawName)",
+                title: "\(rawName) · \(hostApp)",
+                subtitle: subtitle,
+                tableLabel: "\(hostApp) · \(rawName)",
+                tableDetail: subtitle,
+                symbolName: TrafficSourceCategory.cli.systemImage,
+                childTarget: childTarget
+            )
+        }
+
+        if let callerKind = context?.callerKind {
+            switch callerKind {
+            case .app:
+                break
+
+            case .terminal:
+                let terminal = effectiveTerminalCallerName(context: context)
+                let shell = normalizedShellName(context?.viaShellName, excluding: rawName)
+                let subtitle = if let shell {
+                    String(format: String(localized: "Interactive terminal · via %@"), shell)
+                } else {
+                    String(localized: "Interactive terminal")
+                }
+                return ClassifiedSessionSource(
+                    category: .cli,
+                    filterKey: "cli:term:\(terminal):\(rawName)",
+                    title: "\(rawName) · \(terminal)",
+                    subtitle: subtitle,
+                    tableLabel: "\(terminal) · \(rawName)",
+                    tableDetail: subtitle,
+                    symbolName: TrafficSourceCategory.cli.systemImage,
+                    childTarget: childTarget
+                )
+
+            case .system:
+                let spawnerKey = effectiveSystemCallerKey(rawName: rawName, context: context)
+                let shell = normalizedShellName(context?.viaShellName, excluding: rawName)
+                let isDirectLaunchd = spawnerKey == "launchd"
+                let title = isDirectLaunchd
+                    ? "\(rawName) · \(String(localized: "System Call"))"
+                    : "\(rawName) · \(spawnerKey)"
+                let tableLabel = isDirectLaunchd
+                    ? "\(String(localized: "System")) · \(rawName)"
+                    : "\(spawnerKey) · \(rawName)"
+                let subtitle: String = if isDirectLaunchd {
+                    if let shell {
+                        String(format: String(localized: "Direct system call · via %@"), shell)
+                    } else {
+                        String(localized: "Direct system call")
+                    }
+                } else {
+                    if let shell {
+                        String(format: String(localized: "System service %@ · via %@"), spawnerKey, shell)
+                    } else {
+                        String(format: String(localized: "Launched by system service %@"), spawnerKey)
+                    }
+                }
+                return ClassifiedSessionSource(
+                    category: .cli,
+                    filterKey: "cli:sys:\(spawnerKey):\(rawName)",
+                    title: title,
+                    subtitle: subtitle,
+                    tableLabel: tableLabel,
+                    tableDetail: subtitle,
+                    symbolName: TrafficSourceCategory.cli.systemImage,
+                    childTarget: childTarget
+                )
+
+            case .thirdPartyDaemon:
+                let daemon = effectiveDaemonCallerKey(rawName: rawName, context: context)
+                let shell = normalizedShellName(context?.viaShellName, excluding: rawName)
+                let subtitle = if let shell {
+                    String(format: String(localized: "Daemon %@ · via %@"), daemon, shell)
+                } else {
+                    String(format: String(localized: "Launched by daemon %@"), daemon)
+                }
+                return ClassifiedSessionSource(
+                    category: .cli,
+                    filterKey: "cli:daemon:\(daemon):\(rawName)",
+                    title: "\(rawName) · \(daemon)",
+                    subtitle: subtitle,
+                    tableLabel: "\(daemon) · \(rawName)",
+                    tableDetail: subtitle,
+                    symbolName: TrafficSourceCategory.cli.systemImage,
+                    childTarget: childTarget
+                )
+            }
+        }
+
+        let subtitle = cliSubtitle(rawName: rawName, executablePath: executablePath, context: context)
+        return ClassifiedSessionSource(
+            category: .cli,
+            filterKey: rawName,
+            title: rawName,
+            subtitle: subtitle,
+            tableLabel: rawName,
+            tableDetail: subtitle,
+            symbolName: TrafficSourceCategory.cli.systemImage,
+            childTarget: childTarget
+        )
+    }
+
+    private static func embeddedCLISidebarSubtitle(
+        rawName: String,
+        hostApp: String,
+        context: SessionProcessContext?
+    )
+        -> String
+    {
+        let spawner = normalizedSpawnerName(context?.spawnerProcessName, excludingApp: hostApp, command: rawName)
+        let shell = normalizedShellName(context?.viaShellName, excluding: rawName)
+        if let spawner, let shell {
+            return String(format: String(localized: "Embedded · by %@ via %@"), spawner, shell)
+        }
+        if let spawner {
+            return String(format: String(localized: "Embedded · by %@"), spawner)
+        }
+        if let shell {
+            return String(format: String(localized: "Embedded in %@ · via %@"), hostApp, shell)
+        }
+        return String(format: String(localized: "Embedded in %@"), hostApp)
+    }
+
+    private static func embeddedCLISubprocessSubtitle(
+        rawName: String,
+        context: SessionProcessContext?
+    )
+        -> String
+    {
+        let hostApp = effectiveEmbeddedHostApp(rawName: rawName, context: context) ?? ""
+        let spawner = normalizedSpawnerName(context?.spawnerProcessName, excludingApp: hostApp, command: rawName)
+        let shell = normalizedShellName(context?.viaShellName, excluding: rawName)
+        if let spawner, let shell {
+            return String(format: String(localized: "Embedded CLI · by %@ via %@"), spawner, shell)
+        }
+        if let spawner {
+            return String(format: String(localized: "Embedded CLI · by %@"), spawner)
+        }
+        if let shell {
+            return String(format: String(localized: "Embedded CLI · via %@"), shell)
+        }
+        return String(localized: "Embedded CLI")
     }
 
     private static func systemServiceSubtitle(rawName: String, executablePath: String?) -> String {
@@ -1500,12 +2071,179 @@ nonisolated enum SessionSourceClassifier {
         return trimmed.hasSuffix("/") ? trimmed : trimmed + "/"
     }
 
+    private enum ParsedFilterKey {
+        case synthetic(String)
+        case appProcess(app: String, origin: String)
+        case cliApp(app: String, command: String)
+        case cliTerminal(terminal: String, command: String)
+        case cliSystem(caller: String, command: String)
+        case cliDaemon(daemon: String, command: String)
+        case namedProcessOrApp(String)
+    }
+
+    private static func parseFilterKey(_ key: String) -> ParsedFilterKey {
+        if isSyntheticFilterKey(key) {
+            return .synthetic(key)
+        }
+        if key.hasPrefix("app-proc:"),
+           let pair = splitScopedPair(String(key.dropFirst("app-proc:".count)))
+        {
+            return .appProcess(app: pair.scope, origin: pair.target)
+        }
+        if key.hasPrefix("cli:app:"),
+           let pair = splitScopedPair(String(key.dropFirst("cli:app:".count)))
+        {
+            return .cliApp(app: pair.scope, command: pair.target)
+        }
+        if key.hasPrefix("cli:term:"),
+           let pair = splitScopedPair(String(key.dropFirst("cli:term:".count)))
+        {
+            return .cliTerminal(terminal: pair.scope, command: pair.target)
+        }
+        if key.hasPrefix("cli:sys:"),
+           let pair = splitScopedPair(String(key.dropFirst("cli:sys:".count)))
+        {
+            return .cliSystem(caller: pair.scope, command: pair.target)
+        }
+        if key.hasPrefix("cli:daemon:"),
+           let pair = splitScopedPair(String(key.dropFirst("cli:daemon:".count)))
+        {
+            return .cliDaemon(daemon: pair.scope, command: pair.target)
+        }
+        return .namedProcessOrApp(key)
+    }
+
+    private static func splitScopedPair(_ remainder: String) -> (scope: String, target: String)? {
+        guard let colon = remainder.firstIndex(of: ":") else {
+            return nil
+        }
+        let scope = String(remainder[..<colon]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let target = String(remainder[remainder.index(after: colon)...])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !scope.isEmpty, !target.isEmpty else {
+            return nil
+        }
+        return (scope, target)
+    }
+
+    private static func concreteAppOriginProcessName(appTitle: String, context: SessionProcessContext?) -> String {
+        if let explicitOrigin = normalizedNonEmpty(context?.originProcessName),
+           explicitOrigin != "—"
+        {
+            return explicitOrigin
+        }
+        if let path = normalizedNonEmpty(context?.executablePath),
+           let helper = PktapHeader.nestedHelperViaName(
+               executablePath: path,
+               outerAppDisplayName: appTitle
+           )
+        {
+            return helper
+        }
+        return appTitle
+    }
+
+    private static func formattedAppProcessTableLabel(appTitle: String, originProcess: String) -> String {
+        let prefix = appTitle + " "
+        if originProcess.hasPrefix(prefix) {
+            let suffix = String(originProcess.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+            if !suffix.isEmpty {
+                return "\(appTitle) · \(suffix)"
+            }
+        }
+        return "\(appTitle) · \(originProcess)"
+    }
+
+    private static func effectiveEmbeddedHostApp(rawName: String, context: SessionProcessContext?) -> String? {
+        if let hostApp = normalizedNonEmpty(context?.hostAppName),
+           hostApp != "—",
+           hostApp != rawName
+        {
+            return hostApp
+        }
+        if context?.callerKind == .app,
+           let parentApp = normalizedNonEmpty(context?.parentProcessName),
+           parentApp != "—",
+           parentApp != rawName
+        {
+            return parentApp
+        }
+        return nil
+    }
+
+    private static func effectiveTerminalCallerName(context: SessionProcessContext?) -> String {
+        normalizedNonEmpty(context?.parentProcessName) ?? String(localized: "Terminal")
+    }
+
+    private static func effectiveSystemCallerKey(rawName: String, context: SessionProcessContext?) -> String {
+        if let spawner = normalizedNonEmpty(context?.spawnerProcessName),
+           spawner != "launchd",
+           spawner != rawName,
+           !ignoredParentLauncherNames.contains(spawner)
+        {
+            return spawner
+        }
+        return "launchd"
+    }
+
+    private static func effectiveDaemonCallerKey(rawName: String, context: SessionProcessContext?) -> String {
+        if let spawner = normalizedNonEmpty(context?.spawnerProcessName),
+           spawner != rawName,
+           !ignoredParentLauncherNames.contains(spawner)
+        {
+            return spawner
+        }
+        if let parent = normalizedNonEmpty(context?.parentProcessName),
+           parent != rawName,
+           !ignoredParentLauncherNames.contains(parent)
+        {
+            return parent
+        }
+        return "daemon"
+    }
+
+    private static func normalizedSpawnerName(
+        _ raw: String?,
+        excludingApp appName: String,
+        command: String
+    )
+        -> String?
+    {
+        guard let trimmed = normalizedNonEmpty(raw),
+              trimmed != "—",
+              trimmed != appName,
+              trimmed != command,
+              !ignoredParentLauncherNames.contains(trimmed) else
+        {
+            return nil
+        }
+        return trimmed
+    }
+
+    private static func normalizedShellName(_ raw: String?, excluding command: String) -> String? {
+        guard var trimmed = normalizedNonEmpty(raw), trimmed != "—" else {
+            return nil
+        }
+        if trimmed.hasPrefix("-") {
+            trimmed.removeFirst()
+        }
+        guard !trimmed.isEmpty, trimmed.lowercased() != command.lowercased() else {
+            return nil
+        }
+        return trimmed
+    }
+
     private static func contextRichness(_ context: SessionProcessContext?) -> Int {
         guard let context else { return 0 }
         var score = 1
         if normalizedNonEmpty(context.executablePath) != nil { score += 4 }
+        if normalizedNonEmpty(context.hostAppName) != nil { score += 3 }
         if normalizedNonEmpty(context.bundleIdentifier) != nil { score += 2 }
+        if context.callerKind != nil { score += 2 }
         if normalizedNonEmpty(context.parentProcessName) != nil { score += 2 }
+        if normalizedNonEmpty(context.originProcessName) != nil { score += 1 }
+        if normalizedNonEmpty(context.spawnerProcessName) != nil { score += 1 }
+        if normalizedNonEmpty(context.viaShellName) != nil { score += 1 }
         if context.hasControllingTTY { score += 1 }
         if context.isRootUser { score += 1 }
         return score

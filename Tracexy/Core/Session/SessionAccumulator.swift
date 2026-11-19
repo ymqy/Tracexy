@@ -791,9 +791,15 @@ private extension SessionAccumulator {
             }
             if processName == nil, let name = packet.processName, !name.isEmpty {
                 processName = name
-            }
-            if processProvenance == nil, let provenance = packet.processProvenance {
-                processProvenance = provenance
+                if let provenance = packet.processProvenance {
+                    processProvenance = provenance
+                } else if processProvenance?.isKernelTask == true {
+                    processProvenance = nil
+                }
+            } else if let provenance = packet.processProvenance {
+                if processProvenance == nil || (processProvenance?.isKernelTask == true && !provenance.isKernelTask) {
+                    processProvenance = provenance
+                }
             }
             for binding in packet.dnsResolvedBindings {
                 if dnsResolvedBindings.contains(binding) {

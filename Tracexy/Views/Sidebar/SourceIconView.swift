@@ -50,6 +50,9 @@ struct SourceIconView: View {
         case .cli:
             return cliSymbol(for: filterKey.isEmpty ? title : filterKey)
         case .thirdPartyService:
+            if subtitle?.hasPrefix(String(localized: "App Helper Process")) == true {
+                return fallbackSymbol ?? "gearshape.2"
+            }
             if subtitle == String(localized: "System Network Extension") {
                 return "puzzlepiece.extension"
             }
@@ -160,9 +163,19 @@ struct SourceIconView: View {
     }
 
     nonisolated private static func cliSymbol(for command: String) -> String {
-        let lower = command.lowercased()
+        let extracted: String = if command.hasPrefix("cli:") {
+            command.split(separator: ":", maxSplits: 3).last.map(String.init) ?? command
+        } else if let dotRange = command.range(of: " · ") {
+            String(command[..<dotRange.lowerBound])
+        } else {
+            command
+        }
+        let lower = extracted.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if lower.hasPrefix("python3.") || lower.hasPrefix("python2.") {
+            return "curlybraces"
+        }
         switch lower {
-        case "zsh", "bash", "fish", "sh", "-zsh", "-bash", "-fish", "-sh":
+        case "zsh", "bash", "fish", "sh", "dash", "csh", "tcsh", "ksh", "-zsh", "-bash", "-fish", "-sh":
             return "terminal"
         case "curl", "wget", "nc", "telnet", "ftp", "tftp":
             return "arrow.up.arrow.down"

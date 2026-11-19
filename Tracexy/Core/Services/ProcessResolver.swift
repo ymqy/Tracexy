@@ -587,35 +587,47 @@ final class ProcessResolver {
                 outerMainExecutableLookup: outerMainExecutableLookup
             )
         }
+        let originProcessName = PktapHeader.concreteOriginProcessName(
+            executablePath: resolvedExecPath,
+            resolvedDisplayName: appName,
+            outerMainExecutableLookup: outerMainExecutableLookup
+        )
 
         let bsdInfo = pid > 0 ? bsdProcessInspector(pid) : nil
         let hasTTY = bsdInfo?.hasTTY ?? false
         let isRootUser = bsdInfo.map { $0.uid == 0 } ?? false
-        var parentProcessName: String?
-        if let ppid = bsdInfo?.ppid,
-           ppid > 1,
-           ppid != pid,
-           let parentExecPath = executablePathProvider(ppid)
-        {
-            if let outerBundlePath = outermostAppBundlePath(fromExecutablePath: parentExecPath) {
-                parentProcessName = appNameFromAppBundlePath(
-                    outerBundlePath,
-                    bundleNameLookup: bundleNameLookup
-                )
-            } else {
-                let basename = (parentExecPath as NSString).lastPathComponent
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                if !basename.isEmpty, basename != "/" {
-                    parentProcessName = basename
+        let ancestry = PktapHeader.resolveAncestorChain(
+            primaryPID: pid,
+            primaryExecutablePath: resolvedExecPath,
+            bsdProcessLookup: { queryPID in queryPID == pid ? bsdInfo : bsdProcessInspector(queryPID) },
+            executablePathLookup: executablePathProvider,
+            displayNameFromPath: { path in
+                if let outerBundlePath = outermostAppBundlePath(fromExecutablePath: path) {
+                    return appNameFromAppBundlePath(outerBundlePath, bundleNameLookup: bundleNameLookup)
                 }
-            }
-        }
+                let basename = (path as NSString).lastPathComponent
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return basename.isEmpty || basename == "/" ? nil : basename
+            },
+            bundleIdentifierFromPath: { path in
+                PktapHeader.bundleIdentifier(
+                    fromExecutablePath: path,
+                    bundleIdentifierLookup: bundleIdentifierLookup
+                )
+            },
+            outerMainExecutableFromAppPath: outerMainExecutableLookup
+        )
 
         let provenance = ProcessProvenance(
             executablePath: resolvedExecPath,
             bundleIdentifier: resolvedBundleID,
             viaProcessName: viaName,
-            parentProcessName: parentProcessName,
+            parentProcessName: ancestry.parentProcessName,
+            originProcessName: originProcessName,
+            hostAppName: ancestry.hostAppName,
+            spawnerProcessName: ancestry.spawnerProcessName,
+            viaShellName: ancestry.viaShellName,
+            callerKind: ancestry.callerKind,
             hasControllingTTY: hasTTY,
             isRootUser: isRootUser,
             isKernelTask: false

@@ -556,6 +556,7 @@ struct PktapTests {
             bundleIdentifier: "com.apple.Safari",
             viaProcessName: "nsurlsessiond",
             parentProcessName: "Dock",
+            originProcessName: "Safari",
             hasControllingTTY: false,
             isRootUser: false,
             isKernelTask: false
@@ -611,10 +612,208 @@ struct PktapTests {
             bundleIdentifier: nil,
             viaProcessName: nil,
             parentProcessName: "Antigravity",
+            originProcessName: "node",
+            hostAppName: "Antigravity",
+            spawnerProcessName: nil,
+            viaShellName: nil,
+            callerKind: .app,
             hasControllingTTY: true,
             isRootUser: false,
             isKernelTask: false
         ))
+    }
+
+    @Test
+    func resolvesMultiHopAncestorChainsAcrossAppsTerminalsSystemDaemonsAndDelegatedHelpers() throws {
+        let inner = [UInt8](repeating: 0x33, count: 40)
+
+        // 1. 4-hop embedded CLI: Antigravity.app -> language_server_macos_arm -> zsh -> curl.
+        let curlPacket = makePktapPacket(
+            process: "curl",
+            pid: 9_500,
+            epid: 9_500,
+            effectiveProcess: "curl",
+            typeNext: PktapHeader.typeNextPacket,
+            interface: "en0",
+            innerDLT: 1,
+            frame: inner
+        )
+        let parsedCurl = try #require(PktapHeader.parse(curlPacket))
+        let curlExec = "/usr/bin/curl"
+        let zshExec = "/bin/zsh"
+        let langServerExec = "/Applications/Antigravity.app/Contents/Resources/"
+            + "app/extensions/antigravity/bin/language_server_macos_arm"
+        let appMainExec = "/Applications/Antigravity.app/Contents/MacOS/Electron"
+
+        let embeddedCurl = PktapHeader.resolveAttribution(
+            parsed: parsedCurl,
+            executablePathLookup: { pid in
+                switch pid {
+                case 9_500: curlExec
+                case 9_400: zshExec
+                case 9_300: langServerExec
+                case 9_000: appMainExec
+                default: nil
+                }
+            },
+            bsdProcessLookup: { pid in
+                switch pid {
+                case 9_500: (ppid: 9_400, uid: 501, hasTTY: false)
+                case 9_400: (ppid: 9_300, uid: 501, hasTTY: false)
+                case 9_300: (ppid: 9_000, uid: 501, hasTTY: false)
+                case 9_000: (ppid: 1, uid: 501, hasTTY: false)
+                default: nil
+                }
+            },
+            displayNameFromPath: { path in
+                if path.hasPrefix("/Applications/Antigravity.app/") {
+                    return "Antigravity"
+                }
+                return PktapHeader.displayName(fromExecutablePath: path)
+            },
+            bundleIdentifierFromPath: { path in
+                path.hasPrefix("/Applications/Antigravity.app/") ? "com.amunx.antigravity" : nil
+            },
+            outerMainExecutableFromAppPath: { _ in "Electron" }
+        )
+        #expect(embeddedCurl.processName == "curl")
+        #expect(embeddedCurl.provenance == ProcessProvenance(
+            executablePath: curlExec,
+            bundleIdentifier: nil,
+            viaProcessName: nil,
+            parentProcessName: "Antigravity",
+            originProcessName: "curl",
+            hostAppName: "Antigravity",
+            spawnerProcessName: "language_server_macos_arm",
+            viaShellName: "zsh",
+            callerKind: .app,
+            hasControllingTTY: false,
+            isRootUser: false,
+            isKernelTask: false
+        ))
+
+        // 2. Secure-coding round-trip of full multi-hop ProcessProvenance inside CapturedFrameMessage.
+        let msg = CapturedFrameMessage(
+            bytes: Data(inner),
+            timestampSeconds: 1_700_000_010,
+            timestampMicroseconds: 500,
+            capturedLength: Int64(inner.count),
+            originalLength: Int64(inner.count),
+            linkType: 1,
+            processName: embeddedCurl.processName,
+            processProvenance: embeddedCurl.provenance
+        )
+        let archived = try NSKeyedArchiver.archivedData(withRootObject: msg, requiringSecureCoding: true)
+        let unarchived = try #require(
+            try NSKeyedUnarchiver.unarchivedObject(ofClass: CapturedFrameMessage.self, from: archived)
+        )
+        #expect(unarchived.processName == "curl")
+        #expect(unarchived.processProvenance == embeddedCurl.provenance)
+
+        // 3. Interactive terminal chain: iTerm2.app -> login -> -zsh -> curl -> `.terminal` (NOT `.app`).
+        let itermExec = "/Applications/iTerm.app/Contents/MacOS/iTerm2"
+        let loginExec = "/usr/bin/login"
+        let terminalCurl = PktapHeader.resolveAttribution(
+            parsed: parsedCurl,
+            executablePathLookup: { pid in
+                switch pid {
+                case 9_500: curlExec
+                case 9_400: "/bin/-zsh"
+                case 9_300: loginExec
+                case 9_200: itermExec
+                default: nil
+                }
+            },
+            bsdProcessLookup: { pid in
+                switch pid {
+                case 9_500: (ppid: 9_400, uid: 501, hasTTY: true)
+                case 9_400: (ppid: 9_300, uid: 501, hasTTY: true)
+                case 9_300: (ppid: 9_200, uid: 0, hasTTY: true)
+                case 9_200: (ppid: 1, uid: 501, hasTTY: false)
+                default: nil
+                }
+            },
+            displayNameFromPath: { path in
+                path == itermExec ? "iTerm2" : PktapHeader.displayName(fromExecutablePath: path)
+            },
+            bundleIdentifierFromPath: { path in
+                path == itermExec ? "com.googlecode.iterm2" : nil
+            },
+            outerMainExecutableFromAppPath: { _ in "iTerm2" }
+        )
+        #expect(terminalCurl.provenance?.callerKind == .terminal)
+        #expect(terminalCurl.provenance?.hostAppName == nil)
+        #expect(terminalCurl.provenance?.parentProcessName == "iTerm2")
+        #expect(terminalCurl.provenance?.viaShellName == "zsh")
+
+        // 4. System daemon chain: launchd (1) -> softwareupdated -> sh -> curl -> `.system`.
+        let softwareUpdatedExec = "/System/Library/CoreServices/Software Update.app/Contents/Resources/softwareupdated"
+        let systemCurl = PktapHeader.resolveAttribution(
+            parsed: parsedCurl,
+            executablePathLookup: { pid in
+                switch pid {
+                case 9_500: curlExec
+                case 9_400: "/bin/sh"
+                case 9_300: softwareUpdatedExec
+                default: nil
+                }
+            },
+            bsdProcessLookup: { pid in
+                switch pid {
+                case 9_500: (ppid: 9_400, uid: 0, hasTTY: false)
+                case 9_400: (ppid: 9_300, uid: 0, hasTTY: false)
+                case 9_300: (ppid: 1, uid: 0, hasTTY: false)
+                default: nil
+                }
+            },
+            displayNameFromPath: { path in PktapHeader.displayName(fromExecutablePath: path) },
+            bundleIdentifierFromPath: { _ in "com.apple.SoftwareUpdate" },
+            outerMainExecutableFromAppPath: { _ in nil }
+        )
+        #expect(systemCurl.provenance?.callerKind == .system)
+        #expect(systemCurl.provenance?.hostAppName == nil)
+        #expect(systemCurl.provenance?.spawnerProcessName == "softwareupdated")
+        #expect(systemCurl.provenance?.parentProcessName == "softwareupdated")
+        #expect(systemCurl.provenance?.viaShellName == "sh")
+
+        // 5. Delegated DNS (`pid = mDNSResponder`, `effectivePID = language_server_macos_arm`):
+        // preserves BOTH `originProcessName == "language_server_macos_arm"` and `viaProcessName == "mDNSResponder"`.
+        let delegatedDNSPacket = makePktapPacket(
+            process: "mDNSResponder",
+            pid: 412,
+            epid: 9_300,
+            effectiveProcess: "language_server_",
+            typeNext: PktapHeader.typeNextPacket,
+            interface: "en0",
+            innerDLT: 1,
+            frame: inner
+        )
+        let parsedDelegatedDNS = try #require(PktapHeader.parse(delegatedDNSPacket))
+        let delegatedHelper = PktapHeader.resolveAttribution(
+            parsed: parsedDelegatedDNS,
+            executablePathLookup: { pid in
+                switch pid {
+                case 412: "/usr/sbin/mDNSResponder"
+                case 9_300: langServerExec
+                case 9_000: appMainExec
+                default: nil
+                }
+            },
+            bsdProcessLookup: { pid in
+                pid == 9_300 ? (ppid: 9_000, uid: 501, hasTTY: false) : nil
+            },
+            displayNameFromPath: { path in
+                if path.hasPrefix("/Applications/Antigravity.app/") {
+                    return "Antigravity"
+                }
+                return PktapHeader.displayName(fromExecutablePath: path)
+            },
+            bundleIdentifierFromPath: { _ in "com.amunx.antigravity" },
+            outerMainExecutableFromAppPath: { _ in "Electron" }
+        )
+        #expect(delegatedHelper.processName == "Antigravity")
+        #expect(delegatedHelper.provenance?.originProcessName == "language_server_macos_arm")
+        #expect(delegatedHelper.provenance?.viaProcessName == "mDNSResponder")
     }
 
     @Test
@@ -648,6 +847,7 @@ struct PktapTests {
             bundleIdentifier: "com.netease.uuremote",
             viaProcessName: "UURemoteDaemon",
             parentProcessName: nil,
+            originProcessName: "UURemoteDaemon",
             hasControllingTTY: false,
             isRootUser: true,
             isKernelTask: false

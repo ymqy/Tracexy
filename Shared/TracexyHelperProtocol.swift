@@ -419,9 +419,240 @@ nonisolated enum PktapHeader {
         return fallback.isEmpty ? nil : fallback
     }
 
+    /// Maximum `ppid` hops walked when resolving multi-hop process ancestry
+    /// (penetrating intermediate shells, `login`/`sudo`/`env`, and nested helpers).
+    static let maxAncestorHops = 12
+
+    /// Multi-hop ancestor chain metadata resolved for a process.
+    struct AncestorChain: Equatable, Sendable {
+        var parentProcessName: String?
+        var hostAppName: String?
+        var spawnerProcessName: String?
+        var viaShellName: String?
+        var callerKind: ProcessCallerKind?
+    }
+
+    /// Whether an outermost `.app` bundle path represents a user/system host `.app`
+    /// rather than a framework-embedded CLI wrapper (`Python.framework/.../Python.app`)
+    /// or `/System/Library/` CoreServices daemon bundle.
+    static func isHostAppBundlePath(_ appBundlePath: String) -> Bool {
+        !appBundlePath.isEmpty
+            && !appBundlePath.hasPrefix("/System/Library/")
+            && !appBundlePath.hasPrefix("/Library/Developer/")
+            && !appBundlePath.contains(".xctoolchain/")
+            && !appBundlePath.contains(".framework/")
+    }
+
+    /// Whether a host `.app` bundle is an interactive terminal emulator (`Terminal`, `iTerm2`,
+    /// `Ghostty`, `Warp`, `kitty`, `WezTerm`, `Alacritty`, `Hyper`, `Tabby`).
+    static func isTerminalEmulatorApp(displayName: String, bundleIdentifier: String?) -> Bool {
+        if let bundleID = bundleIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+           terminalEmulatorBundleIDs.contains(bundleID)
+        {
+            return true
+        }
+        let normalizedName = displayName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return terminalEmulatorNames.contains(normalizedName)
+    }
+
+    /// Resolves the concrete initiating executable name before `.app` collapsing
+    /// (e.g. `"language_server_macos_arm"`, `"OrbStack Helper"`, `"Antigravity"`, `"curl"`).
+    static func concreteOriginProcessName(
+        executablePath: String?,
+        resolvedDisplayName: String,
+        outerMainExecutableLookup: (String) -> String? = bundleExecutableName(atBundlePath:)
+    )
+        -> String
+    {
+        if let path = trimmedNonEmpty(executablePath) {
+            if let outerApp = outermostAppBundlePath(fromExecutablePath: path),
+               isHostAppBundlePath(outerApp)
+            {
+                if let helper = nestedHelperViaName(
+                    executablePath: path,
+                    outerAppDisplayName: resolvedDisplayName,
+                    outerMainExecutableLookup: outerMainExecutableLookup
+                ) {
+                    return helper
+                }
+                return resolvedDisplayName
+            }
+            let basename = (path as NSString).lastPathComponent
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !basename.isEmpty, basename != "/" {
+                return basename
+            }
+        }
+        return resolvedDisplayName
+    }
+
+    /// Walks up to ``maxAncestorHops`` `ppid` ancestors to classify the root caller
+    /// (`.app`, `.terminal`, `.system`, `.thirdPartyDaemon`), outermost GUI `hostAppName`,
+    /// immediate non-shell `spawnerProcessName`, and intermediate `viaShellName`.
+    static func resolveAncestorChain(
+        primaryPID: Int32,
+        primaryExecutablePath: String?,
+        bsdProcessLookup: (Int32) -> (ppid: Int32, uid: UInt32, hasTTY: Bool)? = inspectBSDProcess(pid:),
+        executablePathLookup: (Int32) -> String? = executablePath(forPID:),
+        displayNameFromPath: (String) -> String? = displayName(fromExecutablePath:),
+        bundleIdentifierFromPath: (String) -> String? = { bundleIdentifier(fromExecutablePath: $0) },
+        outerMainExecutableFromAppPath: (String) -> String? = bundleExecutableName(atBundlePath:)
+    )
+        -> AncestorChain
+    {
+        guard primaryPID > 0 else {
+            return AncestorChain()
+        }
+
+        // Processes whose own executable already resides inside a host `.app` bundle
+        // are direct `.app` processes/helpers; keep 1-hop `parentProcessName` only.
+        if let primaryPath = trimmedNonEmpty(primaryExecutablePath),
+           let outerApp = outermostAppBundlePath(fromExecutablePath: primaryPath),
+           isHostAppBundlePath(outerApp)
+        {
+            var directParent: String?
+            if let ppid = bsdProcessLookup(primaryPID)?.ppid,
+               ppid > 1,
+               ppid != primaryPID,
+               let parentPath = trimmedNonEmpty(executablePathLookup(ppid)),
+               let parentName = trimmedNonEmpty(displayNameFromPath(parentPath))
+            {
+                directParent = parentName
+            }
+            return AncestorChain(parentProcessName: directParent)
+        }
+
+        var visited: Set<Int32> = [primaryPID]
+        var currentPID = primaryPID
+        var directParentName: String?
+        var viaShellName: String?
+        var spawnerProcessName: String?
+        var topDaemonPath: String?
+        var topDaemonName: String?
+        var topDaemonBundleID: String?
+
+        for step in 0 ..< maxAncestorHops {
+            guard let ppid = bsdProcessLookup(currentPID)?.ppid,
+                  ppid > 0,
+                  !visited.contains(ppid) else
+            {
+                break
+            }
+            visited.insert(ppid)
+
+            if ppid == 1 {
+                let kind: ProcessCallerKind = if let daemonPath = topDaemonPath,
+                                                 !isSystemDaemonPath(daemonPath, bundleID: topDaemonBundleID)
+                {
+                    .thirdPartyDaemon
+                } else {
+                    .system
+                }
+                return AncestorChain(
+                    parentProcessName: spawnerProcessName ?? topDaemonName,
+                    hostAppName: nil,
+                    spawnerProcessName: spawnerProcessName,
+                    viaShellName: viaShellName,
+                    callerKind: kind
+                )
+            }
+
+            guard let ancestorPath = trimmedNonEmpty(executablePathLookup(ppid)) else {
+                break
+            }
+            let rawLeaf = (ancestorPath as NSString).lastPathComponent
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let cleanLeaf = rawLeaf.hasPrefix("-") ? String(rawLeaf.dropFirst()) : rawLeaf
+
+            if step == 0 {
+                directParentName = trimmedNonEmpty(displayNameFromPath(ancestorPath))
+                    ?? (cleanLeaf.isEmpty ? nil : cleanLeaf)
+            }
+
+            if let outerAppPath = outermostAppBundlePath(fromExecutablePath: ancestorPath),
+               isHostAppBundlePath(outerAppPath)
+            {
+                let resolvedAppName = trimmedNonEmpty(displayNameFromPath(ancestorPath))
+                    ?? appName(fromExecutablePath: ancestorPath)
+                let resolvedAppBundleID = trimmedNonEmpty(bundleIdentifierFromPath(ancestorPath))
+                if spawnerProcessName == nil,
+                   let helperLeaf = nestedHelperViaName(
+                       executablePath: ancestorPath,
+                       outerAppDisplayName: resolvedAppName,
+                       outerMainExecutableLookup: outerMainExecutableFromAppPath
+                   )
+                {
+                    spawnerProcessName = helperLeaf
+                }
+                if isTerminalEmulatorApp(displayName: resolvedAppName, bundleIdentifier: resolvedAppBundleID) {
+                    return AncestorChain(
+                        parentProcessName: resolvedAppName,
+                        hostAppName: nil,
+                        spawnerProcessName: spawnerProcessName,
+                        viaShellName: viaShellName,
+                        callerKind: .terminal
+                    )
+                }
+                return AncestorChain(
+                    parentProcessName: resolvedAppName,
+                    hostAppName: resolvedAppName,
+                    spawnerProcessName: spawnerProcessName,
+                    viaShellName: viaShellName,
+                    callerKind: .app
+                )
+            }
+
+            let lowerLeaf = cleanLeaf.lowercased()
+            if shellExecutableNames.contains(lowerLeaf) {
+                if viaShellName == nil, !cleanLeaf.isEmpty {
+                    viaShellName = cleanLeaf
+                }
+            } else if !skippedLauncherNames.contains(lowerLeaf), !cleanLeaf.isEmpty, cleanLeaf != "/" {
+                if spawnerProcessName == nil {
+                    spawnerProcessName = cleanLeaf
+                }
+                topDaemonPath = ancestorPath
+                topDaemonName = cleanLeaf
+                topDaemonBundleID = trimmedNonEmpty(bundleIdentifierFromPath(ancestorPath))
+            }
+
+            currentPID = ppid
+        }
+
+        if let daemonPath = topDaemonPath {
+            let inferredKind: ProcessCallerKind? = if isSystemDaemonPath(daemonPath, bundleID: topDaemonBundleID) {
+                .system
+            } else if daemonPath.hasPrefix("/Library/LaunchDaemons/")
+                || daemonPath.hasPrefix("/Library/PrivilegedHelperTools/")
+            {
+                .thirdPartyDaemon
+            } else {
+                nil
+            }
+            if let inferredKind {
+                return AncestorChain(
+                    parentProcessName: spawnerProcessName ?? topDaemonName ?? directParentName,
+                    hostAppName: nil,
+                    spawnerProcessName: spawnerProcessName,
+                    viaShellName: viaShellName,
+                    callerKind: inferredKind
+                )
+            }
+        }
+
+        return AncestorChain(
+            parentProcessName: spawnerProcessName ?? directParentName,
+            hostAppName: nil,
+            spawnerProcessName: spawnerProcessName,
+            viaShellName: viaShellName,
+            callerKind: nil
+        )
+    }
+
     /// Resolves both the user-facing `processName` and full `ProcessProvenance`
     /// (`executablePath`, `bundleIdentifier`, `viaProcessName`, `parentProcessName`,
-    /// `hasControllingTTY`, `isRootUser`, `isKernelTask`) from a parsed `pktap` header.
+    /// `originProcessName`, `hostAppName`, `spawnerProcessName`, `viaShellName`,
+    /// `callerKind`, `hasControllingTTY`, `isRootUser`, `isKernelTask`) from a parsed `pktap` header.
     static func resolveAttribution(
         parsed: Parsed,
         executablePathLookup: (Int32) -> String? = executablePath(forPID:),
@@ -486,37 +717,43 @@ nonisolated enum PktapHeader {
         }
 
         let resolvedBundleID = primaryExecPath.flatMap { trimmedNonEmpty(bundleIdentifierFromPath($0)) }
-        let resolvedViaName: String?
-        if let delegatedViaName {
-            resolvedViaName = delegatedViaName
-        } else if let primaryExecPath {
-            resolvedViaName = nestedHelperViaName(
-                executablePath: primaryExecPath,
+        let nestedHelperName = primaryExecPath.flatMap {
+            nestedHelperViaName(
+                executablePath: $0,
                 outerAppDisplayName: primaryName,
                 outerMainExecutableLookup: outerMainExecutableFromAppPath
             )
-        } else {
-            resolvedViaName = nil
         }
+        let resolvedViaName = delegatedViaName ?? nestedHelperName
+        let originProcessName = concreteOriginProcessName(
+            executablePath: primaryExecPath,
+            resolvedDisplayName: primaryName,
+            outerMainExecutableLookup: outerMainExecutableFromAppPath
+        )
 
         let bsdInfo = primaryPID > 0 ? bsdProcessLookup(primaryPID) : nil
         let hasTTY = bsdInfo?.hasTTY ?? false
         let isRootUser = bsdInfo.map { $0.uid == 0 } ?? false
-        var parentProcessName: String?
-        if let ppid = bsdInfo?.ppid,
-           ppid > 1,
-           ppid != primaryPID,
-           let parentPath = trimmedNonEmpty(executablePathLookup(ppid)),
-           let parentName = trimmedNonEmpty(displayNameFromPath(parentPath))
-        {
-            parentProcessName = parentName
-        }
+        let ancestry = resolveAncestorChain(
+            primaryPID: primaryPID,
+            primaryExecutablePath: primaryExecPath,
+            bsdProcessLookup: { pid in pid == primaryPID ? bsdInfo : bsdProcessLookup(pid) },
+            executablePathLookup: executablePathLookup,
+            displayNameFromPath: displayNameFromPath,
+            bundleIdentifierFromPath: bundleIdentifierFromPath,
+            outerMainExecutableFromAppPath: outerMainExecutableFromAppPath
+        )
 
         let provenance = ProcessProvenance(
             executablePath: primaryExecPath,
             bundleIdentifier: resolvedBundleID,
             viaProcessName: resolvedViaName,
-            parentProcessName: parentProcessName,
+            parentProcessName: ancestry.parentProcessName,
+            originProcessName: originProcessName,
+            hostAppName: ancestry.hostAppName,
+            spawnerProcessName: ancestry.spawnerProcessName,
+            viaShellName: ancestry.viaShellName,
+            callerKind: ancestry.callerKind,
             hasControllingTTY: hasTTY,
             isRootUser: isRootUser,
             isKernelTask: false
@@ -716,6 +953,62 @@ nonisolated enum PktapHeader {
         ".xpc/",
         ".framework/",
     ]
+
+    private static let terminalEmulatorBundleIDs: Set<String> = [
+        "com.apple.terminal",
+        "com.googlecode.iterm2",
+        "dev.warp.warp-stable",
+        "dev.warp.warp-preview",
+        "com.mitchellh.ghostty",
+        "net.kovidgoyal.kitty",
+        "com.github.wez.wezterm",
+        "co.zeit.hyper",
+        "io.alacritty",
+        "org.alacritty",
+        "org.tabby",
+        "com.tabby",
+    ]
+
+    private static let terminalEmulatorNames: Set<String> = [
+        "terminal",
+        "终端",
+        "iterm2",
+        "iterm",
+        "warp",
+        "ghostty",
+        "kitty",
+        "wezterm",
+        "wezterm-gui",
+        "alacritty",
+        "hyper",
+        "tabby",
+    ]
+
+    private static let shellExecutableNames: Set<String> = [
+        "sh", "zsh", "bash", "fish", "dash", "csh", "tcsh", "ksh", "nu", "elvish", "pwsh",
+    ]
+
+    private static let skippedLauncherNames: Set<String> = [
+        "launchd", "login", "sudo", "su", "xpcproxy", "env", "nohup", "nice", "arch", "caffeinate", "timeout",
+    ]
+
+    private static func isSystemDaemonPath(_ path: String, bundleID: String?) -> Bool {
+        if path.hasPrefix("/Library/Developer/") || path.contains(".xctoolchain/") {
+            return false
+        }
+        if path.hasPrefix("/System/")
+            || path.hasPrefix("/Library/Apple/System/")
+            || path.hasPrefix("/usr/libexec/")
+            || path.hasPrefix("/usr/sbin/")
+            || path.hasPrefix("/sbin/")
+        {
+            return true
+        }
+        if bundleID?.hasPrefix("com.apple.") == true {
+            return true
+        }
+        return false
+    }
 
     private static func trimmedNonEmpty(_ value: String?) -> String? {
         guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),

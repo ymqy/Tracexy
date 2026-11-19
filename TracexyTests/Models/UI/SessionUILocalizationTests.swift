@@ -276,6 +276,25 @@ struct SessionUILocalizationTests {
         ) == "100+ 个抓包, 900+ 个会话")
     }
 
+    @Test("App subprocess roles and caller-scoped CLI annotations resolve Simplified Chinese translations")
+    func appSubprocessAndCallerScopedCLILocalization() throws {
+        let bundles = try makeCatalogBundles()
+        defer { bundles.teardown() }
+
+        let expectedZhHans: [(String.LocalizationValue, String)] = [
+            ("App Main Process", "应用主进程"),
+            ("App Helper Process", "应用内辅助进程"),
+            ("Embedded CLI", "内嵌终端命令"),
+            ("Interactive terminal", "终端交互执行"),
+            ("System Call", "系统调用"),
+            ("Direct system call", "系统直接调用"),
+            ("Terminal", "终端"),
+        ]
+        for (key, expected) in expectedZhHans {
+            #expect(String(localized: key, bundle: bundles.zhHans) == expected)
+        }
+    }
+
     // MARK: Private
 
     private enum CatalogError: Error {

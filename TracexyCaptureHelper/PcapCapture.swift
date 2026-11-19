@@ -623,6 +623,31 @@ final class PcapCapture: @unchecked Sendable {
         return entry
     }
 
+    private func warmAncestorMetadata(
+        startingAt startPID: Int32,
+        cache: inout [Int32: CachedPIDMetadata],
+        pathMetadata: inout [String: CachedPIDMetadata]
+    ) {
+        var currentPID = startPID
+        var visited: Set<Int32> = []
+        for _ in 0 ... PktapHeader.maxAncestorHops {
+            guard currentPID > 0, !visited.contains(currentPID) else {
+                break
+            }
+            visited.insert(currentPID)
+            guard let meta = cachedMetadata(for: currentPID, cache: &cache) else {
+                break
+            }
+            if let path = meta.executablePath {
+                pathMetadata[path] = meta
+            }
+            guard let ppid = meta.bsdInfo?.ppid, ppid > 1 else {
+                break
+            }
+            currentPID = ppid
+        }
+    }
+
     private func resolveCachedAttribution(
         parsed: PktapHeader.Parsed,
         pidPairCache: inout [PIDPair: CachedAttribution],
@@ -642,29 +667,19 @@ final class PcapCapture: @unchecked Sendable {
         }
 
         var pathMetadata: [String: CachedPIDMetadata] = [:]
-        if let effectiveMeta = cachedMetadata(for: parsed.effectivePID, cache: &pidMetadataCache) {
-            if let path = effectiveMeta.executablePath {
-                pathMetadata[path] = effectiveMeta
-            }
-            if let ppid = effectiveMeta.bsdInfo?.ppid, ppid > 1,
-               let parentMeta = cachedMetadata(for: ppid, cache: &pidMetadataCache),
-               let parentPath = parentMeta.executablePath
-            {
-                pathMetadata[parentPath] = parentMeta
-            }
+        if parsed.effectivePID > 0 {
+            warmAncestorMetadata(
+                startingAt: parsed.effectivePID,
+                cache: &pidMetadataCache,
+                pathMetadata: &pathMetadata
+            )
         }
-        if parsed.pid != parsed.effectivePID,
-           let directMeta = cachedMetadata(for: parsed.pid, cache: &pidMetadataCache)
-        {
-            if let path = directMeta.executablePath {
-                pathMetadata[path] = directMeta
-            }
-            if let ppid = directMeta.bsdInfo?.ppid, ppid > 1,
-               let parentMeta = cachedMetadata(for: ppid, cache: &pidMetadataCache),
-               let parentPath = parentMeta.executablePath
-            {
-                pathMetadata[parentPath] = parentMeta
-            }
+        if parsed.pid > 0, parsed.pid != parsed.effectivePID {
+            warmAncestorMetadata(
+                startingAt: parsed.pid,
+                cache: &pidMetadataCache,
+                pathMetadata: &pathMetadata
+            )
         }
 
         let snapshotByPID = pidMetadataCache

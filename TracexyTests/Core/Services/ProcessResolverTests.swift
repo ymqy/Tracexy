@@ -454,6 +454,7 @@ struct ProcessResolverTests {
             bundleIdentifier: "com.netease.uuremote",
             viaProcessName: "UURemoteDaemon",
             parentProcessName: nil,
+            originProcessName: "UURemoteDaemon",
             hasControllingTTY: false,
             isRootUser: true,
             isKernelTask: false
@@ -487,10 +488,60 @@ struct ProcessResolverTests {
             bundleIdentifier: nil,
             viaProcessName: nil,
             parentProcessName: "Terminal",
+            originProcessName: "curl",
+            hostAppName: nil,
+            spawnerProcessName: nil,
+            viaShellName: nil,
+            callerKind: .terminal,
             hasControllingTTY: true,
             isRootUser: false,
             isKernelTask: false
         ))
+
+        // 2b. Multi-hop framework-wrapped Python.app spawned by Antigravity -> language_server_macos_arm -> zsh:
+        // CommandLineTools Python.app must NOT stop the `.app` walk and must attribute up to `Antigravity`.
+        let cltPythonExec = "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/"
+            + "Versions/3.9/Resources/Python.app/Contents/MacOS/Python"
+        let langServerExec = "/Applications/Antigravity.app/Contents/Resources/app/bin/language_server_macos_arm"
+        let pythonAttr = ProcessResolver.resolveProcessAttribution(
+            pid: 9_610,
+            command: "Python",
+            executablePathProvider: { pid in
+                switch pid {
+                case 9_610: cltPythonExec
+                case 9_510: "/bin/zsh"
+                case 9_410: langServerExec
+                default: nil
+                }
+            },
+            bsdProcessInspector: { pid in
+                switch pid {
+                case 9_610: (ppid: 9_510, uid: 501, hasTTY: false)
+                case 9_510: (ppid: 9_410, uid: 501, hasTTY: false)
+                case 9_410: (ppid: 1, uid: 501, hasTTY: false)
+                default: nil
+                }
+            },
+            bundleNameLookup: { path in
+                if path == "/Applications/Antigravity.app" { return "Antigravity" }
+                if path.hasSuffix("/Python.app") { return "Python" }
+                return nil
+            },
+            bundleIdentifierLookup: { path in
+                if path == "/Applications/Antigravity.app" { return "com.amunx.antigravity" }
+                if path.hasSuffix("/Python.app") { return "com.apple.python3" }
+                return nil
+            },
+            outerMainExecutableLookup: { _ in "Electron" },
+            runningAppNameLookup: { _ in nil },
+            runningAppBundleIdentifierLookup: { _ in nil }
+        )
+        #expect(pythonAttr.appName == "Python")
+        #expect(pythonAttr.provenance.originProcessName == "Python")
+        #expect(pythonAttr.provenance.hostAppName == "Antigravity")
+        #expect(pythonAttr.provenance.spawnerProcessName == "language_server_macos_arm")
+        #expect(pythonAttr.provenance.viaShellName == "zsh")
+        #expect(pythonAttr.provenance.callerKind == .app)
 
         // 3. System framework daemon extracts outer `.framework` bundle identifier.
         let ampExec = "/System/Library/PrivateFrameworks/AMPDevices.framework/"
