@@ -472,12 +472,16 @@ struct SessionCenterView: View {
         ), sortOrder: $sortOrder, columnCustomization: $columnCustomization) {
             endpointColumns
             TableColumn("Host", value: \.host) { session in
+                let displayHost = coordinator.addressNames.displayHost(for: session)
+                let discovery = LocalDiscoveryNameClassifier.classify(displayHost)
                 HStack(spacing: Theme.Metrics.spacingS) {
                     SessionTagDots(tags: coordinator.investigationNotes.tags(onSession: session.id))
-                    Text(coordinator.addressNames.displayHost(for: session))
+                    Text(displayHost)
                         .font(Theme.Typography.body)
                         .lineLimit(1)
-                        .help(coordinator.addressNames.displayHost(for: session))
+                    if let discovery {
+                        localDiscoveryBadge(discovery)
+                    }
                     if coordinator.investigationNotes.hasNote(onSession: session.id) {
                         Image(systemName: "note.text")
                             .font(.system(size: Theme.Icon.small))
@@ -486,8 +490,9 @@ struct SessionCenterView: View {
                             .accessibilityLabel("Has a note")
                     }
                 }
+                .help(discovery?.tooltip ?? displayHost)
             }
-            .width(min: 120, ideal: 180)
+            .width(min: 130, ideal: 215)
             .customizationID("host")
             TableColumn("Client", value: \.sortableProcessName) { session in
                 clientCell(session)
@@ -714,8 +719,33 @@ struct SessionCenterView: View {
                     .tracexyChipStyle(tint: .secondary, isActive: true)
             }
         case let .session(session):
-            Text(coordinator.addressNames.displayHost(for: session)).font(Theme.Typography.body).lineLimit(1)
+            let displayHost = coordinator.addressNames.displayHost(for: session)
+            let discovery = LocalDiscoveryNameClassifier.classify(displayHost)
+            if let discovery {
+                HStack(spacing: Theme.Metrics.spacingS) {
+                    Text(displayHost)
+                        .font(Theme.Typography.body)
+                        .lineLimit(1)
+                    localDiscoveryBadge(discovery)
+                }
+                .help(discovery.tooltip)
+            } else {
+                Text(displayHost)
+                    .font(Theme.Typography.body)
+                    .lineLimit(1)
+            }
         }
+    }
+
+    private func localDiscoveryBadge(_ discovery: LocalDiscoveryAnnotation) -> some View {
+        Text(discovery.badgeTitle)
+            .font(Theme.Typography.micro)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(Color.secondary.opacity(0.12), in: Capsule())
     }
 
     /// Right-click menu for the flat session table. Acts on the row under the

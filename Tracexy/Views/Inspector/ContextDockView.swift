@@ -355,17 +355,29 @@ struct ContextDockView: View {
     }
 
     private func identity(for session: SessionSummary, activity: Activity?) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(activity?.title ?? coordinator.addressNames.displayHost(for: session))
+        let displayHost = coordinator.addressNames.displayHost(for: session)
+        let discovery = activity == nil
+            ? LocalDiscoveryNameClassifier.classify(session.host) ?? LocalDiscoveryNameClassifier.classify(displayHost)
+            : nil
+        return VStack(alignment: .leading, spacing: 2) {
+            Text(activity?.title ?? displayHost)
                 .font(Theme.Typography.title)
                 .lineLimit(1)
                 .truncationMode(.middle)
+            if let discovery {
+                Text(discovery.detailTitle)
+                    .font(Theme.Typography.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
             Text(subtitle(for: session, activity: activity))
                 .font(Theme.Typography.body)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
         }
+        .help(discovery?.tooltip ?? (activity?.title ?? displayHost))
     }
 
     /// The one-line judgement. Stated only when there is enough history on this

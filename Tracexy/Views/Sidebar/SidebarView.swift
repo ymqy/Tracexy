@@ -82,6 +82,7 @@ struct SidebarView: View {
     @State private var kernelAndLinkExpanded = false
     @State private var unattributedExpanded = false
     @State private var domainsExpanded = false
+    @State private var localDiscoveryExpanded = false
     @State private var ipsExpanded = false
 
     // MARK: Sidebar search
@@ -264,6 +265,55 @@ struct SidebarView: View {
         }
     }
 
+    private var visibleLocalDiscoveryGroups: [LocalDiscoveryGroup] {
+        coordinator.localDiscoveryGroups.compactMap { group in
+            guard !coordinator.isSourceLocalNameHidden(group.name) else {
+                return nil
+            }
+            let ips = group.ips.filter { !coordinator.isSourceIPHidden($0) }
+            return LocalDiscoveryGroup(
+                name: group.name,
+                badgeTitle: group.badgeTitle,
+                subtitle: group.subtitle,
+                symbolName: group.symbolName,
+                tooltip: group.tooltip,
+                ips: ips,
+                count: group.count
+            )
+        }
+    }
+
+    private var filteredLocalDiscoveryGroups: [LocalDiscoveryGroup] {
+        guard isSearching else {
+            return visibleLocalDiscoveryGroups
+        }
+        if matches(String(localized: "Local Services & Devices"))
+            || matches("Local Services & Devices")
+            || matches("本地服务与设备名")
+            || matches("bonjour")
+            || matches("local")
+            || matches(String(localized: "Sources"))
+            || matches("Sources")
+        {
+            return visibleLocalDiscoveryGroups
+        }
+        return visibleLocalDiscoveryGroups.compactMap { group in
+            if matches(group.name) || matches(group.subtitle) || matches(group.badgeTitle) {
+                return group
+            }
+            let ips = group.ips.filter { matches($0) }
+            return ips.isEmpty ? nil : LocalDiscoveryGroup(
+                name: group.name,
+                badgeTitle: group.badgeTitle,
+                subtitle: group.subtitle,
+                symbolName: group.symbolName,
+                tooltip: group.tooltip,
+                ips: ips,
+                count: group.count
+            )
+        }
+    }
+
     private var visibleIPHosts: [(name: String, count: Int)] {
         coordinator.ipHosts.filter { !coordinator.isSourceIPHidden($0.name) }
     }
@@ -280,6 +330,10 @@ struct SidebarView: View {
 
     private var showsDomainsCategory: Bool {
         !filteredDomainGroups.isEmpty || (!isSearching && !coordinator.hiddenSourceDomains.isEmpty)
+    }
+
+    private var showsLocalDiscoveryCategory: Bool {
+        !filteredLocalDiscoveryGroups.isEmpty || (!isSearching && !coordinator.hiddenSourceLocalNames.isEmpty)
     }
 
     private var showsIPAddressesCategory: Bool {
@@ -321,6 +375,7 @@ struct SidebarView: View {
             || !filteredProtocolItems.isEmpty
             || !displayedSourceCategories.isEmpty
             || !filteredDomainGroups.isEmpty
+            || !filteredLocalDiscoveryGroups.isEmpty
             || !filteredIPHosts.isEmpty
     }
 
@@ -582,6 +637,33 @@ struct SidebarView: View {
                 hiddenCount: coordinator.hiddenSourceDomains.count,
                 restoreLabel: "Restore Hidden Domains",
                 onRestore: coordinator.restoreHiddenSourceDomains
+            )
+        }
+    }
+
+    /// Local Bonjour / mDNS services, device hostnames, and special system DNS
+    /// discovery names, separated from public Domains and kept collapsed by default.
+    private var localDiscoveryDisclosure: some View {
+        DisclosureGroup(isExpanded: searchExpansion($localDiscoveryExpanded)) {
+            if filteredLocalDiscoveryGroups.isEmpty {
+                Text("No visible local names")
+                    .font(Theme.Typography.caption).foregroundStyle(.tertiary)
+            } else {
+                ForEach(filteredLocalDiscoveryGroups) { group in
+                    LocalDiscoveryRow(group: group, coordinator: coordinator, forceExpanded: isSearching)
+                }
+            }
+        } label: {
+            sourceCategoryLabel(
+                title: String(localized: "Local Services & Devices"),
+                systemImage: "bonjour",
+                count: visibleLocalDiscoveryGroups.count,
+                expanded: $localDiscoveryExpanded,
+                copyLabel: "Copy Local Names",
+                values: filteredLocalDiscoveryGroups.map(\.name),
+                hiddenCount: coordinator.hiddenSourceLocalNames.count,
+                restoreLabel: "Restore Hidden Local Names",
+                onRestore: coordinator.restoreHiddenSourceLocalNames
             )
         }
     }
@@ -889,7 +971,11 @@ struct SidebarView: View {
                 }
             }
 
-            if !displayedSourceCategories.isEmpty || showsDomainsCategory || showsIPAddressesCategory {
+            if !displayedSourceCategories.isEmpty
+                || showsDomainsCategory
+                || showsLocalDiscoveryCategory
+                || showsIPAddressesCategory
+            {
                 let displaysByCategory = Dictionary(
                     uniqueKeysWithValues: displayedSourceCategories.map { ($0.category, $0) }
                 )
@@ -917,6 +1003,9 @@ struct SidebarView: View {
                     }
                     if showsDomainsCategory {
                         domainsDisclosure
+                    }
+                    if showsLocalDiscoveryCategory {
+                        localDiscoveryDisclosure
                     }
                     if showsIPAddressesCategory {
                         ipAddressesDisclosure
@@ -1231,6 +1320,139 @@ private struct DomainRow: View {
     private func isActiveIP(_ ip: String) -> Bool {
         coordinator.activeWorkspace.sidebarSelection == .sessions
             && coordinator.activeWorkspace.ipFilter == ip
+    }
+}
+
+// MARK: - LocalDiscoveryRow
+
+/// A local Bonjour / mDNS service, device hostname, or special system DNS
+/// discovery name in the sidebar, with a semantic subtitle and optional
+/// expandable peer or resolved IP rows.
+private struct LocalDiscoveryRow: View {
+    // MARK: Internal
+
+    let group: LocalDiscoveryGroup
+    let coordinator: MainContentCoordinator
+    var forceExpanded = false
+
+    var body: some View {
+        if group.ips.isEmpty {
+            rowLabel
+        } else {
+            DisclosureGroup(isExpanded: expansion) {
+                ForEach(group.ips, id: \.self) { ip in
+                    Label(ip, systemImage: "number")
+                        .foregroundStyle(isActiveIP(ip) ? Color.accentColor : .secondary)
+                        .font(isActiveIP(ip) ? Theme.Typography.navigationMedium : Theme.Typography.navigation)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                        .onTapGesture { coordinator.selectIP(ip) }
+                        .accessibilityAddTraits(.isButton)
+                        .accessibilityAddTraits(isActiveIP(ip) ? .isSelected : [])
+                        .accessibilityAction { coordinator.selectIP(ip) }
+                        .help("Show sessions for \(ip)")
+                        .contextMenu {
+                            SidebarSourceContextMenu(
+                                value: ip,
+                                copyLabel: "Copy IP Address",
+                                pinnedHost: ip,
+                                coordinator: coordinator,
+                                onShowSessions: { coordinator.selectIP(ip) },
+                                onRemove: { coordinator.hideSourceIP(ip) }
+                            )
+                        }
+                }
+            } label: {
+                rowLabel
+            }
+        }
+    }
+
+    // MARK: Private
+
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var expanded = false
+
+    private var expansion: Binding<Bool> {
+        Binding(get: { forceExpanded || expanded }, set: { expanded = $0 })
+    }
+
+    private var isActiveHost: Bool {
+        coordinator.activeWorkspace.sidebarSelection == .sessions
+            && coordinator.activeWorkspace.hostFilter == group.name
+    }
+
+    private func isActiveIP(_ ip: String) -> Bool {
+        coordinator.activeWorkspace.sidebarSelection == .sessions
+            && coordinator.activeWorkspace.ipFilter == ip
+    }
+
+    private var iconBadge: some View {
+        let tint: Color = isActiveHost ? .accentColor : .teal
+        let fillOpacity: Double = if isActiveHost {
+            colorScheme == .dark ? 0.28 : 0.20
+        } else {
+            colorScheme == .dark ? 0.18 : 0.13
+        }
+        let strokeOpacity: Double = if isActiveHost {
+            0.50
+        } else {
+            colorScheme == .dark ? 0.34 : 0.24
+        }
+        let shape = RoundedRectangle(cornerRadius: 4, style: .continuous)
+        return shape
+            .fill(tint.opacity(fillOpacity))
+            .frame(width: 16, height: 16)
+            .overlay {
+                shape.strokeBorder(tint.opacity(strokeOpacity), lineWidth: 0.75)
+            }
+            .overlay {
+                Image(systemName: group.symbolName)
+                    .font(.system(size: Theme.Icon.small, weight: .semibold))
+                    .imageScale(.small)
+                    .foregroundStyle(tint)
+            }
+            .frame(width: 18, height: 18)
+    }
+
+    private var rowLabel: some View {
+        let hasSubtitle = !group.subtitle.isEmpty
+        return HStack(alignment: hasSubtitle ? .top : .center, spacing: 7) {
+            iconBadge
+            VStack(alignment: .leading, spacing: 1.5) {
+                Text(group.name)
+                    .font(isActiveHost ? Theme.Typography.navigationMedium : Theme.Typography.navigation)
+                    .foregroundStyle(isActiveHost ? Color.accentColor : .primary)
+                    .lineLimit(1)
+                if hasSubtitle {
+                    Text(group.subtitle)
+                        .font(Theme.Typography.micro)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, hasSubtitle ? 1.5 : 0.5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .badge(group.count)
+        .contentShape(Rectangle())
+        .onTapGesture { coordinator.selectHost(group.name) }
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAddTraits(isActiveHost ? .isSelected : [])
+        .accessibilityAction { coordinator.selectHost(group.name) }
+        .help(group.tooltip)
+        .contextMenu {
+            SidebarSourceContextMenu(
+                value: group.name,
+                copyLabel: "Copy Local Name",
+                pinnedHost: group.name,
+                coordinator: coordinator,
+                onShowSessions: { coordinator.selectHost(group.name) },
+                onRemove: { coordinator.hideSourceLocalName(group.name) }
+            )
+        }
     }
 }
 

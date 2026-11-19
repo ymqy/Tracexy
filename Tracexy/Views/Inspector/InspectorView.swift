@@ -351,12 +351,23 @@ struct InspectorView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Text(selectedIdentity(for: session))
-                .font(Theme.Typography.mono)
-                .foregroundStyle(Color.cyan)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
+            let identity = selectedIdentity(for: session)
+            let discovery = LocalDiscoveryNameClassifier.classify(identity)
+            HStack(spacing: 5) {
+                Text(identity)
+                    .font(Theme.Typography.mono)
+                    .foregroundStyle(Color.cyan)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+                if let discovery {
+                    Text("(\(discovery.detailTitle))")
+                        .font(Theme.Typography.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .help(discovery?.tooltip ?? identity)
 
             if showsEndpoints {
                 Spacer(minLength: Theme.Metrics.spacingM)
