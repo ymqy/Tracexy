@@ -617,6 +617,79 @@ struct NativeSessionOutlineTableTests {
         #expect(outlineView.sortDescriptors.isEmpty)
     }
 
+    @Test("SessionPillView and .action SessionHostCellView measure unconstrained width and never truncate pills at width 200")
+    func pillAndActionHostCellLayoutAvoidTruncation() throws {
+        _ = NSApplication.shared
+
+        // 1. Reused SessionPillView starting from a narrow frame must measure exact unconstrained width
+        let pill = SessionPillView(font: SessionOutlineStyle.microFont, horizontalPadding: 5, verticalPadding: 1)
+        pill.frame = NSRect(x: 0, y: 0, width: 12, height: 14)
+        pill.layoutSubtreeIfNeeded()
+
+        for text in ["9 个会话", "causal", "HTTP/2", "Bonjour 服务"] {
+            pill.configure(
+                text: text,
+                textColor: .labelColor,
+                fillColor: NSColor.secondaryLabelColor.withAlphaComponent(0.14),
+                font: SessionOutlineStyle.badgeFont
+            )
+            let unconstrained = measureSingleLineTextField(pill.label)
+            let intrinsic = pill.intrinsicContentSize
+            #expect(intrinsic.width >= ceil(unconstrained.width) + 12)
+
+            pill.frame = NSRect(origin: .zero, size: intrinsic)
+            pill.layoutSubtreeIfNeeded()
+            #expect(pill.label.frame.width >= ceil(unconstrained.width))
+            #expect(
+                pill.label.cell?.expansionFrame(withFrame: pill.label.bounds, in: pill.label) == .zero,
+                "SessionPillView truncated '\(text)' at intrinsic width \(intrinsic.width)"
+            )
+        }
+
+        // 2. Reused SessionHostCellView for an .action row laid out at width 200 gives both pills full unconstrained width
+        let sessions = (0 ..< 9).map { index in
+            makeSession(host: "www.wikipedia.org", bytesUp: 100, bytesDown: 200, offsetSeconds: Double(index) * 0.1)
+        }
+        let activity = Activity(
+            sessions: sessions,
+            evidence: [.dnsAnswerToConnection(name: "www.wikipedia.org", address: "198.18.22.123")]
+        )
+        let actionRow = try #require(buildGrouped([.action(activity)]).first)
+
+        let cell = SessionHostCellView(frame: NSRect(x: 0, y: 0, width: 60, height: 24))
+        cell.configure(with: actionRow, column: .host)
+        cell.layoutSubtreeIfNeeded()
+
+        cell.frame = NSRect(x: 0, y: 0, width: 200, height: 36)
+        cell.layoutSubtreeIfNeeded()
+
+        let firstPill = cell.firstPillView
+        let secondPill = cell.secondPillView
+        #expect(!firstPill.isHidden)
+        #expect(!secondPill.isHidden)
+
+        let firstUnconstrained = measureSingleLineTextField(firstPill.label)
+        let secondUnconstrained = measureSingleLineTextField(secondPill.label)
+
+        #expect(firstPill.frame.width == firstPill.intrinsicContentSize.width)
+        #expect(secondPill.frame.width == secondPill.intrinsicContentSize.width)
+        #expect(firstPill.frame.width >= ceil(firstUnconstrained.width))
+        #expect(secondPill.frame.width >= ceil(secondUnconstrained.width))
+        #expect(firstPill.label.frame.width >= ceil(firstUnconstrained.width))
+        #expect(secondPill.label.frame.width >= ceil(secondUnconstrained.width))
+        #expect(
+            firstPill.label.cell?.expansionFrame(withFrame: firstPill.label.bounds, in: firstPill.label) == .zero,
+            "Action row count pill truncated at width 200"
+        )
+        #expect(
+            secondPill.label.cell?.expansionFrame(withFrame: secondPill.label.bounds, in: secondPill.label) == .zero,
+            "Action row confidence pill truncated at width 200"
+        )
+        #expect(cell.primaryLabel.frame.maxX < firstPill.frame.minX)
+        #expect(firstPill.frame.maxX < secondPill.frame.minX)
+        #expect(secondPill.frame.maxX <= 200)
+    }
+
     // MARK: Private
 
     private func mountOffscreen(

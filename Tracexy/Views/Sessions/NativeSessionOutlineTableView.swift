@@ -25,11 +25,16 @@ final class SessionOutlineNode: NSObject {
 
 // MARK: - Pure AppKit Cell Views (Zero NSHostingView)
 
+@MainActor
+func measureSingleLineTextField(_ field: NSTextField) -> NSSize {
+    field.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: 10_000, height: 100)) ?? field.intrinsicContentSize
+}
+
 private protocol SessionOutlineConfigurableCell: AnyObject {
     func configure(with model: SessionOutlineRowModel, column: SessionOutlineColumnID)
 }
 
-private final class SessionPillView: NSView {
+final class SessionPillView: NSView {
     // MARK: Lifecycle
 
     init(font: NSFont, horizontalPadding: CGFloat = 6, verticalPadding: CGFloat = 1.5) {
@@ -52,6 +57,8 @@ private final class SessionPillView: NSView {
 
     // MARK: Internal
 
+    let label = NSTextField(labelWithString: "")
+
     func configure(text: String, textColor: NSColor, fillColor: NSColor, font: NSFont? = nil) {
         if let font {
             label.font = font
@@ -60,14 +67,15 @@ private final class SessionPillView: NSView {
         label.textColor = textColor
         currentFillColor = fillColor
         applyFillColor()
+        label.invalidateIntrinsicContentSize()
         invalidateIntrinsicContentSize()
         needsLayout = true
     }
 
     override var intrinsicContentSize: NSSize {
-        let textSize = label.intrinsicContentSize
+        let textSize = measureSingleLineTextField(label)
         return NSSize(
-            width: ceil(textSize.width) + horizontalPadding * 2,
+            width: ceil(textSize.width) + horizontalPadding * 2 + 2,
             height: ceil(textSize.height) + verticalPadding * 2
         )
     }
@@ -75,11 +83,11 @@ private final class SessionPillView: NSView {
     override func layout() {
         super.layout()
         layer?.cornerRadius = bounds.height * 0.5
-        let textSize = label.intrinsicContentSize
+        let textSize = measureSingleLineTextField(label)
         let textHeight = min(bounds.height, ceil(textSize.height))
-        let textWidth = max(0, bounds.width - horizontalPadding * 2)
+        let textWidth = max(0, bounds.width - horizontalPadding * 2 + 2)
         label.frame = NSRect(
-            x: horizontalPadding,
+            x: horizontalPadding - 1,
             y: floor((bounds.height - textHeight) * 0.5),
             width: textWidth,
             height: textHeight
@@ -93,7 +101,6 @@ private final class SessionPillView: NSView {
 
     // MARK: Private
 
-    private let label = NSTextField(labelWithString: "")
     private let horizontalPadding: CGFloat
     private let verticalPadding: CGFloat
     private var currentFillColor: NSColor = .clear
@@ -281,7 +288,7 @@ private final class SessionTextCellView: NSTableCellView, SessionOutlineConfigur
 
     override func layout() {
         super.layout()
-        let textHeight = min(bounds.height, ceil(label.intrinsicContentSize.height))
+        let textHeight = min(bounds.height, ceil(measureSingleLineTextField(label).height))
         label.frame = NSRect(
             x: 0,
             y: floor((bounds.height - textHeight) * 0.5),
@@ -295,7 +302,7 @@ private final class SessionTextCellView: NSTableCellView, SessionOutlineConfigur
     private let label = NSTextField(labelWithString: "")
 }
 
-private final class SessionHostCellView: NSTableCellView, SessionOutlineConfigurableCell {
+final class SessionHostCellView: NSTableCellView, SessionOutlineConfigurableCell {
     // MARK: Lifecycle
 
     override init(frame frameRect: NSRect) {
@@ -330,6 +337,10 @@ private final class SessionHostCellView: NSTableCellView, SessionOutlineConfigur
     }
 
     // MARK: Internal
+
+    let primaryLabel = NSTextField(labelWithString: "")
+    let firstPillView = SessionPillView(font: SessionOutlineStyle.microFont, horizontalPadding: 5, verticalPadding: 1)
+    let secondPillView = SessionPillView(font: SessionOutlineStyle.badgeFont, horizontalPadding: 5, verticalPadding: 1)
 
     func configure(with model: SessionOutlineRowModel, column _: SessionOutlineColumnID) {
         currentKind = model.kind
@@ -471,9 +482,6 @@ private final class SessionHostCellView: NSTableCellView, SessionOutlineConfigur
 
     private let tagDotsView = SessionTagDotsView()
     private let leadingIconView = NSImageView()
-    private let primaryLabel = NSTextField(labelWithString: "")
-    private let firstPillView = SessionPillView(font: SessionOutlineStyle.microFont, horizontalPadding: 5, verticalPadding: 1)
-    private let secondPillView = SessionPillView(font: SessionOutlineStyle.badgeFont, horizontalPadding: 5, verticalPadding: 1)
     private let trailingIconView = NSImageView()
     private let evidenceLabel = NSTextField(labelWithString: "")
     private var currentKind: SessionOutlineRowKind?
@@ -510,7 +518,7 @@ private final class SessionHostCellView: NSTableCellView, SessionOutlineConfigur
             trailingReserved += pillSize.width + spacing
         }
 
-        let labelSize = primaryLabel.intrinsicContentSize
+        let labelSize = measureSingleLineTextField(primaryLabel)
         let availableForLabel = max(0, bounds.width - x - trailingReserved)
         let labelWidth = min(ceil(labelSize.width), availableForLabel)
         let labelHeight = min(height, ceil(labelSize.height))
@@ -560,8 +568,8 @@ private final class SessionHostCellView: NSTableCellView, SessionOutlineConfigur
             trailingReserved += iconDim + spacing
         }
 
-        let labelSize = primaryLabel.intrinsicContentSize
-        let availableTitleWidth = max(40, bounds.width - trailingReserved)
+        let labelSize = measureSingleLineTextField(primaryLabel)
+        let availableTitleWidth = max(24, bounds.width - trailingReserved)
         let titleWidth = min(ceil(labelSize.width), availableTitleWidth)
         let titleHeight = min(topLineHeight, ceil(labelSize.height))
         var x: CGFloat = 0
@@ -601,7 +609,7 @@ private final class SessionHostCellView: NSTableCellView, SessionOutlineConfigur
             )
         }
 
-        let evidenceHeight = min(bottomLineHeight, ceil(evidenceLabel.intrinsicContentSize.height))
+        let evidenceHeight = min(bottomLineHeight, ceil(measureSingleLineTextField(evidenceLabel).height))
         evidenceLabel.frame = NSRect(
             x: 0,
             y: bottomY,
@@ -672,7 +680,7 @@ private final class SessionClientCellView: NSTableCellView, SessionOutlineConfig
             )
             x += iconDim + 6
         }
-        let labelHeight = min(bounds.height, ceil(label.intrinsicContentSize.height))
+        let labelHeight = min(bounds.height, ceil(measureSingleLineTextField(label).height))
         label.frame = NSRect(
             x: x,
             y: floor((bounds.height - labelHeight) * 0.5),
