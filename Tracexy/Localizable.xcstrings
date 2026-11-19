@@ -1371,6 +1371,26 @@
         }
       }
     },
+    "%@ — %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ — %@"
+          }
+        }
+      }
+    },
+    "%@ — %@ (local LAN discovery only, not public internet)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ — %@（仅限本地局域网发现，不访问公网）"
+          }
+        }
+      }
+    },
     "%@ — tcp.completeness == %u": {
       "localizations": {
         "vi": {
@@ -3587,12 +3607,92 @@
         }
       }
     },
+    "AirDrop": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "隔空投送"
+          }
+        }
+      }
+    },
+    "AirDrop peer discovery": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AirDrop 隔空投送发现"
+          }
+        }
+      }
+    },
     "AirDrop, Handoff & Continuity": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "隔空投送 / 接力 / 通用控制"
+          }
+        }
+      }
+    },
+    "AirPlay Audio": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AirPlay 音频"
+          }
+        }
+      }
+    },
+    "AirPlay Video": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AirPlay 投屏"
+          }
+        }
+      }
+    },
+    "AirPlay remote audio streaming (RAOP)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AirPlay 隔空音频投送"
+          }
+        }
+      }
+    },
+    "AirPlay video & screen mirroring": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AirPlay 隔空播放与屏幕镜像"
+          }
+        }
+      }
+    },
+    "AirPrint": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无线打印机"
+          }
+        }
+      }
+    },
+    "AirScan": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无线扫描仪"
           }
         }
       }
@@ -3722,6 +3822,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "全部数据帧"
+          }
+        }
+      }
+    },
+    "All local Bonjour service types query": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网全部服务类型枚举"
           }
         }
       }
@@ -4076,6 +4186,36 @@
         }
       }
     },
+    "Apple Continuity": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apple 连续互通"
+          }
+        }
+      }
+    },
+    "Apple Continuity & Companion Link": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apple 连续互通与设备协同"
+          }
+        }
+      }
+    },
+    "Apple HomeKit smart home accessory": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apple HomeKit 智能家居配件"
+          }
+        }
+      }
+    },
     "Apple Push Notification service": {
       "localizations": {
         "zh-Hans": {
@@ -4092,6 +4232,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "Apple 设备发现服务"
+          }
+        }
+      }
+    },
+    "Apple remote device development link": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apple 远程设备开发连接"
           }
         }
       }
@@ -4877,6 +5027,36 @@
         }
       }
     },
+    "Bonjour LAN service (%@ · %@)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bonjour 局域网服务 (%@ · %@)"
+          }
+        }
+      }
+    },
+    "Bonjour Service": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bonjour 服务"
+          }
+        }
+      }
+    },
+    "Bonjour Wake-on-LAN sleep proxy": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Bonjour 局域网睡眠唤醒代理"
+          }
+        }
+      }
+    },
     "Both Directions": {
       "localizations": {
         "vi": {
@@ -4947,6 +5127,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "浏览"
+          }
+        }
+      }
+    },
+    "Browse Domain Probe": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务浏览域探测"
+          }
+        }
+      }
+    },
+    "Browse Domain Query": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "浏览域查询"
           }
         }
       }
@@ -6489,6 +6689,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "已选文件"
+          }
+        }
+      }
+    },
+    "Chromecast media device discovery": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chromecast 局域网投屏发现"
           }
         }
       }
@@ -8075,6 +8285,26 @@
         }
       }
     },
+    "Copy Local Name": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "复制本地名称"
+          }
+        }
+      }
+    },
+    "Copy Local Names": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "复制本地名称"
+          }
+        }
+      }
+    },
     "Copy PEM": {
       "localizations": {
         "vi": {
@@ -8916,6 +9146,36 @@
         }
       }
     },
+    "DNS-SD browse domain discovery": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网默认浏览域查询 (DNS-SD)"
+          }
+        }
+      }
+    },
+    "DNS-SD legacy browse domain enumeration": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网服务浏览域探测 (DNS-SD)"
+          }
+        }
+      }
+    },
+    "DNS-SD registration domain discovery": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网服务注册域查询 (DNS-SD)"
+          }
+        }
+      }
+    },
     "Daemon %@ · via %@": {
       "localizations": {
         "zh-Hans": {
@@ -9569,6 +9829,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "发现方式与搜索目标"
+          }
+        }
+      }
+    },
+    "Discovery of Designated Resolvers (DDR)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "系统加密 DNS (DDR) 自动发现"
           }
         }
       }
@@ -10282,6 +10552,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "加密 DNS"
+          }
+        }
+      }
+    },
+    "Encrypted DNS Probe": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "加密 DNS 探测"
           }
         }
       }
@@ -13270,6 +13550,16 @@
         }
       }
     },
+    "Google Cast": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chromecast 投屏"
+          }
+        }
+      }
+    },
     "Grant Access": {
       "localizations": {
         "vi": {
@@ -14056,6 +14346,16 @@
         }
       }
     },
+    "HomeKit": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HomeKit 家居"
+          }
+        }
+      }
+    },
     "Homebrew CLI": {
       "localizations": {
         "zh-Hans": {
@@ -14327,6 +14627,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "IPv4"
+          }
+        }
+      }
+    },
+    "IPv4 Synthesis Probe": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "DNS64 探测"
           }
         }
       }
@@ -15892,12 +16202,72 @@
         }
       }
     },
+    "LAN Device": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网设备"
+          }
+        }
+      }
+    },
+    "LAN File Sharing": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网文件共享"
+          }
+        }
+      }
+    },
     "LAN Gateway": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "局域网网关"
+          }
+        }
+      }
+    },
+    "LAN SSH": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网 SSH"
+          }
+        }
+      }
+    },
+    "LAN Web Service": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网 Web"
+          }
+        }
+      }
+    },
+    "LAN printer & AirPrint discovery": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网无线打印机 (AirPrint)"
+          }
+        }
+      }
+    },
+    "LAN scanner & AirScan discovery": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网无线扫描仪 (AirScan)"
           }
         }
       }
@@ -16695,6 +17065,16 @@
         }
       }
     },
+    "Local HTTP web interface discovery": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网 HTTP 管理服务发现"
+          }
+        }
+      }
+    },
     "Local Interfaces": {
       "localizations": {
         "vi": {
@@ -16737,6 +17117,26 @@
         }
       }
     },
+    "Local SSH server discovery": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网 SSH 终端服务发现"
+          }
+        }
+      }
+    },
+    "Local Services & Devices": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本地服务与设备名"
+          }
+        }
+      }
+    },
     "Local endpoint": {
       "extractionState": "manual",
       "localizations": {
@@ -16766,6 +17166,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "本地模型"
+          }
+        }
+      }
+    },
+    "Local network device hostname (mDNS)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "局域网设备主机名 (mDNS)"
           }
         }
       }
@@ -17389,6 +17799,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "丢包量显著——统计数值可能低于实际流量。"
+          }
+        }
+      }
+    },
+    "Matter & Thread smart home mesh": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Matter / Thread 智能家居组网"
+          }
+        }
+      }
+    },
+    "Matter / Thread": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Matter 家居"
           }
         }
       }
@@ -18345,6 +18775,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "静默主机"
+          }
+        }
+      }
+    },
+    "NAT64 / DNS64 prefix discovery (RFC 7050)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NAT64 / DNS64 前缀自动发现"
           }
         }
       }
@@ -20701,6 +21141,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "无可见域名"
+          }
+        }
+      }
+    },
+    "No visible local names": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无可见的本地名称"
           }
         }
       }
@@ -24080,6 +24530,16 @@
         }
       }
     },
+    "Registration Domain": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "注册域查询"
+          }
+        }
+      }
+    },
     "Regular expression": {
       "localizations": {
         "vi": {
@@ -24189,6 +24649,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "重新加载本地历史记录"
+          }
+        }
+      }
+    },
+    "Remote Apple Events": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "远程 Apple 事件"
+          }
+        }
+      }
+    },
+    "Remote Dev Link": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "远程开发连接"
           }
         }
       }
@@ -25284,6 +25764,16 @@
         }
       }
     },
+    "Restore Hidden Local Names": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "恢复隐藏的本地名称"
+          }
+        }
+      }
+    },
     "Restore Hidden Sources": {
       "localizations": {
         "zh-Hans": {
@@ -25545,6 +26035,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "反向"
+          }
+        }
+      }
+    },
+    "Reverse DNS": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "反向域名反查"
+          }
+        }
+      }
+    },
+    "Reverse IP-to-hostname lookup (PTR)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "IP 反向域名解析 (PTR)"
           }
         }
       }
@@ -26014,6 +26524,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "SMB"
+          }
+        }
+      }
+    },
+    "SMB / AFP local network file sharing": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SMB / AFP 局域网文件共享"
           }
         }
       }
@@ -26843,6 +27363,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "范围："
+          }
+        }
+      }
+    },
+    "Screen Sharing": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "屏幕共享"
           }
         }
       }
@@ -27725,6 +28255,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "服务"
+          }
+        }
+      }
+    },
+    "Service Enumeration": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全量服务枚举"
           }
         }
       }
@@ -29452,6 +29992,16 @@
         }
       }
     },
+    "Sleep Proxy": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "睡眠唤醒代理"
+          }
+        }
+      }
+    },
     "Slower than usual for this host": {
       "localizations": {
         "vi": {
@@ -29496,6 +30046,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "最慢应答"
+          }
+        }
+      }
+    },
+    "Smart Home": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "智能家居设备"
+          }
+        }
+      }
+    },
+    "Smart home LAN device discovery": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "智能家居局域网设备发现"
           }
         }
       }
@@ -29614,6 +30184,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "存在少量丢包，但未达到影响统计结果的程度。"
+          }
+        }
+      }
+    },
+    "Sonos": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sonos 音响"
+          }
+        }
+      }
+    },
+    "Sonos speaker system discovery": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sonos 局域网音响发现"
           }
         }
       }
@@ -29790,6 +30380,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "拆分…"
+          }
+        }
+      }
+    },
+    "Spotify Connect": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spotify 音箱"
+          }
+        }
+      }
+    },
+    "Spotify Connect speaker discovery": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Spotify 局域网音箱发现"
           }
         }
       }
@@ -32449,6 +33059,26 @@
         }
       }
     },
+    "Time Machine": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "时间机器备份"
+          }
+        }
+      }
+    },
+    "Time Machine wireless backup disk": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "时间机器局域网备份发现"
+          }
+        }
+      }
+    },
     "Time Shift…": {
       "localizations": {
         "zh-Hans": {
@@ -33716,6 +34346,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "若问题持续存在，请使用恢复功能"
+          }
+        }
+      }
+    },
+    "VNC / macOS screen sharing discovery": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS 局域网屏幕共享发现"
           }
         }
       }
@@ -35075,12 +35715,32 @@
         }
       }
     },
+    "iOS Wireless Sync": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iOS 无线调试"
+          }
+        }
+      }
+    },
     "iOS device wireless & USB mux": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "iOS 设备无线连接与调试"
+          }
+        }
+      }
+    },
+    "iPhone & iPad wireless sync and debug": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "iOS 设备无线同步与调试"
           }
         }
       }
@@ -35165,6 +35825,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "macOS 控制中心"
+          }
+        }
+      }
+    },
+    "macOS Remote Apple Events (EPPC)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "macOS 远程 Apple 事件发现"
           }
         }
       }
