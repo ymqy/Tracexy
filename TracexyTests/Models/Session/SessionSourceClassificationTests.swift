@@ -1622,6 +1622,226 @@ struct SessionSourceClassificationTests {
         #expect(grouped.first?.items.first?.subtitle == "系统命令行")
     }
 
+    @Test("Classifies nested Chromium/Electron/CEF framework helpers inside host .app bundles as .app with helper subprocess")
+    func classifiesNestedFrameworkAppHelpersAsApps() throws {
+        let mockHome = "/var/tmp/mockhome"
+
+        // (a) ego lite helper nested inside ego Framework.framework classifies as .app with localized via subtitle and groups under Apps with ego Helper subprocess.
+        let egoHelperPath = "/Applications/ego lite.app/Contents/Frameworks/ego Framework.framework/Versions/0.6.3.14/Helpers/ego Helper.app/Contents/MacOS/ego Helper"
+        let egoSession = makeSession(processName: "ego lite", host: "api.example.com")
+        let egoContext = SessionProcessContext(
+            executablePath: egoHelperPath,
+            bundleIdentifier: "com.example.egolite",
+            viaProcessName: "ego Helper",
+            originProcessName: "ego Helper"
+        )
+
+        let egoClassified = SessionSourceClassifier.classify(
+            egoSession,
+            context: egoContext,
+            localIPs: Self.liveLocalIPs,
+            homeDirectoryPath: mockHome,
+            appBundleExistsLookup: { _ in false }
+        )
+        #expect(egoClassified.category == .app)
+        #expect(egoClassified.title == "ego lite")
+        #expect(egoClassified.tableLabel == "ego lite · ego Helper")
+        #expect(egoClassified.subtitle == String(format: String(localized: "via %@"), "ego Helper"))
+        #expect(egoClassified.symbolName == nil)
+
+        // Verify localized Chinese "经由 ego Helper" subtitle with explicit bundle.
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tracexy-r5-ego-lproj-\(UUID().uuidString)", isDirectory: true)
+        let zhDir = tempDir.appendingPathComponent("zh-Hans.lproj", isDirectory: true)
+        try FileManager.default.createDirectory(at: zhDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let zhPlist = try PropertyListSerialization.data(
+            fromPropertyList: ["via %@": "经由 %@"],
+            format: .binary,
+            options: 0
+        )
+        try zhPlist.write(to: zhDir.appendingPathComponent("Localizable.strings"))
+        let zhBundle = try #require(Bundle(url: zhDir))
+        let egoZh = SessionSourceClassifier.classify(
+            egoSession,
+            context: egoContext,
+            localIPs: Self.liveLocalIPs,
+            homeDirectoryPath: mockHome,
+            appBundleExistsLookup: { _ in false },
+            bundle: zhBundle
+        )
+        #expect(egoZh.subtitle == "经由 ego Helper")
+
+        // Verify grouping under Apps with subprocess "ego Helper".
+        let groups = SessionSourceClassifier.group(
+            sessions: [egoSession],
+            contextsBySessionID: [egoSession.id: egoContext],
+            localIPs: Self.liveLocalIPs,
+            homeDirectoryPath: mockHome,
+            appBundleExistsLookup: { _ in false }
+        )
+        let appsGroup = try #require(groups.first { $0.category == .app })
+        let egoItem = try #require(appsGroup.items.first { $0.filterKey == "ego lite" })
+        #expect(egoItem.title == "ego lite")
+        #expect(egoItem.subprocesses.map(\.title) == ["ego Helper"])
+
+        // (b) Google Chrome, ChatGPT (Codex Framework), and LarkSuite (Lark Framework) nested helpers ALL classify as .app.
+        let helperCases: [(name: String, path: String, helper: String)] = [
+            (
+                "Google Chrome",
+                "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/130.0/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper",
+                "Google Chrome Helper"
+            ),
+            (
+                "ChatGPT",
+                "/Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Versions/1.0/Helpers/ChatGPT Helper.app/Contents/MacOS/ChatGPT Helper",
+                "ChatGPT Helper"
+            ),
+            (
+                "Lark",
+                "/Applications/LarkSuite.app/Contents/Frameworks/Lark Framework.framework/Versions/7.0/Helpers/Lark Helper.app/Contents/MacOS/Lark Helper",
+                "Lark Helper"
+            ),
+        ]
+        for testCase in helperCases {
+            let classified = SessionSourceClassifier.classify(
+                makeSession(processName: testCase.name, host: "edge.example.com"),
+                context: SessionProcessContext(
+                    executablePath: testCase.path,
+                    viaProcessName: testCase.helper,
+                    originProcessName: testCase.helper
+                ),
+                localIPs: Self.liveLocalIPs,
+                homeDirectoryPath: mockHome,
+                appBundleExistsLookup: { _ in false }
+            )
+            #expect(classified.category == .app)
+            #expect(classified.title == testCase.name)
+            #expect(classified.tableLabel == "\(testCase.name) · Helper")
+        }
+
+        // (c) Framework-embedded Python.app (both /Library/Frameworks and <mockhome>/miniconda3) STILL classifies as .cli.
+        let libPython = SessionSourceClassifier.classify(
+            makeSession(processName: "Python", host: "pypi.org"),
+            context: SessionProcessContext(
+                executablePath: "/Library/Frameworks/Python.framework/Versions/3.11/Resources/Python.app/Contents/MacOS/Python"
+            ),
+            localIPs: Self.liveLocalIPs,
+            homeDirectoryPath: mockHome,
+            appBundleExistsLookup: { _ in false }
+        )
+        #expect(libPython.category == .cli)
+
+        let condaPython = SessionSourceClassifier.classify(
+            makeSession(processName: "Python", host: "pypi.org"),
+            context: SessionProcessContext(
+                executablePath: "\(mockHome)/miniconda3/lib/Python.framework/Versions/3.11/Resources/Python.app/Contents/MacOS/Python"
+            ),
+            localIPs: Self.liveLocalIPs,
+            homeDirectoryPath: mockHome,
+            appBundleExistsLookup: { _ in false }
+        )
+        #expect(condaPython.category == .cli)
+
+        // (d) Background support .app inside ~/Library/Application Support/ classifies as .thirdPartyService,
+        // while ~/Applications/MyStudio.app classifies as .app.
+        let supportServer = SessionSourceClassifier.classify(
+            makeSession(processName: "Foo Server", host: "sync.example.com"),
+            context: SessionProcessContext(
+                executablePath: "\(mockHome)/Library/Application Support/com.example.foo/Foo Server.app/Contents/MacOS/foo-server"
+            ),
+            localIPs: Self.liveLocalIPs,
+            homeDirectoryPath: mockHome,
+            appBundleExistsLookup: { _ in false }
+        )
+        #expect(supportServer.category == .thirdPartyService)
+
+        let userHomeApp = SessionSourceClassifier.classify(
+            makeSession(processName: "MyStudio", host: "updates.example.com"),
+            context: SessionProcessContext(
+                executablePath: "\(mockHome)/Applications/MyStudio.app/Contents/MacOS/MyStudio"
+            ),
+            localIPs: Self.liveLocalIPs,
+            homeDirectoryPath: mockHome,
+            appBundleExistsLookup: { _ in false }
+        )
+        #expect(userHomeApp.category == .app)
+        #expect(userHomeApp.title == "MyStudio")
+
+        // Known CLI commands and system daemons are never falsely reported as installed GUI apps.
+        #expect(!SessionSourceClassifier.defaultAppBundleExists("curl"))
+        #expect(!SessionSourceClassifier.defaultAppBundleExists("python3"))
+        #expect(!SessionSourceClassifier.defaultAppBundleExists("mDNSResponder"))
+    }
+
+    @Test("InstalledAppCatalog indexes localized InfoPlist.strings, Info.plist display names, bundle IDs, and depth-2 apps without descending into .app packages")
+    func installedAppCatalogIndexesLocalizedAndNestedAppsSafely() throws {
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tracexy-r5-catalog-\(UUID().uuidString)", isDirectory: true)
+        let primaryApps = tempRoot.appendingPathComponent("PrimaryApps", isDirectory: true)
+        let secondaryApps = tempRoot.appendingPathComponent("SecondaryApps", isDirectory: true)
+        try FileManager.default.createDirectory(at: primaryApps, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: secondaryApps, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        // 1. SampleRemote.app with Info.plist + zh-Hans.lproj/InfoPlist.strings + nested Helper.app inside Frameworks
+        let sampleRemote = primaryApps.appendingPathComponent("SampleRemote.app", isDirectory: true)
+        let sampleContents = sampleRemote.appendingPathComponent("Contents", isDirectory: true)
+        let sampleZh = sampleContents.appendingPathComponent("Resources/zh-Hans.lproj", isDirectory: true)
+        let nestedHelper = sampleContents.appendingPathComponent(
+            "Frameworks/Sample Framework.framework/Versions/1.0/Helpers/Hidden Nested Helper.app/Contents",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: sampleZh, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: nestedHelper, withIntermediateDirectories: true)
+
+        let infoPlistData = try PropertyListSerialization.data(
+            fromPropertyList: [
+                "CFBundleDisplayName": "Sample Remote",
+                "CFBundleName": "SampleRemoteShort",
+                "CFBundleIdentifier": "com.example.SampleRemote",
+            ],
+            format: .xml,
+            options: 0
+        )
+        try infoPlistData.write(to: sampleContents.appendingPathComponent("Info.plist"))
+
+        let zhStringsData = try PropertyListSerialization.data(
+            fromPropertyList: [
+                "CFBundleDisplayName": "示例远程",
+            ],
+            format: .binary,
+            options: 0
+        )
+        try zhStringsData.write(to: sampleZh.appendingPathComponent("InfoPlist.strings"))
+
+        // 2. Depth-2 app inside a non-.app subfolder
+        let subfolderApp = primaryApps.appendingPathComponent("Tools/DepthTwoTool.app/Contents", isDirectory: true)
+        try FileManager.default.createDirectory(at: subfolderApp, withIntermediateDirectories: true)
+
+        // 3. Duplicate app in secondary root (primary root should win)
+        let duplicateRemote = secondaryApps.appendingPathComponent("SampleRemote.app/Contents", isDirectory: true)
+        try FileManager.default.createDirectory(at: duplicateRemote, withIntermediateDirectories: true)
+
+        let catalog = InstalledAppCatalog(searchRootURLs: [primaryApps, secondaryApps])
+        let canonicalize: (String?) -> String? = { path in
+            path.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path }
+        }
+        let expectedSamplePath = canonicalize(sampleRemote.path)
+
+        #expect(catalog.containsApp(named: "示例远程"))
+        #expect(canonicalize(catalog.appBundlePath(forName: "示例远程")) == expectedSamplePath)
+        #expect(canonicalize(catalog.appBundlePath(forName: "Sample Remote")) == expectedSamplePath)
+        #expect(canonicalize(catalog.appBundlePath(forName: "sample remote")) == expectedSamplePath)
+        #expect(canonicalize(catalog.appBundlePath(forName: "SampleRemote")) == expectedSamplePath)
+        #expect(canonicalize(catalog.appBundlePath(forName: "SampleRemoteShort")) == expectedSamplePath)
+        #expect(canonicalize(catalog.appBundlePath(forBundleIdentifier: "com.example.sampleremote")) == expectedSamplePath)
+
+        // Depth-2 app is discovered, while nested Helper.app inside SampleRemote.app is NOT indexed.
+        #expect(catalog.containsApp(named: "DepthTwoTool"))
+        #expect(!catalog.containsApp(named: "Hidden Nested Helper"))
+    }
+
     private func agyHelperDNSCtxSession(_ session: SessionSummary) -> SessionSummary {
         session
     }

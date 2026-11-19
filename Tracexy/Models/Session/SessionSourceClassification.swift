@@ -627,7 +627,7 @@ nonisolated enum SessionSourceClassifier {
         isViewingSavedCapture: Bool = false,
         resolvedNames: [String: String] = [:],
         homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
-        appBundleExistsLookup: (String) -> Bool = defaultAppBundleExists(_:),
+        appBundleExistsLookup: ((String) -> Bool)? = nil,
         bundle: Bundle = AppLanguage.currentLocalizedBundle()
     )
         -> ClassifiedSessionSource
@@ -639,7 +639,8 @@ nonisolated enum SessionSourceClassifier {
             isViewingSavedCapture: isViewingSavedCapture,
             normalizedResolvedNames: normalizeResolvedNames(resolvedNames),
             homeDirectoryPath: homeDirectoryPath,
-            appBundleExistsLookup: appBundleExistsLookup,
+            appBundleExistsLookup: appBundleExistsLookup ?? defaultAppBundleExists(_:),
+            usesDefaultAppBundleLookup: appBundleExistsLookup == nil,
             bundle: bundle
         )
     }
@@ -721,7 +722,7 @@ nonisolated enum SessionSourceClassifier {
         resolvedNames: [String: String] = [:],
         includeEmptyCategories: Bool = false,
         homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
-        appBundleExistsLookup: (String) -> Bool = defaultAppBundleExists(_:),
+        appBundleExistsLookup: ((String) -> Bool)? = nil,
         bundle: Bundle = AppLanguage.currentLocalizedBundle()
     )
         -> [SourceCategoryGroup]
@@ -748,13 +749,15 @@ nonisolated enum SessionSourceClassifier {
         resolvedNames: [String: String] = [:],
         includeEmptyCategories: Bool = false,
         homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
-        appBundleExistsLookup: (String) -> Bool = defaultAppBundleExists(_:),
+        appBundleExistsLookup: ((String) -> Bool)? = nil,
         bundle: Bundle = AppLanguage.currentLocalizedBundle()
     )
         -> [SourceCategoryGroup]
     {
         let normalizedLocal = normalizeIPSet(localIPs)
         let normalizedNames = normalizeResolvedNames(resolvedNames)
+        let resolvedAppBundleExistsLookup = appBundleExistsLookup ?? defaultAppBundleExists(_:)
+        let usesDefaultAppBundleLookup = appBundleExistsLookup == nil
 
         let fallbackContextByProcessName = fallbackContextsByProcessName(
             for: sessions,
@@ -777,7 +780,8 @@ nonisolated enum SessionSourceClassifier {
                 isViewingSavedCapture: isViewingSavedCapture,
                 normalizedResolvedNames: normalizedNames,
                 homeDirectoryPath: homeDirectoryPath,
-                appBundleExistsLookup: appBundleExistsLookup,
+                appBundleExistsLookup: resolvedAppBundleExistsLookup,
+                usesDefaultAppBundleLookup: usesDefaultAppBundleLookup,
                 bundle: bundle
             )
 
@@ -1061,6 +1065,7 @@ nonisolated enum SessionSourceClassifier {
                     normalizedResolvedNames: [:],
                     homeDirectoryPath: "",
                     appBundleExistsLookup: { _ in false },
+                    usesDefaultAppBundleLookup: false,
                     bundle: bundle
                 )
                 return classified.filterKey == syntheticKey
@@ -1070,18 +1075,13 @@ nonisolated enum SessionSourceClassifier {
 
     /// Default `.app` bundle existence lookup used when `executablePath` is unavailable.
     static func defaultAppBundleExists(_ rawName: String) -> Bool {
-        if wellKnownAppNames.contains(rawName) {
-            return true
+        guard !isKnownCLICommand(rawName),
+              !knownSystemDaemonNames.contains(rawName) else
+        {
+            return false
         }
-        let homeApps = (FileManager.default.homeDirectoryForCurrentUser.path as NSString)
-            .appendingPathComponent("Applications/\(rawName).app")
-        let candidatePaths = [
-            "/Applications/\(rawName).app",
-            "/System/Applications/\(rawName).app",
-            "/System/Applications/Utilities/\(rawName).app",
-            homeApps,
-        ]
-        return candidatePaths.contains { FileManager.default.fileExists(atPath: $0) }
+        return wellKnownAppNames.contains(rawName)
+            || InstalledAppCatalog.shared.containsApp(named: rawName)
     }
 
     // MARK: Private
@@ -1138,6 +1138,7 @@ nonisolated enum SessionSourceClassifier {
         normalizedResolvedNames: [String: String],
         homeDirectoryPath: String,
         appBundleExistsLookup: (String) -> Bool,
+        usesDefaultAppBundleLookup: Bool,
         bundle: Bundle
     )
         -> ClassifiedSessionSource
@@ -1162,6 +1163,7 @@ nonisolated enum SessionSourceClassifier {
                 context: context,
                 homeDirectoryPath: homeDirectoryPath,
                 appBundleExistsLookup: appBundleExistsLookup,
+                usesDefaultAppBundleLookup: usesDefaultAppBundleLookup,
                 bundle: bundle
             )
         }
@@ -1189,6 +1191,7 @@ nonisolated enum SessionSourceClassifier {
         context: SessionProcessContext?,
         homeDirectoryPath: String,
         appBundleExistsLookup: (String) -> Bool,
+        usesDefaultAppBundleLookup: Bool,
         bundle: Bundle
     )
         -> ClassifiedSessionSource
@@ -1221,8 +1224,11 @@ nonisolated enum SessionSourceClassifier {
         if isGUIApp(
             rawName: rawName,
             executablePath: path,
+            bundleIdentifier: bundleID,
+            context: context,
             homeDirectoryPath: homeDirectoryPath,
-            appBundleExistsLookup: appBundleExistsLookup
+            appBundleExistsLookup: appBundleExistsLookup,
+            usesDefaultAppBundleLookup: usesDefaultAppBundleLookup
         ) {
             let explicitOrigin = normalizedNonEmpty(context?.originProcessName)
             let hasDistinctOrigin = explicitOrigin != nil && explicitOrigin != "—" && explicitOrigin != rawName
@@ -1317,31 +1323,54 @@ nonisolated enum SessionSourceClassifier {
     private static func isGUIApp(
         rawName: String,
         executablePath: String?,
+        bundleIdentifier: String? = nil,
+        context: SessionProcessContext? = nil,
         homeDirectoryPath: String,
-        appBundleExistsLookup: (String) -> Bool
+        appBundleExistsLookup: (String) -> Bool,
+        usesDefaultAppBundleLookup: Bool = false
     )
         -> Bool
     {
         if let path = executablePath {
-            guard path.contains(".app/"),
-                  !path.hasPrefix("/System/Library/"),
-                  !path.contains(".framework/"),
-                  !path.hasPrefix("/Library/Developer/"),
-                  !path.contains(".xctoolchain/") else
+            guard let outerApp = PktapHeader.outermostAppBundlePath(fromExecutablePath: path),
+                  PktapHeader.isHostAppBundlePath(outerApp) else
             {
                 return false
             }
-            if path.hasPrefix("/Applications/")
-                || path.hasPrefix("/System/Applications/")
-                || path.contains("/System/Applications/")
+            if outerApp.hasPrefix("/Applications/")
+                || outerApp.hasPrefix("/System/Applications/")
+                || outerApp.contains("/System/Applications/")
+                || outerApp.contains("/Caskroom/")
             {
                 return true
             }
             let normalizedHome = normalizeDirectoryPrefix(homeDirectoryPath)
-            if !normalizedHome.isEmpty, path.hasPrefix(normalizedHome) {
+            if !normalizedHome.isEmpty, outerApp.hasPrefix(normalizedHome) {
+                let homeLibrary = normalizedHome + "Library/"
+                if !outerApp.hasPrefix(homeLibrary) || outerApp.hasPrefix(homeLibrary + "Mobile Documents/") {
+                    return true
+                }
+                return appBundleExistsLookup(rawName)
+            }
+            if outerApp.contains("/Applications/"), !outerApp.hasPrefix("/Library/") {
                 return true
             }
-            return path.contains("/Applications/") && !path.hasPrefix("/Library/")
+            return appBundleExistsLookup(rawName)
+        }
+        if !isKnownCLICommand(rawName), !knownSystemDaemonNames.contains(rawName) {
+            if appBundleExistsLookup(rawName) {
+                return true
+            }
+            if usesDefaultAppBundleLookup,
+               let bundleID = bundleIdentifier,
+               !bundleID.hasPrefix("com.apple."),
+               context?.callerKind != .app,
+               context?.callerKind != .terminal,
+               InstalledAppCatalog.shared.appBundlePath(forBundleIdentifier: bundleID) != nil
+            {
+                return true
+            }
+            return false
         }
         return appBundleExistsLookup(rawName)
     }

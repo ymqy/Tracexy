@@ -87,6 +87,24 @@ struct AppIconView: View {
         localizedName == name || bundleURL?.deletingPathExtension().lastPathComponent == name
     }
 
+    nonisolated static func resolvedApplicationBundlePath(
+        for name: String,
+        catalog: InstalledAppCatalog = .shared,
+        homeDirectoryURL: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> String? {
+        if let catalogPath = catalog.appBundlePath(forName: name),
+           FileManager.default.fileExists(atPath: catalogPath)
+        {
+            return catalogPath
+        }
+        for path in candidateApplicationPaths(for: name, homeDirectoryURL: homeDirectoryURL) {
+            if FileManager.default.fileExists(atPath: path) {
+                return path
+            }
+        }
+        return nil
+    }
+
     static func resolvedIcon(for name: String, size: CGFloat) -> NSImage? {
         guard !isUnattributedPlaceholder(name) else {
             return nil
@@ -121,12 +139,10 @@ struct AppIconView: View {
             return icon
         }
 
-        for path in candidateApplicationPaths(for: name) {
-            if FileManager.default.fileExists(atPath: path) {
-                let icon = NSWorkspace.shared.icon(forFile: path)
-                iconCache[name] = icon
-                return icon
-            }
+        if let bundlePath = resolvedApplicationBundlePath(for: name) {
+            let icon = NSWorkspace.shared.icon(forFile: bundlePath)
+            iconCache[name] = icon
+            return icon
         }
 
         for app in NSWorkspace.shared.runningApplications

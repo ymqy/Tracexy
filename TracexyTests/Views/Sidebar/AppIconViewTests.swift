@@ -119,6 +119,61 @@ struct AppIconViewTests {
         ))
     }
 
+    @Test("Resolves bundle path from InstalledAppCatalog for localized display names even when app is not running")
+    func resolvesLocalizedAppBundlePathViaCatalog() throws {
+        let tempAppsDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tracexy-r5-icon-catalog-\(UUID().uuidString)", isDirectory: true)
+        let appURL = tempAppsDir.appendingPathComponent("SampleRemote.app", isDirectory: true)
+        let zhDir = appURL.appendingPathComponent("Contents/Resources/zh-Hans.lproj", isDirectory: true)
+        try FileManager.default.createDirectory(at: zhDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempAppsDir) }
+
+        let infoPlist = try PropertyListSerialization.data(
+            fromPropertyList: [
+                "CFBundleDisplayName": "Sample Remote",
+                "CFBundleIdentifier": "com.example.SampleRemote",
+            ],
+            format: .xml,
+            options: 0
+        )
+        try infoPlist.write(to: appURL.appendingPathComponent("Contents/Info.plist"))
+
+        let zhStrings = try PropertyListSerialization.data(
+            fromPropertyList: [
+                "CFBundleDisplayName": "示例远程",
+            ],
+            format: .binary,
+            options: 0
+        )
+        try zhStrings.write(to: zhDir.appendingPathComponent("InfoPlist.strings"))
+
+        let catalog = InstalledAppCatalog(searchRootURLs: [tempAppsDir])
+        let emptyHome = URL(fileURLWithPath: "/var/tmp/tracexy-nonexistent-home", isDirectory: true)
+        let canonicalize: (String?) -> String? = { path in
+            path.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path }
+        }
+        let expectedAppPath = canonicalize(appURL.path)
+
+        #expect(
+            canonicalize(
+                AppIconView.resolvedApplicationBundlePath(
+                    for: "示例远程",
+                    catalog: catalog,
+                    homeDirectoryURL: emptyHome
+                )
+            ) == expectedAppPath
+        )
+        #expect(
+            canonicalize(
+                AppIconView.resolvedApplicationBundlePath(
+                    for: "Sample Remote",
+                    catalog: catalog,
+                    homeDirectoryURL: emptyHome
+                )
+            ) == expectedAppPath
+        )
+    }
+
     @Test("Renders neutral placeholder badge for unattributed traffic instead of colored monogram")
     @MainActor
     func rendersNeutralPlaceholderInsteadOfColoredMonogram() throws {
