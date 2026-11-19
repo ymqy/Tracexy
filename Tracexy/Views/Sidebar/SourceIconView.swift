@@ -1,4 +1,5 @@
 import AppKit
+import os
 import SwiftUI
 
 /// Unified squircle icon badge for the 7-dimension traffic source system.
@@ -50,14 +51,17 @@ struct SourceIconView: View {
         case .cli:
             return cliSymbol(for: filterKey.isEmpty ? title : filterKey)
         case .thirdPartyService:
-            let bundle = AppLanguage.currentLocalizedBundle()
-            if subtitle?.hasPrefix(String(localized: "App Helper Process", bundle: bundle)) == true {
+            guard let subtitle else {
+                return "gearshape"
+            }
+            let labels = Self.thirdPartySubtitleLabels(in: AppLanguage.currentLocalizedBundle())
+            if subtitle.hasPrefix(labels.appHelperPrefix) {
                 return fallbackSymbol ?? "gearshape.2"
             }
-            if subtitle == String(localized: "System Network Extension", bundle: bundle) {
+            if subtitle == labels.systemNetworkExtension {
                 return "puzzlepiece.extension"
             }
-            if subtitle == String(localized: "Root Background Daemon", bundle: bundle) {
+            if subtitle == labels.rootBackgroundDaemon {
                 return "server.rack"
             }
             return "gearshape"
@@ -73,6 +77,16 @@ struct SourceIconView: View {
     }
 
     // MARK: Private
+
+    private nonisolated struct ThirdPartySubtitleLabels: Sendable {
+        let appHelperPrefix: String
+        let systemNetworkExtension: String
+        let rootBackgroundDaemon: String
+    }
+
+    private nonisolated static let thirdPartySubtitleCache = OSAllocatedUnfairLock<[String: ThirdPartySubtitleLabels]>(
+        initialState: [:]
+    )
 
     private static let systemProcessesWithBundleIcons: Set<String> = [
         "Finder",
@@ -154,6 +168,25 @@ struct SourceIconView: View {
                     .imageScale(.small)
                     .foregroundStyle(category == .unattributed && !isActive ? AnyShapeStyle(.secondary) : AnyShapeStyle(tint))
             }
+    }
+
+    nonisolated private static func thirdPartySubtitleLabels(in bundle: Bundle) -> ThirdPartySubtitleLabels {
+        let key = bundle.bundlePath
+        if let cached = thirdPartySubtitleCache.withLock({ $0[key] }) {
+            return cached
+        }
+        let labels = ThirdPartySubtitleLabels(
+            appHelperPrefix: String(localized: "App Helper Process", bundle: bundle),
+            systemNetworkExtension: String(localized: "System Network Extension", bundle: bundle),
+            rootBackgroundDaemon: String(localized: "Root Background Daemon", bundle: bundle)
+        )
+        thirdPartySubtitleCache.withLock { cache in
+            if cache.count >= 64 {
+                cache.removeAll(keepingCapacity: true)
+            }
+            cache[key] = labels
+        }
+        return labels
     }
 
     nonisolated private static func canonicalBundleLookupName(for name: String) -> String {

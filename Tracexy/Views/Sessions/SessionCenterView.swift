@@ -436,13 +436,11 @@ struct SessionCenterView: View {
     /// leaves the session's start unknown; the cell says so with the standard em
     /// dash rather than showing a substituted instant.
     @ViewBuilder
-    private func timeCell(_ startTime: Date?) -> some View {
+    private func timeCell(_ startTime: Date?, format: SessionTimeFormat, captureStart: Date?) -> some View {
         if let startTime {
-            Text(coordinator.sessionTimeDisplay.format.string(
-                for: startTime, captureStart: coordinator.trafficTimeline.captureStartFrame
-            ))
-            .font(Theme.Typography.monoSmall)
-            .foregroundStyle(.secondary)
+            Text(format.string(for: startTime, captureStart: captureStart))
+                .font(Theme.Typography.monoSmall)
+                .foregroundStyle(.secondary)
         } else {
             Text("—")
                 .font(Theme.Typography.monoSmall)
@@ -457,6 +455,28 @@ struct SessionCenterView: View {
         let timelineSpan = columnCustomization[visibility: "timeline"] == .visible
             ? SessionTimelineBar.span(of: sessions)
             : nil
+        let investigationNotes = coordinator.investigationNotes
+        let noteIDs: Set<UUID> = investigationNotes.notes.isEmpty
+            ? []
+            : investigationNotes.annotatedSessionIDs
+        let tagsBySessionID: [UUID: [SessionTag]]
+        if let scope = investigationNotes.scope, !investigationNotes.tagRecords.isEmpty {
+            var map: [UUID: [SessionTag]] = [:]
+            map.reserveCapacity(investigationNotes.tagRecords.count)
+            for record in investigationNotes.tagRecords where record.scope == scope {
+                if map[record.sessionID] == nil {
+                    map[record.sessionID] = record.tags
+                }
+            }
+            tagsBySessionID = map
+        } else {
+            tagsBySessionID = [:]
+        }
+        let timeFormat = coordinator.sessionTimeDisplay.format
+        let captureStart = coordinator.trafficTimeline.captureStartFrame
+        let revealRow = workspace.selectedSessionID.flatMap { selectedID in
+            ordered.firstIndex { $0.id == selectedID }
+        }
         return Table(ordered, selection: Binding(
             get: { workspace.selectedSessionID },
             // Guard the write-back: while a live rebuild replaces the rows,
@@ -472,19 +492,19 @@ struct SessionCenterView: View {
                 }
             }
         ), sortOrder: $sortOrder, columnCustomization: $columnCustomization) {
-            endpointColumns
+            endpointColumns(timeFormat: timeFormat, captureStart: captureStart)
             TableColumn("Host", value: \.host) { session in
                 let displayHost = coordinator.addressNames.displayHost(for: session)
                 let discovery = LocalDiscoveryNameClassifier.classify(displayHost)
                 HStack(spacing: Theme.Metrics.spacingS) {
-                    SessionTagDots(tags: coordinator.investigationNotes.tags(onSession: session.id))
+                    SessionTagDots(tags: tagsBySessionID[session.id] ?? [])
                     Text(displayHost)
                         .font(Theme.Typography.body)
                         .lineLimit(1)
                     if let discovery {
                         localDiscoveryBadge(discovery)
                     }
-                    if coordinator.investigationNotes.hasNote(onSession: session.id) {
+                    if noteIDs.contains(session.id) {
                         Image(systemName: "note.text")
                             .font(.system(size: Theme.Icon.small))
                             .foregroundStyle(.secondary)
@@ -552,7 +572,7 @@ struct SessionCenterView: View {
         .background {
             SessionHistoryScrollObserver(
                 revealToken: workspace.sessionRevealToken,
-                revealRow: ordered.firstIndex { $0.id == workspace.selectedSessionID }
+                revealRow: revealRow
             ) {
                 coordinator.userDidNavigateSessionHistory()
             }
@@ -567,7 +587,12 @@ struct SessionCenterView: View {
     /// and its selection semantics — folding both into one body risks
     /// destabilising the path that already works.
     private func groupedTable(rows: [SessionRow], workspace: WorkspaceState) -> some View {
-        Table(of: SessionRow.self, selection: Binding(
+        let timeFormat = coordinator.sessionTimeDisplay.format
+        let captureStart = coordinator.trafficTimeline.captureStartFrame
+        let revealRow = workspace.selectedSessionID.flatMap { selectedID in
+            rows.firstIndex { $0.id == selectedID }
+        }
+        return Table(of: SessionRow.self, selection: Binding(
             get: { workspace.selectedSessionID },
             // Selecting an action resolves to its first session, so the
             // inspector and the dock always have a concrete thing to describe.
@@ -588,8 +613,8 @@ struct SessionCenterView: View {
                 }
             }
         )) {
-            TableColumn(coordinator.sessionTimeDisplay.format.columnTitle) { (row: SessionRow) in
-                timeCell(row.startTime)
+            TableColumn(timeFormat.columnTitle) { (row: SessionRow) in
+                timeCell(row.startTime, format: timeFormat, captureStart: captureStart)
             }
             .width(72)
             TableColumn("Source") { (row: SessionRow) in
@@ -660,7 +685,7 @@ struct SessionCenterView: View {
         .background {
             SessionHistoryScrollObserver(
                 revealToken: workspace.sessionRevealToken,
-                revealRow: rows.firstIndex { $0.id == workspace.selectedSessionID }
+                revealRow: revealRow
             ) {
                 coordinator.userDidNavigateSessionHistory()
             }
@@ -1088,12 +1113,15 @@ struct SessionCenterView: View {
     }
 
     @TableColumnBuilder<SessionSummary, KeyPathComparator<SessionSummary>>
-    private var endpointColumns: some TableColumnContent<
+    private func endpointColumns(
+        timeFormat: SessionTimeFormat,
+        captureStart: Date?
+    ) -> some TableColumnContent<
         SessionSummary,
         KeyPathComparator<SessionSummary>
     > {
-        TableColumn(coordinator.sessionTimeDisplay.format.columnTitle, value: \.sortableStartTime) { session in
-            timeCell(session.startTime)
+        TableColumn(timeFormat.columnTitle, value: \.sortableStartTime) { session in
+            timeCell(session.startTime, format: timeFormat, captureStart: captureStart)
         }
         .width(72)
         .customizationID("time")

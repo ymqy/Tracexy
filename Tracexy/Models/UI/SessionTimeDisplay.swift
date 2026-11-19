@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import os
 
 // MARK: - SessionTimeFormat
 
@@ -47,7 +48,7 @@ nonisolated enum SessionTimeFormat: String, CaseIterable, Identifiable, Sendable
     func string(for date: Date, captureStart: Date?) -> String {
         switch self {
         case .timeOfDay:
-            return date.formatted(.dateTime.hour().minute().second())
+            return Self.formatTimeOfDay(date)
         case .utc:
             return Self.utcFormatter.string(from: date)
         case .sinceCaptureStart:
@@ -60,6 +61,22 @@ nonisolated enum SessionTimeFormat: String, CaseIterable, Identifiable, Sendable
 
     // MARK: Private
 
+    private struct TimeOfDayCacheKey: Hashable, Sendable {
+        let wholeSecond: Int64
+        let gmtOffset: Int
+    }
+
+    private struct TimeOfDayCacheState: Sendable {
+        static let maxEntries = 2_048
+
+        var localeIdentifier = ""
+        var hourCycle: Locale.HourCycle?
+        var timeZoneIdentifier = ""
+        var entries: [TimeOfDayCacheKey: String] = [:]
+    }
+
+    private static let timeOfDayCacheLock = OSAllocatedUnfairLock(initialState: TimeOfDayCacheState())
+
     private static let utcFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -67,6 +84,53 @@ nonisolated enum SessionTimeFormat: String, CaseIterable, Identifiable, Sendable
         formatter.dateFormat = "HH:mm:ss"
         return formatter
     }()
+
+    private static func formatTimeOfDay(_ date: Date) -> String {
+        let interval = date.timeIntervalSince1970
+        guard interval.isFinite,
+              interval >= Double(Int64.min / 2),
+              interval <= Double(Int64.max / 2)
+        else {
+            return date.formatted(.dateTime.hour().minute().second())
+        }
+        let wholeSecond = Int64(floor(interval))
+        let locale = Locale.current
+        let localeID = locale.identifier
+        let hourCycle = locale.hourCycle
+        let timeZone = TimeZone.current
+        let timeZoneID = timeZone.identifier
+        let gmtOffset = timeZone.secondsFromGMT(for: date)
+        let key = TimeOfDayCacheKey(wholeSecond: wholeSecond, gmtOffset: gmtOffset)
+
+        if let cached = timeOfDayCacheLock.withLock({ state -> String? in
+            guard state.localeIdentifier == localeID,
+                  state.hourCycle == hourCycle,
+                  state.timeZoneIdentifier == timeZoneID
+            else {
+                return nil
+            }
+            return state.entries[key]
+        }) {
+            return cached
+        }
+
+        let formatted = date.formatted(.dateTime.hour().minute().second())
+        timeOfDayCacheLock.withLock { state in
+            if state.localeIdentifier != localeID
+                || state.hourCycle != hourCycle
+                || state.timeZoneIdentifier != timeZoneID
+            {
+                state.entries.removeAll(keepingCapacity: true)
+                state.localeIdentifier = localeID
+                state.hourCycle = hourCycle
+                state.timeZoneIdentifier = timeZoneID
+            } else if state.entries.count >= TimeOfDayCacheState.maxEntries {
+                state.entries.removeAll(keepingCapacity: true)
+            }
+            state.entries[key] = formatted
+        }
+        return formatted
+    }
 }
 
 // MARK: - SessionTimeDisplay

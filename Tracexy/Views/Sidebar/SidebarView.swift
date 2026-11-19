@@ -94,7 +94,7 @@ struct SidebarView: View {
     }
 
     private var isSearching: Bool {
-        !query.isEmpty
+        !sidebarSearch.isEmpty && !query.isEmpty
     }
 
     private var filteredMonitorItems: [SidebarItem] {
@@ -250,22 +250,6 @@ struct SidebarView: View {
         }
     }
 
-    private var filteredDomainGroups: [DomainGroup] {
-        guard isSearching else {
-            return visibleDomainGroups
-        }
-        if matches("Domains") || matches("Sources") {
-            return visibleDomainGroups
-        }
-        return visibleDomainGroups.compactMap { group in
-            if matches(group.domain) {
-                return group
-            }
-            let ips = group.ips.filter { matches($0) }
-            return ips.isEmpty ? nil : DomainGroup(domain: group.domain, ips: ips, count: group.count)
-        }
-    }
-
     private var visibleLocalDiscoveryGroups: [LocalDiscoveryGroup] {
         coordinator.localDiscoveryGroups.compactMap { group in
             guard !coordinator.isSourceLocalNameHidden(group.name) else {
@@ -284,62 +268,8 @@ struct SidebarView: View {
         }
     }
 
-    private var filteredLocalDiscoveryGroups: [LocalDiscoveryGroup] {
-        guard isSearching else {
-            return visibleLocalDiscoveryGroups
-        }
-        let bundle = AppLanguage.currentLocalizedBundle()
-        if matches(String(localized: "Local Services & Devices", bundle: bundle))
-            || matches("Local Services & Devices")
-            || matches("本地服务与设备名")
-            || matches("bonjour")
-            || matches("local")
-            || matches(String(localized: "Sources", bundle: bundle))
-            || matches("Sources")
-        {
-            return visibleLocalDiscoveryGroups
-        }
-        return visibleLocalDiscoveryGroups.compactMap { group in
-            if matches(group.name) || matches(group.subtitle) || matches(group.badgeTitle) {
-                return group
-            }
-            let ips = group.ips.filter { matches($0) }
-            return ips.isEmpty ? nil : LocalDiscoveryGroup(
-                name: group.name,
-                badgeTitle: group.badgeTitle,
-                subtitle: group.subtitle,
-                symbolName: group.symbolName,
-                tooltip: group.tooltip,
-                ips: ips,
-                count: group.count
-            )
-        }
-    }
-
     private var visibleIPHosts: [(name: String, count: Int)] {
         coordinator.ipHosts.filter { !coordinator.isSourceIPHidden($0.name) }
-    }
-
-    private var filteredIPHosts: [(name: String, count: Int)] {
-        guard isSearching else {
-            return visibleIPHosts
-        }
-        if matches("IP Addresses") || matches("Sources") {
-            return visibleIPHosts
-        }
-        return visibleIPHosts.filter { matches($0.name) }
-    }
-
-    private var showsDomainsCategory: Bool {
-        !filteredDomainGroups.isEmpty || (!isSearching && !coordinator.hiddenSourceDomains.isEmpty)
-    }
-
-    private var showsLocalDiscoveryCategory: Bool {
-        !filteredLocalDiscoveryGroups.isEmpty || (!isSearching && !coordinator.hiddenSourceLocalNames.isEmpty)
-    }
-
-    private var showsIPAddressesCategory: Bool {
-        !filteredIPHosts.isEmpty || (!isSearching && !coordinator.hiddenSourceIPs.isEmpty)
     }
 
     private var filteredPinnedHosts: [String] {
@@ -370,15 +300,6 @@ struct SidebarView: View {
             return coordinator.focusSets
         }
         return coordinator.focusSets.filter { matches($0.name) || matches($0.subtitle) }
-    }
-
-    private var browseHasResults: Bool {
-        !filteredMonitorItems.isEmpty
-            || !filteredProtocolItems.isEmpty
-            || !displayedSourceCategories.isEmpty
-            || !filteredDomainGroups.isEmpty
-            || !filteredLocalDiscoveryGroups.isEmpty
-            || !filteredIPHosts.isEmpty
     }
 
     // MARK: Active source scope
@@ -442,13 +363,14 @@ struct SidebarView: View {
     // MARK: Focus mode
 
     private var focusList: some View {
-        List {
+        let focusSets = filteredFocusSets
+        return List {
             Section {
-                if filteredFocusSets.isEmpty {
+                if focusSets.isEmpty {
                     Text(isSearching ? "No matching focus sets" : "No focus sets yet")
                         .font(Theme.Typography.caption).foregroundStyle(.tertiary)
                 } else {
-                    ForEach(filteredFocusSets) { set in
+                    ForEach(focusSets) { set in
                         FocusSetRow(set: set, coordinator: coordinator) { openFocusEditor(set) }
                     }
                 }
@@ -497,15 +419,17 @@ struct SidebarView: View {
     // MARK: Library mode
 
     private var libraryList: some View {
-        let hasPinned = !isSearching || !filteredPinnedHosts.isEmpty
-        let hasSaved = !isSearching || !filteredSavedCaptures.isEmpty
+        let pinnedHosts = filteredPinnedHosts
+        let savedCaptures = filteredSavedCaptures
+        let hasPinned = !isSearching || !pinnedHosts.isEmpty
+        let hasSaved = !isSearching || !savedCaptures.isEmpty
         return List {
             Section("Favorites") {
                 if hasPinned {
-                    pinnedDisclosure
+                    pinnedDisclosure(filteredHosts: pinnedHosts)
                 }
                 if hasSaved {
-                    savedDisclosure
+                    savedDisclosure(filteredCaptures: savedCaptures)
                 }
                 if isSearching, !hasPinned, !hasSaved {
                     noResultsRow
@@ -515,13 +439,13 @@ struct SidebarView: View {
         .listStyle(.sidebar)
     }
 
-    private var pinnedDisclosure: some View {
+    private func pinnedDisclosure(filteredHosts: [String]) -> some View {
         DisclosureGroup(isExpanded: searchExpansion($pinnedExpanded)) {
-            if filteredPinnedHosts.isEmpty {
+            if filteredHosts.isEmpty {
                 Text("No pinned hosts")
                     .font(Theme.Typography.caption).foregroundStyle(.tertiary)
             } else {
-                ForEach(filteredPinnedHosts, id: \.self) { host in
+                ForEach(filteredHosts, id: \.self) { host in
                     Label(host, systemImage: "globe")
                         .foregroundStyle(isActiveHost(host) ? Color.accentColor : .secondary)
                         .font(isActiveHost(host) ? Theme.Typography.navigationMedium : Theme.Typography.navigation)
@@ -549,13 +473,13 @@ struct SidebarView: View {
 
     /// Saved captures, expandable inline like Pinned — the list lives in the
     /// sidebar and a tap opens that capture in the main session view.
-    private var savedDisclosure: some View {
+    private func savedDisclosure(filteredCaptures: [SavedCapture]) -> some View {
         DisclosureGroup(isExpanded: searchExpansion($savedExpanded)) {
-            if filteredSavedCaptures.isEmpty {
+            if filteredCaptures.isEmpty {
                 Text("No saved captures")
                     .font(Theme.Typography.caption).foregroundStyle(.tertiary)
             } else {
-                ForEach(filteredSavedCaptures) { capture in
+                ForEach(filteredCaptures) { capture in
                     savedCaptureRow(capture)
                 }
             }
@@ -618,13 +542,13 @@ struct SidebarView: View {
     }
 
     /// Domains, each expandable to the server IPs it resolved to (sub-IPs).
-    private var domainsDisclosure: some View {
+    private func domainsDisclosure(visibleCount: Int, filteredGroups: [DomainGroup]) -> some View {
         DisclosureGroup(isExpanded: searchExpansion($domainsExpanded)) {
-            if filteredDomainGroups.isEmpty {
+            if filteredGroups.isEmpty {
                 Text("No visible domains")
                     .font(Theme.Typography.caption).foregroundStyle(.tertiary)
             } else {
-                ForEach(filteredDomainGroups) { group in
+                ForEach(filteredGroups) { group in
                     DomainRow(group: group, coordinator: coordinator, forceExpanded: isSearching)
                 }
             }
@@ -632,10 +556,10 @@ struct SidebarView: View {
             sourceCategoryLabel(
                 title: String(localized: "Domains", bundle: AppLanguage.currentLocalizedBundle()),
                 systemImage: "globe",
-                count: visibleDomainGroups.count,
+                count: visibleCount,
                 expanded: $domainsExpanded,
                 copyLabel: "Copy Domains",
-                values: filteredDomainGroups.map(\.domain),
+                values: filteredGroups.map(\.domain),
                 hiddenCount: coordinator.hiddenSourceDomains.count,
                 restoreLabel: "Restore Hidden Domains",
                 onRestore: coordinator.restoreHiddenSourceDomains
@@ -645,13 +569,13 @@ struct SidebarView: View {
 
     /// Local Bonjour / mDNS services, device hostnames, and special system DNS
     /// discovery names, separated from public Domains and kept collapsed by default.
-    private var localDiscoveryDisclosure: some View {
+    private func localDiscoveryDisclosure(visibleCount: Int, filteredGroups: [LocalDiscoveryGroup]) -> some View {
         DisclosureGroup(isExpanded: searchExpansion($localDiscoveryExpanded)) {
-            if filteredLocalDiscoveryGroups.isEmpty {
+            if filteredGroups.isEmpty {
                 Text("No visible local names")
                     .font(Theme.Typography.caption).foregroundStyle(.tertiary)
             } else {
-                ForEach(filteredLocalDiscoveryGroups) { group in
+                ForEach(filteredGroups) { group in
                     LocalDiscoveryRow(group: group, coordinator: coordinator, forceExpanded: isSearching)
                 }
             }
@@ -659,10 +583,10 @@ struct SidebarView: View {
             sourceCategoryLabel(
                 title: String(localized: "Local Services & Devices", bundle: AppLanguage.currentLocalizedBundle()),
                 systemImage: "bonjour",
-                count: visibleLocalDiscoveryGroups.count,
+                count: visibleCount,
                 expanded: $localDiscoveryExpanded,
                 copyLabel: "Copy Local Names",
-                values: filteredLocalDiscoveryGroups.map(\.name),
+                values: filteredGroups.map(\.name),
                 hiddenCount: coordinator.hiddenSourceLocalNames.count,
                 restoreLabel: "Restore Hidden Local Names",
                 onRestore: coordinator.restoreHiddenSourceLocalNames
@@ -672,8 +596,8 @@ struct SidebarView: View {
 
     /// Hosts seen only as a bare IP (no domain name resolved). Capped while
     /// browsing to stay scannable; a search widens the net to every match.
-    private var ipAddressesDisclosure: some View {
-        let hosts = isSearching ? filteredIPHosts : Array(filteredIPHosts.prefix(20))
+    private func ipAddressesDisclosure(visibleCount: Int, filteredHosts: [(name: String, count: Int)]) -> some View {
+        let hosts = isSearching ? filteredHosts : Array(filteredHosts.prefix(20))
         return DisclosureGroup(isExpanded: searchExpansion($ipsExpanded)) {
             if hosts.isEmpty {
                 Text("No visible IP addresses")
@@ -708,7 +632,7 @@ struct SidebarView: View {
             sourceCategoryLabel(
                 title: String(localized: "IP Addresses", bundle: AppLanguage.currentLocalizedBundle()),
                 systemImage: "number",
-                count: visibleIPHosts.count,
+                count: visibleCount,
                 expanded: $ipsExpanded,
                 copyLabel: "Copy IP Addresses",
                 values: hosts.map(\.name),
@@ -941,13 +865,35 @@ struct SidebarView: View {
     // MARK: Browse mode
 
     private func browseList(_ workspace: WorkspaceState) -> some View {
-        // One filter pass feeds every badge in this list.
+        // One filter pass feeds every badge and disclosure group in this list.
         let visibleCount = coordinator.visibleSessions.count
         let protocolCounts = coordinator.visibleProtocolCounts
+        let monitorItems = filteredMonitorItems
+        let protocolItems = filteredProtocolItems
+        let sourceCategories = displayedSourceCategories
+        let visibleDomains = visibleDomainGroups
+        let filteredDomains = filterDomainGroups(visibleDomains)
+        let visibleLocalNames = visibleLocalDiscoveryGroups
+        let filteredLocalDiscoveryGroups = filterLocalDiscoveryGroups(visibleLocalNames)
+        let visibleIPs = visibleIPHosts
+        let filteredIPs = filterIPHosts(visibleIPs)
+        let showsDomainsCategory = !filteredDomains.isEmpty
+            || (!isSearching && !coordinator.hiddenSourceDomains.isEmpty)
+        let showsLocalDiscoveryCategory = !filteredLocalDiscoveryGroups.isEmpty
+            || (!isSearching && !coordinator.hiddenSourceLocalNames.isEmpty)
+        let showsIPAddressesCategory = !filteredIPs.isEmpty
+            || (!isSearching && !coordinator.hiddenSourceIPs.isEmpty)
+        let hasAnyBrowseResults = !monitorItems.isEmpty
+            || !protocolItems.isEmpty
+            || !sourceCategories.isEmpty
+            || !filteredDomains.isEmpty
+            || !filteredLocalDiscoveryGroups.isEmpty
+            || !filteredIPs.isEmpty
+
         return List(selection: selectionBinding(workspace)) {
-            if !filteredMonitorItems.isEmpty {
+            if !monitorItems.isEmpty {
                 Section("Monitor") {
-                    ForEach(filteredMonitorItems) { item in
+                    ForEach(monitorItems) { item in
                         navRow(item, workspace: workspace, visibleCount: visibleCount, protocolCounts: protocolCounts)
                     }
                 }
@@ -956,10 +902,10 @@ struct SidebarView: View {
             // Protocol lenses are secondary: they filter the same list rather than
             // navigating anywhere new. They open when the current capture first
             // yields data, while search still forces the group open and prunes it.
-            if !filteredProtocolItems.isEmpty {
+            if !protocolItems.isEmpty {
                 Section {
                     DisclosureGroup(isExpanded: searchExpansion($protocolsExpanded)) {
-                        ForEach(filteredProtocolItems) { item in
+                        ForEach(protocolItems) { item in
                             navRow(
                                 item,
                                 workspace: workspace,
@@ -973,13 +919,13 @@ struct SidebarView: View {
                 }
             }
 
-            if !displayedSourceCategories.isEmpty
+            if !sourceCategories.isEmpty
                 || showsDomainsCategory
                 || showsLocalDiscoveryCategory
                 || showsIPAddressesCategory
             {
                 let displaysByCategory = Dictionary(
-                    uniqueKeysWithValues: displayedSourceCategories.map { ($0.category, $0) }
+                    uniqueKeysWithValues: sourceCategories.map { ($0.category, $0) }
                 )
                 Section(String(localized: "Sources", bundle: AppLanguage.currentLocalizedBundle())) {
                     if let display = displaysByCategory[.app] {
@@ -1004,18 +950,21 @@ struct SidebarView: View {
                         sourceCategoryDisclosure(display, expanded: $unattributedExpanded)
                     }
                     if showsDomainsCategory {
-                        domainsDisclosure
+                        domainsDisclosure(visibleCount: visibleDomains.count, filteredGroups: filteredDomains)
                     }
                     if showsLocalDiscoveryCategory {
-                        localDiscoveryDisclosure
+                        localDiscoveryDisclosure(
+                            visibleCount: visibleLocalNames.count,
+                            filteredGroups: filteredLocalDiscoveryGroups
+                        )
                     }
                     if showsIPAddressesCategory {
-                        ipAddressesDisclosure
+                        ipAddressesDisclosure(visibleCount: visibleIPs.count, filteredHosts: filteredIPs)
                     }
                 }
             }
 
-            if isSearching, !browseHasResults {
+            if isSearching, !hasAnyBrowseResults {
                 noResultsRow
             }
         }
@@ -1023,6 +972,64 @@ struct SidebarView: View {
     }
 
     // MARK: Rows / helpers
+
+    private func filterDomainGroups(_ visible: [DomainGroup]) -> [DomainGroup] {
+        guard isSearching else {
+            return visible
+        }
+        if matches("Domains") || matches("Sources") {
+            return visible
+        }
+        return visible.compactMap { group in
+            if matches(group.domain) {
+                return group
+            }
+            let ips = group.ips.filter { matches($0) }
+            return ips.isEmpty ? nil : DomainGroup(domain: group.domain, ips: ips, count: group.count)
+        }
+    }
+
+    private func filterLocalDiscoveryGroups(_ visible: [LocalDiscoveryGroup]) -> [LocalDiscoveryGroup] {
+        guard isSearching else {
+            return visible
+        }
+        let bundle = AppLanguage.currentLocalizedBundle()
+        if matches(String(localized: "Local Services & Devices", bundle: bundle))
+            || matches("Local Services & Devices")
+            || matches("本地服务与设备名")
+            || matches("bonjour")
+            || matches("local")
+            || matches(String(localized: "Sources", bundle: bundle))
+            || matches("Sources")
+        {
+            return visible
+        }
+        return visible.compactMap { group in
+            if matches(group.name) || matches(group.subtitle) || matches(group.badgeTitle) {
+                return group
+            }
+            let ips = group.ips.filter { matches($0) }
+            return ips.isEmpty ? nil : LocalDiscoveryGroup(
+                name: group.name,
+                badgeTitle: group.badgeTitle,
+                subtitle: group.subtitle,
+                symbolName: group.symbolName,
+                tooltip: group.tooltip,
+                ips: ips,
+                count: group.count
+            )
+        }
+    }
+
+    private func filterIPHosts(_ visible: [(name: String, count: Int)]) -> [(name: String, count: Int)] {
+        guard isSearching else {
+            return visible
+        }
+        if matches("IP Addresses") || matches("Sources") {
+            return visible
+        }
+        return visible.filter { matches($0.name) }
+    }
 
     private func navRow(
         _ item: SidebarItem,
@@ -1071,7 +1078,11 @@ struct SidebarView: View {
     /// Case-insensitive substring match; always true when not searching so call
     /// sites read the same in both modes.
     private func matches(_ text: String) -> Bool {
-        query.isEmpty || text.lowercased().contains(query)
+        guard !sidebarSearch.isEmpty else {
+            return true
+        }
+        let needle = query
+        return needle.isEmpty || text.lowercased().contains(needle)
     }
 
     /// Force a disclosure open while searching so matching children are visible,

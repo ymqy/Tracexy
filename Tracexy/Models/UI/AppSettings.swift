@@ -290,25 +290,47 @@ enum AppLanguage: String, CaseIterable, Identifiable {
     nonisolated var localeOverride: Locale? {
         switch self {
         case .system:
-            let (testingBaseBundle, testingSys) = Self.languageStateLock.withLock {
-                ($0.testingBaseBundle, $0.testingSystemLanguages)
+            _ = Self.localeObserver
+            let now = ProcessInfo.processInfo.systemUptime
+            let lookup = Self.languageStateLock.withLock {
+                state -> (resolved: Bool, locale: Locale?, base: Bundle, testingSys: [String]?) in
+                if let testingSys = state.testingSystemLanguages {
+                    return (false, nil, state.testingBaseBundle ?? .main, testingSys)
+                }
+                if Self.isRunningTests {
+                    return (true, nil, .main, nil)
+                }
+                // When the process launched with a custom language override (e.g. "en"),
+                // SwiftUI's default environment Locale is pinned to that launch override;
+                // supply the true host system localization so switching back to `.system`
+                // updates all SwiftUI `Text(...)` views immediately without restarting.
+                guard Self.launchRawValue != AppLanguage.system.rawValue else {
+                    return (true, nil, .main, nil)
+                }
+                let effectiveBase = state.testingBaseBundle ?? .main
+                if state.cachedSystemLocaleBasePath == effectiveBase.bundlePath,
+                   now - state.cachedSystemLocaleResolvedAt < LanguageBundleState.systemLocalizationTTL
+                {
+                    return (true, state.cachedSystemLocalization.map(Locale.init(identifier:)), effectiveBase, nil)
+                }
+                return (false, nil, effectiveBase, nil)
             }
-            if TracexyIdentity.isRunningTests, testingSys == nil {
-                return nil
+            if lookup.resolved {
+                return lookup.locale
             }
-            // When the process launched with a custom language override (e.g. "en"),
-            // SwiftUI's default environment Locale is pinned to that launch override;
-            // supply the true host system localization so switching back to `.system`
-            // updates all SwiftUI `Text(...)` views immediately without restarting.
-            if testingSys != nil || Self.launchRawValue != AppLanguage.system.rawValue,
-               let sysLang = Self.resolvedSystemLocalization(
-                   in: testingBaseBundle ?? .main,
-                   preferredLanguages: testingSys
-               )
-            {
-                return Locale(identifier: sysLang)
+            let sysLang = Self.resolvedSystemLocalization(
+                in: lookup.base,
+                preferredLanguages: lookup.testingSys
+            )
+            if lookup.testingSys == nil {
+                let basePath = lookup.base.bundlePath
+                Self.languageStateLock.withLock { state in
+                    state.cachedSystemLocaleBasePath = basePath
+                    state.cachedSystemLocalization = sysLang
+                    state.cachedSystemLocaleResolvedAt = now
+                }
             }
-            return nil
+            return sysLang.map(Locale.init(identifier:))
         case .simplifiedChinese,
              .english,
              .vietnamese:
@@ -343,21 +365,53 @@ enum AppLanguage: String, CaseIterable, Identifiable {
     nonisolated static func localizedBundle(for rawValue: String, in base: Bundle = .main) -> Bundle {
         let lang = AppLanguage(rawValue: rawValue) ?? .system
         if lang == .system {
-            let testingSys = languageStateLock.withLock(\.testingSystemLanguages)
-            if TracexyIdentity.isRunningTests, testingSys == nil {
-                return base
-            }
-            guard let sysLang = resolvedSystemLocalization(in: base, preferredLanguages: testingSys) else {
-                return base
-            }
-            let cacheKey = "\(base.bundlePath)|system|\(sysLang)"
-            return languageStateLock.withLock { state in
-                if let cached = state.cachedBundles[cacheKey] {
-                    return cached
+            _ = localeObserver
+            let now = ProcessInfo.processInfo.systemUptime
+            let basePath = base.bundlePath
+            let lookup: (hit: Bundle?, testingSys: [String]?) = languageStateLock.withLock { state in
+                if let testingSys = state.testingSystemLanguages {
+                    return (nil, testingSys)
                 }
-                let resolved = base.path(forResource: sysLang, ofType: "lproj")
-                    .flatMap(Bundle.init(path:)) ?? base
-                state.cachedBundles[cacheKey] = resolved
+                if Self.isRunningTests {
+                    return (base, nil)
+                }
+                if state.cachedSystemBundleBasePath == basePath,
+                   let cached = state.cachedSystemBundle,
+                   now - state.cachedSystemBundleResolvedAt < LanguageBundleState.systemLocalizationTTL
+                {
+                    return (cached, nil)
+                }
+                return (nil, nil)
+            }
+            if let hit = lookup.hit {
+                return hit
+            }
+            let testingSys = lookup.testingSys
+            guard let sysLang = resolvedSystemLocalization(in: base, preferredLanguages: testingSys) else {
+                if testingSys == nil {
+                    languageStateLock.withLock { state in
+                        state.cachedSystemBundleBasePath = basePath
+                        state.cachedSystemBundle = base
+                        state.cachedSystemBundleResolvedAt = now
+                    }
+                }
+                return base
+            }
+            let cacheKey = "\(basePath)|system|\(sysLang)"
+            return languageStateLock.withLock { state in
+                let resolved: Bundle
+                if let cached = state.cachedBundles[cacheKey] {
+                    resolved = cached
+                } else {
+                    resolved = base.path(forResource: sysLang, ofType: "lproj")
+                        .flatMap(Bundle.init(path:)) ?? base
+                    state.cachedBundles[cacheKey] = resolved
+                }
+                if testingSys == nil {
+                    state.cachedSystemBundleBasePath = basePath
+                    state.cachedSystemBundle = resolved
+                    state.cachedSystemBundleResolvedAt = now
+                }
                 return resolved
             }
         }
@@ -387,7 +441,7 @@ enum AppLanguage: String, CaseIterable, Identifiable {
     }
 
     nonisolated static func syncCurrentLanguage(_ rawValue: String) {
-        guard !TracexyIdentity.isRunningTests else {
+        guard !Self.isRunningTests else {
             return
         }
         let resolved = (AppLanguage(rawValue: rawValue) ?? .system).rawValue
@@ -418,6 +472,16 @@ enum AppLanguage: String, CaseIterable, Identifiable {
                 if let baseBundle, previous.1?.bundlePath != baseBundle.bundlePath {
                     let prefix = "\(baseBundle.bundlePath)|"
                     state.cachedBundles = state.cachedBundles.filter { !$0.key.hasPrefix(prefix) }
+                    if state.cachedSystemBundleBasePath == baseBundle.bundlePath {
+                        state.cachedSystemBundleBasePath = nil
+                        state.cachedSystemBundle = nil
+                        state.cachedSystemBundleResolvedAt = -100
+                    }
+                    if state.cachedSystemLocaleBasePath == baseBundle.bundlePath {
+                        state.cachedSystemLocaleBasePath = nil
+                        state.cachedSystemLocalization = nil
+                        state.cachedSystemLocaleResolvedAt = -100
+                    }
                 }
             }
         }
@@ -429,7 +493,7 @@ enum AppLanguage: String, CaseIterable, Identifiable {
         defaults: UserDefaults = TracexyIdentity.applicationDefaults
     ) {
         let resolved = AppLanguage(rawValue: rawValue) ?? .system
-        if !TracexyIdentity.isRunningTests {
+        if !Self.isRunningTests {
             languageStateLock.withLock { state in
                 state.currentRawValue = resolved.rawValue
             }
@@ -462,14 +526,45 @@ enum AppLanguage: String, CaseIterable, Identifiable {
     // MARK: Private
 
     private nonisolated struct LanguageBundleState: @unchecked Sendable {
+        static let systemLocalizationTTL: TimeInterval = 5.0
+
         var currentRawValue: String
         var cachedBundles: [String: Bundle] = [:]
         var testingBaseBundle: Bundle?
         var testingSystemLanguages: [String]?
+        var cachedSystemBundleBasePath: String?
+        var cachedSystemBundle: Bundle?
+        var cachedSystemBundleResolvedAt: TimeInterval = -100
+        var cachedSystemLocaleBasePath: String?
+        var cachedSystemLocalization: String?
+        var cachedSystemLocaleResolvedAt: TimeInterval = -100
     }
+
+    private nonisolated struct LocaleObserverBox: @unchecked Sendable {
+        let token: NSObjectProtocol
+    }
+
+    private nonisolated static let isRunningTests = TracexyIdentity.isRunningTests
 
     private nonisolated static let languageStateLock = OSAllocatedUnfairLock(
         initialState: LanguageBundleState(currentRawValue: launchRawValue)
+    )
+
+    private nonisolated static let localeObserver = LocaleObserverBox(
+        token: NotificationCenter.default.addObserver(
+            forName: NSLocale.currentLocaleDidChangeNotification,
+            object: nil,
+            queue: nil
+        ) { _ in
+            languageStateLock.withLock { state in
+                state.cachedSystemBundleBasePath = nil
+                state.cachedSystemBundle = nil
+                state.cachedSystemBundleResolvedAt = -100
+                state.cachedSystemLocaleBasePath = nil
+                state.cachedSystemLocalization = nil
+                state.cachedSystemLocaleResolvedAt = -100
+            }
+        }
     )
 }
 
@@ -533,19 +628,140 @@ enum ByteUnits: String, CaseIterable, Identifiable {
     /// The app-wide Units preference. Read from the application defaults on each
     /// use so every byte figure in the app follows the General → Units setting.
     nonisolated static func current(defaults: UserDefaults = .standard) -> ByteUnits {
-        defaults.string(forKey: SettingsKeys.byteUnits).flatMap(ByteUnits.init(rawValue:)) ?? .binary
+        let isStandard = defaults === UserDefaults.standard
+        let isApplication = !isStandard && defaults === TracexyIdentity.applicationDefaults
+        guard isStandard || isApplication else {
+            return defaults.string(forKey: SettingsKeys.byteUnits)
+                .flatMap(ByteUnits.init(rawValue:)) ?? .binary
+        }
+        _ = defaultsObserver
+        let (generation, cached) = byteFormatLock.withLock { state in
+            (
+                state.defaultsGeneration,
+                isStandard ? state.cachedStandardUnits : state.cachedApplicationUnits
+            )
+        }
+        if let cached {
+            return cached
+        }
+        let resolved = defaults.string(forKey: SettingsKeys.byteUnits)
+            .flatMap(ByteUnits.init(rawValue:)) ?? .binary
+        byteFormatLock.withLock { state in
+            if state.defaultsGeneration == generation {
+                if isStandard {
+                    state.cachedStandardUnits = resolved
+                } else {
+                    state.cachedApplicationUnits = resolved
+                }
+            }
+        }
+        return resolved
     }
 
     /// Formats a byte count in the preferred units — the single formatter every
     /// byte figure in the UI goes through.
     nonisolated static func string(_ bytes: Int64, defaults: UserDefaults = .standard) -> String {
         let units = current(defaults: defaults)
+        let isDecimal = units == .decimal
         if let locale = AppLanguage.currentLocaleOverride() {
-            let style: ByteCountFormatStyle.Style = units == .binary ? .binary : .decimal
-            return bytes.formatted(.byteCount(style: style).locale(locale))
+            let key = ByteFormatCacheKey(
+                bytes: bytes,
+                isDecimal: isDecimal,
+                localeID: "override:\(locale.identifier)"
+            )
+            if let cached = byteFormatLock.withLock({ $0.entries[key] }) {
+                return cached
+            }
+            let style: ByteCountFormatStyle.Style = isDecimal ? .decimal : .binary
+            let formatted = bytes.formatted(.byteCount(style: style).locale(locale))
+            byteFormatLock.withLock { state in
+                if state.entries.count >= ByteFormatCacheState.maxEntries {
+                    state.entries.removeAll(keepingCapacity: true)
+                }
+                state.entries[key] = formatted
+            }
+            return formatted
         }
-        return ByteCountFormatter.string(fromByteCount: bytes, countStyle: units.countStyle)
+
+        let systemLocaleID = Locale.current.identifier
+        let key = ByteFormatCacheKey(
+            bytes: bytes,
+            isDecimal: isDecimal,
+            localeID: "system:\(systemLocaleID)"
+        )
+        return byteFormatLock.withLock { state in
+            if state.systemLocaleIdentifier != systemLocaleID {
+                state.systemLocaleIdentifier = systemLocaleID
+                state.binaryFormatter = ByteFormatCacheState.makeFormatter(countStyle: .binary)
+                state.decimalFormatter = ByteFormatCacheState.makeFormatter(countStyle: .decimal)
+                state.entries.removeAll(keepingCapacity: true)
+            }
+            if let cached = state.entries[key] {
+                return cached
+            }
+            let formatter = isDecimal ? state.decimalFormatter : state.binaryFormatter
+            let formatted = formatter.string(fromByteCount: bytes)
+            if state.entries.count >= ByteFormatCacheState.maxEntries {
+                state.entries.removeAll(keepingCapacity: true)
+            }
+            state.entries[key] = formatted
+            return formatted
+        }
     }
+
+    // MARK: Private
+
+    private nonisolated struct ByteFormatCacheKey: Hashable, Sendable {
+        let bytes: Int64
+        let isDecimal: Bool
+        let localeID: String
+    }
+
+    private nonisolated struct ByteFormatCacheState: @unchecked Sendable {
+        static let maxEntries = 4_096
+
+        var defaultsGeneration: UInt64 = 0
+        var cachedStandardUnits: ByteUnits?
+        var cachedApplicationUnits: ByteUnits?
+        var systemLocaleIdentifier: String
+        var binaryFormatter: ByteCountFormatter
+        var decimalFormatter: ByteCountFormatter
+        var entries: [ByteFormatCacheKey: String] = [:]
+
+        init() {
+            systemLocaleIdentifier = Locale.current.identifier
+            binaryFormatter = Self.makeFormatter(countStyle: .binary)
+            decimalFormatter = Self.makeFormatter(countStyle: .decimal)
+        }
+
+        static func makeFormatter(countStyle: ByteCountFormatter.CountStyle) -> ByteCountFormatter {
+            let formatter = ByteCountFormatter()
+            formatter.countStyle = countStyle
+            return formatter
+        }
+    }
+
+    private nonisolated struct DefaultsObserverBox: @unchecked Sendable {
+        let token: NSObjectProtocol
+    }
+
+    private nonisolated static let byteFormatLock = OSAllocatedUnfairLock(
+        initialState: ByteFormatCacheState()
+    )
+
+    private nonisolated static let defaultsObserver = DefaultsObserverBox(
+        token: NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: nil,
+            queue: nil
+        ) { _ in
+            byteFormatLock.withLock { state in
+                state.defaultsGeneration &+= 1
+                state.cachedStandardUnits = nil
+                state.cachedApplicationUnits = nil
+            }
+        }
+    )
 }
 
 // MARK: - CaptureFilterMode
