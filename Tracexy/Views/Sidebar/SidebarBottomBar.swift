@@ -165,6 +165,7 @@ private struct NativeSidebarSearchField: NSViewRepresentable {
     }
 
     @Binding var text: String
+    @Environment(\.locale) private var locale
 
     func makeCoordinator() -> Coordinator {
         Coordinator(text: $text)
@@ -172,8 +173,6 @@ private struct NativeSidebarSearchField: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSSearchField {
         let field = NSSearchField()
-        field.placeholderString = String(localized: "Search")
-        field.toolTip = String(localized: "Search sidebar")
         field.controlSize = .regular
         field.focusRingType = .exterior
         field.sendsWholeSearchString = false
@@ -181,7 +180,6 @@ private struct NativeSidebarSearchField: NSViewRepresentable {
         field.delegate = context.coordinator
         field.setContentHuggingPriority(.defaultLow, for: .horizontal)
         field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        field.setAccessibilityLabel(String(localized: "Search sidebar"))
         // How View ▸ Filter Sidebar finds this field; it does not change the
         // label VoiceOver reads.
         field.setAccessibilityIdentifier(SidebarFilterFocusAction.fieldIdentifier)
@@ -190,6 +188,7 @@ private struct NativeSidebarSearchField: NSViewRepresentable {
     }
 
     func updateNSView(_ field: NSSearchField, context: Context) {
+        _ = locale
         context.coordinator.text = $text
         if field.stringValue != text {
             field.stringValue = text
@@ -200,13 +199,19 @@ private struct NativeSidebarSearchField: NSViewRepresentable {
     // MARK: Private
 
     private func configure(_ field: NSSearchField) {
+        let bundle = AppLanguage.currentLocalizedBundle()
+        let searchLabel = String(localized: "Search", bundle: bundle)
+        let searchSidebarLabel = String(localized: "Search sidebar", bundle: bundle)
+        field.placeholderString = searchLabel
+        field.toolTip = searchSidebarLabel
+        field.setAccessibilityLabel(searchSidebarLabel)
         field.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         guard let cell = field.cell as? NSSearchFieldCell else {
             return
         }
         cell.searchButtonCell?.image = NSImage(
             systemSymbolName: "line.3.horizontal.decrease.circle",
-            accessibilityDescription: String(localized: "Search")
+            accessibilityDescription: searchLabel
         )
     }
 }

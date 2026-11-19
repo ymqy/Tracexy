@@ -34,7 +34,12 @@ nonisolated enum LocalDiscoveryNameClassifier {
     /// Classifies a raw host string if it is a local-discovery or special system
     /// DNS name; returns `nil` for public domains, IP literals, empty strings,
     /// and the missing-host placeholder `"—"`.
-    static func classify(_ rawHost: String, bundle: Bundle = .main) -> LocalDiscoveryAnnotation? {
+    static func classify(
+        _ rawHost: String,
+        bundle: Bundle = AppLanguage.currentLocalizedBundle()
+    )
+        -> LocalDiscoveryAnnotation?
+    {
         let cleanHost = normalizedHost(rawHost)
         guard !cleanHost.isEmpty, cleanHost != "—" else {
             return nil

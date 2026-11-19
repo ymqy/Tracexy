@@ -1105,13 +1105,17 @@ private struct CorrelatedActionTimeline: View {
     /// "First byte after 142 ms, complete after 296 ms" — the two numbers the action is
     /// judged on. The first is stated only when something measured a latency.
     private var headerDetail: String {
+        let bundle = AppLanguage.currentLocalizedBundle()
         guard hasKnownSpan else {
-            return "Duration unknown — some frames have no capture time"
+            return String(localized: "Duration unknown — some frames have no capture time", bundle: bundle)
         }
         guard let ttfb = firstByteMilliseconds else {
-            return String(localized: "Complete after \(Self.ms(spanMilliseconds))")
+            return String(localized: "Complete after \(Self.ms(spanMilliseconds))", bundle: bundle)
         }
-        return String(localized: "First byte after \(Self.ms(ttfb)), complete after \(Self.ms(spanMilliseconds))")
+        return String(
+            localized: "First byte after \(Self.ms(ttfb)), complete after \(Self.ms(spanMilliseconds))",
+            bundle: bundle
+        )
     }
 
     private var firstByteMilliseconds: Double? {

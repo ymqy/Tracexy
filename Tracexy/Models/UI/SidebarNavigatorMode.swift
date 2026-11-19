@@ -15,10 +15,11 @@ enum SidebarNavigatorMode: String, CaseIterable, Identifiable, Hashable {
     }
 
     nonisolated var title: String {
-        switch self {
-        case .browse: String(localized: "Browse")
-        case .focus: String(localized: "Focus")
-        case .library: String(localized: "Library")
+        let bundle = AppLanguage.currentLocalizedBundle()
+        return switch self {
+        case .browse: String(localized: "Browse", bundle: bundle)
+        case .focus: String(localized: "Focus", bundle: bundle)
+        case .library: String(localized: "Library", bundle: bundle)
         }
     }
 

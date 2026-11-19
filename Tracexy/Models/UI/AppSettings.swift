@@ -322,6 +322,11 @@ enum AppLanguage: String, CaseIterable, Identifiable {
         return localizedBundle(for: currentRawValue, in: effectiveBase)
     }
 
+    nonisolated static func currentLocaleOverride() -> Locale? {
+        let currentRawValue = languageStateLock.withLock(\.currentRawValue)
+        return AppLanguage(rawValue: currentRawValue)?.localeOverride
+    }
+
     nonisolated static func syncCurrentLanguage(_ rawValue: String) {
         guard !TracexyIdentity.isRunningTests else {
             return
@@ -471,7 +476,12 @@ enum ByteUnits: String, CaseIterable, Identifiable {
     /// Formats a byte count in the preferred units — the single formatter every
     /// byte figure in the UI goes through.
     nonisolated static func string(_ bytes: Int64, defaults: UserDefaults = .standard) -> String {
-        ByteCountFormatter.string(fromByteCount: bytes, countStyle: current(defaults: defaults).countStyle)
+        let units = current(defaults: defaults)
+        if let locale = AppLanguage.currentLocaleOverride() {
+            let style: ByteCountFormatStyle.Style = units == .binary ? .binary : .decimal
+            return bytes.formatted(.byteCount(style: style).locale(locale))
+        }
+        return ByteCountFormatter.string(fromByteCount: bytes, countStyle: units.countStyle)
     }
 }
 

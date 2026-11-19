@@ -17,7 +17,7 @@ nonisolated enum TrafficSourceCategory: String, CaseIterable, Identifiable, Hash
     nonisolated var id: String { rawValue }
 
     nonisolated var title: String {
-        title(in: .main)
+        title(in: AppLanguage.currentLocalizedBundle())
     }
 
     nonisolated func title(in bundle: Bundle) -> String {
@@ -628,7 +628,7 @@ nonisolated enum SessionSourceClassifier {
         resolvedNames: [String: String] = [:],
         homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
         appBundleExistsLookup: (String) -> Bool = defaultAppBundleExists(_:),
-        bundle: Bundle = .main
+        bundle: Bundle = AppLanguage.currentLocalizedBundle()
     )
         -> ClassifiedSessionSource
     {
@@ -722,7 +722,7 @@ nonisolated enum SessionSourceClassifier {
         includeEmptyCategories: Bool = false,
         homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
         appBundleExistsLookup: (String) -> Bool = defaultAppBundleExists(_:),
-        bundle: Bundle = .main
+        bundle: Bundle = AppLanguage.currentLocalizedBundle()
     )
         -> [SourceCategoryGroup]
     {
@@ -749,7 +749,7 @@ nonisolated enum SessionSourceClassifier {
         includeEmptyCategories: Bool = false,
         homeDirectoryPath: String = FileManager.default.homeDirectoryForCurrentUser.path,
         appBundleExistsLookup: (String) -> Bool = defaultAppBundleExists(_:),
-        bundle: Bundle = .main
+        bundle: Bundle = AppLanguage.currentLocalizedBundle()
     )
         -> [SourceCategoryGroup]
     {
@@ -889,7 +889,12 @@ nonisolated enum SessionSourceClassifier {
     /// Human-readable localized title for any `filterKey` (e.g. `"lan:mdns"` -> `"Bonjour / mDNS"`,
     /// `"app-proc:Antigravity:language_server_macos_arm"` -> `"Antigravity › language_server_macos_arm"`,
     /// `"cli:app:Antigravity:curl"` -> `"Antigravity · curl"`).
-    static func displayTitle(forFilterKey key: String, bundle: Bundle = .main) -> String {
+    static func displayTitle(
+        forFilterKey key: String,
+        bundle: Bundle = AppLanguage.currentLocalizedBundle()
+    )
+        -> String
+    {
         if let lanKind = LanSubkind(filterKey: key) {
             return lanKind.title(in: bundle)
         }
@@ -939,7 +944,7 @@ nonisolated enum SessionSourceClassifier {
         context: SessionProcessContext? = nil,
         localIPs: Set<String> = [],
         isViewingSavedCapture: Bool = false,
-        bundle: Bundle = .main
+        bundle: Bundle = AppLanguage.currentLocalizedBundle()
     )
         -> Bool
     {
@@ -959,7 +964,7 @@ nonisolated enum SessionSourceClassifier {
         for filterKey: String,
         localIPs: Set<String> = [],
         isViewingSavedCapture: Bool = false,
-        bundle: Bundle = .main
+        bundle: Bundle = AppLanguage.currentLocalizedBundle()
     )
         -> (SessionSummary, SessionProcessContext?) -> Bool
     {

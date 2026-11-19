@@ -464,6 +464,105 @@ struct SessionUILocalizationTests {
         #expect(AppLanguage.currentLocalizedBundle() == .main)
     }
 
+    @Test("AppLanguage dynamic bundle switches source and local discovery classifiers without explicit bundle")
+    @MainActor
+    func zeroRestartClassifierLanguageSwitching() throws {
+        let bundles = try makeCatalogBundles()
+        defer { bundles.teardown() }
+
+        let mdnsSrc = IPEndpoint(ip: "192.168.0.20", port: 5353)
+        let mdnsDst = IPEndpoint(ip: "224.0.0.251", port: 5353)
+        let mdnsSession = SessionSummary(
+            id: UUID(),
+            startTime: Date(timeIntervalSince1970: 1_700_000_000),
+            duration: 0.05,
+            processName: nil,
+            host: "_companion-link._tcp.local",
+            sourceEndpoint: mdnsSrc.display,
+            destinationEndpoint: mdnsDst.display,
+            sourceEndpointValue: mdnsSrc,
+            destinationEndpointValue: mdnsDst,
+            protocolStack: [.udp, .mdns],
+            status: .ok,
+            latencyMilliseconds: nil,
+            bytesUp: 120,
+            bytesDown: 0,
+            packetsUp: 1,
+            packetsDown: 0
+        )
+        let localIPs: Set<String> = ["192.168.0.130"]
+
+        AppLanguage.withTemporaryLanguageForTesting("en", baseBundle: bundles.root) {
+            #expect(TrafficSourceCategory.allCases.map(\.title) == [
+                "Apps",
+                "CLI Tools",
+                "Third-Party Services",
+                "System Services",
+                "LAN & Discovery",
+                "Kernel & Link",
+                "Unattributed",
+            ])
+
+            let classified = SessionSourceClassifier.classify(mdnsSession, localIPs: localIPs)
+            #expect(classified.category == .lanDiscovery)
+            #expect(classified.tableLabel == "LAN · Bonjour")
+            #expect(SessionSourceClassifier.displayTitle(forFilterKey: "kernel:arp") == "ARP Resolution")
+
+            let grouped = SessionSourceClassifier.group(sessions: [mdnsSession], localIPs: localIPs)
+            #expect(grouped.first?.items.first?.subtitle == "Local network service discovery (UDP 5353)")
+
+            let continuity = LocalDiscoveryNameClassifier.classify("_companion-link._tcp.local")
+            #expect(continuity?.badgeTitle == "Apple Continuity")
+            #expect(continuity?.detailTitle == "Apple Continuity & Companion Link")
+
+            let homeArpa = LocalDiscoveryNameClassifier.classify("home.arpa")
+            #expect(homeArpa?.badgeTitle == "Home LAN")
+            #expect(homeArpa?.detailTitle == "Residential home network domain (RFC 8375)")
+
+            #expect(SidebarNavigatorMode.allCases.map(\.title) == ["Browse", "Focus", "Library"])
+            #expect(SessionFilterCategory.security.title == "Findings")
+            #expect(SessionFilterCategory.errors.title == "Errors")
+            #expect(SessionSearchField.allFields.displayName == "All Fields")
+            #expect(ByteUnits.string(684) == "684 bytes")
+        }
+
+        AppLanguage.withTemporaryLanguageForTesting("zh-Hans", baseBundle: bundles.root) {
+            #expect(TrafficSourceCategory.allCases.map(\.title) == [
+                "应用",
+                "命令行工具",
+                "第三方服务",
+                "系统服务",
+                "局域网邻机与广播",
+                "内核与基础协议",
+                "未归属",
+            ])
+
+            let classified = SessionSourceClassifier.classify(mdnsSession, localIPs: localIPs)
+            #expect(classified.category == .lanDiscovery)
+            #expect(classified.tableLabel == "局域网 · Bonjour")
+            #expect(SessionSourceClassifier.displayTitle(forFilterKey: "kernel:arp") != "ARP Resolution")
+
+            let grouped = SessionSourceClassifier.group(sessions: [mdnsSession], localIPs: localIPs)
+            #expect(grouped.first?.items.first?.subtitle != "Local network service discovery (UDP 5353)")
+
+            let continuity = LocalDiscoveryNameClassifier.classify("_companion-link._tcp.local")
+            #expect(continuity?.badgeTitle == "Apple 连续互通")
+            #expect(continuity?.detailTitle == "Apple 连续互通与设备协同")
+
+            let homeArpa = LocalDiscoveryNameClassifier.classify("home.arpa")
+            #expect(homeArpa?.badgeTitle == "家庭局域网")
+            #expect(homeArpa?.detailTitle == "家庭局域网保留域 (RFC 8375)")
+
+            #expect(SidebarNavigatorMode.allCases.map(\.title) == ["浏览", "焦点", "资料库"])
+            #expect(SessionFilterCategory.security.title == "诊断发现")
+            #expect(SessionFilterCategory.errors.title == "错误")
+            #expect(SessionSearchField.allFields.displayName == "全部字段")
+            #expect(ByteUnits.string(684) == "684字节")
+        }
+
+        #expect(AppLanguage.currentLocalizedBundle() == .main)
+    }
+
     @Test("Hosted split views and main scene synchronize language changes live")
     func hostedSplitViewsPropagateLanguageOverride() throws {
         let app = try readProjectFile("Tracexy/TracexyApp.swift")

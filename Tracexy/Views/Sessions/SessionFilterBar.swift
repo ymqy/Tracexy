@@ -129,7 +129,10 @@ struct SessionFilterBar: View {
         let protocols = Array(SessionFilterCategory.protocolFilters.prefix(visibleProtocolCount))
         let hasProtocolFilter = workspace.categoryFilters.contains { !$0.isInvestigationFilter }
         return HStack(spacing: 2) {
-            FilterPillButton(title: String(localized: "All"), isActive: !hasProtocolFilter) {
+            FilterPillButton(
+                title: String(localized: "All", bundle: AppLanguage.currentLocalizedBundle()),
+                isActive: !hasProtocolFilter
+            ) {
                 workspace.categoryFilters = workspace.categoryFilters.filter(\.isInvestigationFilter)
             }
             .accessibilityLabel("All protocols")

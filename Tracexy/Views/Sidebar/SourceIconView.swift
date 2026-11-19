@@ -50,13 +50,14 @@ struct SourceIconView: View {
         case .cli:
             return cliSymbol(for: filterKey.isEmpty ? title : filterKey)
         case .thirdPartyService:
-            if subtitle?.hasPrefix(String(localized: "App Helper Process")) == true {
+            let bundle = AppLanguage.currentLocalizedBundle()
+            if subtitle?.hasPrefix(String(localized: "App Helper Process", bundle: bundle)) == true {
                 return fallbackSymbol ?? "gearshape.2"
             }
-            if subtitle == String(localized: "System Network Extension") {
+            if subtitle == String(localized: "System Network Extension", bundle: bundle) {
                 return "puzzlepiece.extension"
             }
-            if subtitle == String(localized: "Root Background Daemon") {
+            if subtitle == String(localized: "Root Background Daemon", bundle: bundle) {
                 return "server.rack"
             }
             return "gearshape"

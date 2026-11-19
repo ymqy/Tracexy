@@ -174,8 +174,9 @@ struct SidebarView: View {
 
     private var displayedSourceCategories: [SourceCategoryDisplay] {
         let byCategory = visibleItemsBySourceCategory
+        let bundle = AppLanguage.currentLocalizedBundle()
         let matchesSectionHeader = isSearching
-            && (matches(String(localized: "Sources")) || matches("Sources"))
+            && (matches(String(localized: "Sources", bundle: bundle)) || matches("Sources"))
         return TrafficSourceCategory.allCases.compactMap { category in
             let visibleItems = byCategory[category] ?? []
             let filteredItems: [SourceItemGroup]
@@ -287,12 +288,13 @@ struct SidebarView: View {
         guard isSearching else {
             return visibleLocalDiscoveryGroups
         }
-        if matches(String(localized: "Local Services & Devices"))
+        let bundle = AppLanguage.currentLocalizedBundle()
+        if matches(String(localized: "Local Services & Devices", bundle: bundle))
             || matches("Local Services & Devices")
             || matches("本地服务与设备名")
             || matches("bonjour")
             || matches("local")
-            || matches(String(localized: "Sources"))
+            || matches(String(localized: "Sources", bundle: bundle))
             || matches("Sources")
         {
             return visibleLocalDiscoveryGroups
@@ -628,7 +630,7 @@ struct SidebarView: View {
             }
         } label: {
             sourceCategoryLabel(
-                title: String(localized: "Domains"),
+                title: String(localized: "Domains", bundle: AppLanguage.currentLocalizedBundle()),
                 systemImage: "globe",
                 count: visibleDomainGroups.count,
                 expanded: $domainsExpanded,
@@ -655,7 +657,7 @@ struct SidebarView: View {
             }
         } label: {
             sourceCategoryLabel(
-                title: String(localized: "Local Services & Devices"),
+                title: String(localized: "Local Services & Devices", bundle: AppLanguage.currentLocalizedBundle()),
                 systemImage: "bonjour",
                 count: visibleLocalDiscoveryGroups.count,
                 expanded: $localDiscoveryExpanded,
@@ -704,7 +706,7 @@ struct SidebarView: View {
             }
         } label: {
             sourceCategoryLabel(
-                title: String(localized: "IP Addresses"),
+                title: String(localized: "IP Addresses", bundle: AppLanguage.currentLocalizedBundle()),
                 systemImage: "number",
                 count: visibleIPHosts.count,
                 expanded: $ipsExpanded,
@@ -860,7 +862,7 @@ struct SidebarView: View {
                     systemImage: mode.systemImage
                 )
             },
-            accessibilityLabel: String(localized: "Navigator")
+            accessibilityLabel: String(localized: "Navigator", bundle: AppLanguage.currentLocalizedBundle())
         )
         .workspaceModeSwitcherStyle()
     }
@@ -979,7 +981,7 @@ struct SidebarView: View {
                 let displaysByCategory = Dictionary(
                     uniqueKeysWithValues: displayedSourceCategories.map { ($0.category, $0) }
                 )
-                Section(String(localized: "Sources")) {
+                Section(String(localized: "Sources", bundle: AppLanguage.currentLocalizedBundle())) {
                     if let display = displaysByCategory[.app] {
                         sourceCategoryDisclosure(display, expanded: $appsExpanded)
                     }

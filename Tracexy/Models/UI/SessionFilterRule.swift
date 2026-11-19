@@ -79,14 +79,15 @@ enum SessionSearchField: String, CaseIterable, Identifiable, Codable, Hashable {
     }
 
     var displayName: String {
-        switch self {
-        case .allFields: String(localized: "All Fields")
-        case .host: String(localized: "Host")
-        case .client: String(localized: "Client")
-        case .proto: String(localized: "Protocol")
-        case .source: String(localized: "Source")
-        case .destination: String(localized: "Destination")
-        case .summary: String(localized: "Summary")
+        let bundle = AppLanguage.currentLocalizedBundle()
+        return switch self {
+        case .allFields: String(localized: "All Fields", bundle: bundle)
+        case .host: String(localized: "Host", bundle: bundle)
+        case .client: String(localized: "Client", bundle: bundle)
+        case .proto: String(localized: "Protocol", bundle: bundle)
+        case .source: String(localized: "Source", bundle: bundle)
+        case .destination: String(localized: "Destination", bundle: bundle)
+        case .summary: String(localized: "Summary", bundle: bundle)
         }
     }
 
@@ -95,7 +96,12 @@ enum SessionSearchField: String, CaseIterable, Identifiable, Codable, Hashable {
     /// info summary, and DNS answers — the same breadth the list already shows.
     /// Host and All Fields also include any semantic local-discovery annotation
     /// (e.g. Bonjour service badge and detail) so localized searches match too.
-    nonisolated func haystack(in session: SessionSummary, bundle: Bundle = .main) -> String {
+    nonisolated func haystack(
+        in session: SessionSummary,
+        bundle: Bundle = AppLanguage.currentLocalizedBundle()
+    )
+        -> String
+    {
         switch self {
         case .allFields:
             let discoveryTerms: [String] = if let annotation = LocalDiscoveryNameClassifier.classify(
@@ -149,14 +155,15 @@ enum SessionFilterOperator: String, CaseIterable, Codable, Hashable {
     // MARK: Internal
 
     var displayName: String {
-        switch self {
-        case .contains: String(localized: "Contains")
-        case .is: String(localized: "Is")
-        case .startsWith: String(localized: "Starts With")
-        case .endsWith: String(localized: "Ends With")
-        case .doesNotContain: String(localized: "Does Not Contain")
-        case .notEqual: String(localized: "Is Not")
-        case .regex: String(localized: "Regex")
+        let bundle = AppLanguage.currentLocalizedBundle()
+        return switch self {
+        case .contains: String(localized: "Contains", bundle: bundle)
+        case .is: String(localized: "Is", bundle: bundle)
+        case .startsWith: String(localized: "Starts With", bundle: bundle)
+        case .endsWith: String(localized: "Ends With", bundle: bundle)
+        case .doesNotContain: String(localized: "Does Not Contain", bundle: bundle)
+        case .notEqual: String(localized: "Is Not", bundle: bundle)
+        case .regex: String(localized: "Regex", bundle: bundle)
         }
     }
 

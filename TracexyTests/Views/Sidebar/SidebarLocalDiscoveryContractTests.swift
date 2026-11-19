@@ -13,7 +13,7 @@ struct SidebarLocalDiscoveryContractTests {
         #expect(sidebar.contains("@State private var localDiscoveryExpanded = false"))
         #expect(!sidebar.contains("localDiscoveryExpanded = true"))
         #expect(sidebar.contains("DisclosureGroup(isExpanded: searchExpansion($localDiscoveryExpanded))"))
-        #expect(sidebar.contains("title: String(localized: \"Local Services & Devices\")"))
+        #expect(sidebar.contains("title: String(localized: \"Local Services & Devices\", bundle: AppLanguage.currentLocalizedBundle())"))
         #expect(sidebar.contains("systemImage: \"bonjour\""))
         #expect(sidebar.contains("Text(\"No visible local names\")"))
         #expect(sidebar.contains("copyLabel: \"Copy Local Names\""))
@@ -26,7 +26,9 @@ struct SidebarLocalDiscoveryContractTests {
     func localDiscoveryPlacedBetweenDomainsAndIPAddresses() throws {
         let sidebar = try readProjectFile("Tracexy/Views/Sidebar/SidebarView.swift")
 
-        let sectionMarker = try #require(sidebar.range(of: "Section(String(localized: \"Sources\"))"))
+        let sectionMarker = try #require(
+            sidebar.range(of: "Section(String(localized: \"Sources\", bundle: AppLanguage.currentLocalizedBundle()))")
+        )
         let sourcesSection = sidebar[sectionMarker.lowerBound...]
         let domainsRange = try #require(sourcesSection.range(of: "if showsDomainsCategory {\n                        domainsDisclosure"))
         let localRange = try #require(sourcesSection.range(of: "if showsLocalDiscoveryCategory {\n                        localDiscoveryDisclosure"))
