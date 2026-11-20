@@ -63,18 +63,39 @@ final class PcapCapture: @unchecked Sendable {
     }
 
     /// True when `interface` explicitly targets a macOS `pktap`/`iptap`
-    /// pseudo-interface (either all-interfaces `"pktap"`/`"iptap"` or a
-    /// scoped `"pktap,<if>"`/`"iptap,<if>"` selector).
+    /// pseudo-interface (either all-interfaces `"pktap"`/`"pktap,all"`/`"all"`/`"iptap"`
+    /// or a scoped `"pktap,<if>"`/`"iptap,<if>"` selector).
     static func isExplicitPktapInterface(_ interface: String) -> Bool {
         let lower = interface.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return lower == "pktap" || lower.hasPrefix("pktap,") || lower == "iptap" || lower.hasPrefix("iptap,")
+        return lower == "pktap"
+            || lower.hasPrefix("pktap,")
+            || lower == "iptap"
+            || lower.hasPrefix("iptap,")
+            || lower == "all"
     }
 
-    /// True when `interface` is the all-interfaces `"pktap"` or `"iptap"`
-    /// pseudo-interface without a single-interface suffix.
+    /// True when `interface` selects all interfaces via `"pktap"`, `"pktap,all"`,
+    /// `"all"`, or `"iptap"`.
     static func isAllInterfacesPktap(_ interface: String) -> Bool {
         let lower = interface.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return lower == "pktap" || lower == "iptap"
+        return lower == "pktap" || lower == "pktap,all" || lower == "iptap" || lower == "all"
+    }
+
+    /// Maps a configured interface selector to the `libpcap` `pcap_create` source
+    /// string. On Darwin (`man tcpdump`), bare `"pktap"` uses the kernel's default
+    /// interface set which *excludes* loopback (`lo0`) and tunnel (`utun*`)
+    /// interfaces; `"pktap,all"` captures across all interfaces including loopback
+    /// and tunnels.
+    static func pktapCaptureSource(for interface: String) -> String {
+        let trimmed = interface.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = trimmed.lowercased()
+        if lower == "pktap" || lower == "all" {
+            return "pktap,all"
+        }
+        if lower.hasPrefix("pktap,") || lower == "iptap" || lower.hasPrefix("iptap,") {
+            return trimmed
+        }
+        return "pktap,\(trimmed)"
     }
 
     /// Expected standard inner link type for an interface when `pktap` wraps frames
@@ -364,9 +385,7 @@ final class PcapCapture: @unchecked Sendable {
         {
             return nil
         }
-        let source = Self.isExplicitPktapInterface(interface)
-            ? interface
-            : "pktap,\(interface)"
+        let source = Self.pktapCaptureSource(for: interface)
         var errbuf = [CChar](repeating: 0, count: 256)
         guard let handle = source.withCString({ name in createHandle(name, &errbuf) }) else {
             return nil
