@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Install or update the custom arm64 Tracexy build from GitHub Releases.
-# Using curl avoids macOS browser com.apple.quarantine attributes on first install.
+# Reads appcast.xml from github.com directly (avoids api.github.com rate limits)
+# and downloads with curl (avoids browser com.apple.quarantine attributes).
 set -euo pipefail
 
 REPO="${TRACEXY_REPO:-ymqy/Tracexy}"
@@ -43,44 +44,55 @@ if [ "$ARCH" != "arm64" ]; then
 fi
 
 if [ -n "$TAG" ]; then
-  API_URL="https://api.github.com/repos/${REPO}/releases/tags/${TAG}"
+  BASE_DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${TAG}"
 else
-  API_URL="https://api.github.com/repos/${REPO}/releases/latest"
+  BASE_DOWNLOAD_URL="https://github.com/${REPO}/releases/latest/download"
 fi
 
-echo "==> Querying release metadata from ${API_URL} ..."
-RELEASE_JSON="$(curl -fsSL -H "Accept: application/vnd.github+json" "$API_URL")"
+APPCAST_URL="${BASE_DOWNLOAD_URL}/appcast.xml"
+echo "==> Reading release metadata from ${APPCAST_URL} ..."
+APPCAST_XML="$(curl -fsSL "$APPCAST_URL")"
 
-read -r RELEASE_TAG ZIP_NAME ZIP_URL SHA_URL < <(
+read -r VERSION BUILD ZIP_NAME ZIP_URL < <(
   python3 -c '
-import json, sys
-data = json.loads(sys.stdin.read())
-tag = data.get("tag_name", "")
-zip_asset = None
-sha_asset = None
-for a in data.get("assets", []):
-    name = a.get("name", "")
-    if name.endswith("-arm64.zip") and name.startswith("Tracexy-"):
-        zip_asset = a
-    elif name == "SHA256SUMS.txt":
-        sha_asset = a
-if not zip_asset:
-    sys.stderr.write("Error: no Tracexy-*-arm64.zip asset found in release.\n")
+import os, sys, xml.etree.ElementTree as ET
+from urllib.parse import urlparse
+
+NS = {"sparkle": "http://www.andymatuschak.org/xml-namespaces/sparkle"}
+root = ET.fromstring(sys.stdin.read())
+item = root.find("./channel/item")
+if item is None:
+    sys.stderr.write("Error: no <item> found in appcast.xml.\n")
     sys.exit(1)
-print(tag, zip_asset["name"], zip_asset["browser_download_url"], sha_asset["browser_download_url"] if sha_asset else "-")
-' <<< "$RELEASE_JSON"
+enclosure = item.find("enclosure")
+if enclosure is None or not enclosure.get("url"):
+    sys.stderr.write("Error: no enclosure download URL found in appcast.xml.\n")
+    sys.exit(1)
+url = enclosure.get("url")
+zip_name = os.path.basename(urlparse(url).path)
+version = (
+    enclosure.get("{http://www.andymatuschak.org/xml-namespaces/sparkle}shortVersionString")
+    or item.findtext("sparkle:shortVersionString", default="", namespaces=NS)
+    or item.findtext("title", default="unknown")
+).strip()
+build = (
+    enclosure.get("{http://www.andymatuschak.org/xml-namespaces/sparkle}version")
+    or item.findtext("sparkle:version", default="?", namespaces=NS)
+).strip()
+print(version, build, zip_name, url)
+' <<< "$APPCAST_XML"
 )
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 ZIP_PATH="${TMP_DIR}/${ZIP_NAME}"
-echo "==> Downloading ${ZIP_NAME} (${RELEASE_TAG}) ..."
+echo "==> Downloading ${ZIP_NAME} (v${VERSION}, build ${BUILD}) ..."
 curl -fL --progress-bar "$ZIP_URL" -o "$ZIP_PATH"
 
-if [ "$SHA_URL" != "-" ]; then
+SHA_URL="${ZIP_URL%/*}/SHA256SUMS.txt"
+if curl -fsSL "$SHA_URL" -o "${TMP_DIR}/SHA256SUMS.txt" 2>/dev/null; then
   echo "==> Verifying SHA-256 checksum ..."
-  curl -fsSL "$SHA_URL" -o "${TMP_DIR}/SHA256SUMS.txt"
   (cd "$TMP_DIR" && shasum -a 256 -c SHA256SUMS.txt)
 fi
 
