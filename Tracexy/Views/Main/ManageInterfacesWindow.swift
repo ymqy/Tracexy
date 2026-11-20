@@ -47,6 +47,10 @@ struct ManageInterfacesWindow: View {
         }
     }
 
+    @AppStorage(SettingsKeys.language, store: TracexyIdentity.applicationDefaults)
+    private var language = AppLanguage.system.rawValue
+    @Environment(\.locale) private var locale
+
     @State private var tab = Tab.local
 
     @State private var interfaces: [NetworkInterface] = []
@@ -125,6 +129,13 @@ struct ManageInterfacesWindow: View {
         .onChange(of: coordinator.interfaceListToken) {
             interfaces = NetworkInterfaces.available()
         }
+        .onChange(of: language) { _, newValue in
+            AppLanguage.syncCurrentLanguage(newValue)
+            interfaces = NetworkInterfaces.available()
+        }
+        .onChange(of: locale) {
+            interfaces = NetworkInterfaces.available()
+        }
     }
 
     private func footer(_ rows: [Row]) -> some View {
@@ -144,10 +155,14 @@ struct ManageInterfacesWindow: View {
     }
 
     private func status(_ interface: NetworkInterface) -> String {
-        guard interface.isUp else {
-            return String(localized: "Not connected")
+        let bundle = AppLanguage.currentLocalizedBundle()
+        if interface.category == .all {
+            return interface.detail
         }
-        return interface.ipv4 ?? String(localized: "Connected")
+        guard interface.isUp else {
+            return String(localized: "Not connected", bundle: bundle)
+        }
+        return interface.ipv4 ?? String(localized: "Connected", bundle: bundle)
     }
 }
 

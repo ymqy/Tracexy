@@ -67,6 +67,8 @@ struct CaptureInterfaceToolbarPicker: View {
     var isCompact = false
 
     var body: some View {
+        let locale = AppLanguage(rawValue: language)?.localeOverride
+        let _ = AppLanguage.syncCurrentLanguage(language)
         Menu {
             Picker(
                 selection: Binding(
@@ -105,6 +107,7 @@ struct CaptureInterfaceToolbarPicker: View {
         .accessibilityLabel("Capture interface")
         .accessibilityValue(fullInterfaceLabel)
         .fixedSize()
+        .appLocaleOverride(locale)
         .onAppear {
             interfaceGroups = listedGroups
             if currentInterface == nil, let first = interfaceGroups.flatMap(\.interfaces).first {
@@ -117,9 +120,16 @@ struct CaptureInterfaceToolbarPicker: View {
         .onChange(of: InterfacePreferences.shared.settings) {
             interfaceGroups = listedGroups
         }
+        .onChange(of: language) { _, newValue in
+            AppLanguage.syncCurrentLanguage(newValue)
+            interfaceGroups = listedGroups
+        }
     }
 
     // MARK: Private
+
+    @AppStorage(SettingsKeys.language, store: TracexyIdentity.applicationDefaults)
+    private var language = AppLanguage.system.rawValue
 
     @State private var interfaceGroups: [InterfaceGroup] = []
     @Environment(\.openWindow) private var openWindow

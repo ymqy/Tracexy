@@ -62,6 +62,21 @@ final class PcapCapture: @unchecked Sendable {
         var len: UInt32
     }
 
+    /// True when `interface` explicitly targets a macOS `pktap`/`iptap`
+    /// pseudo-interface (either all-interfaces `"pktap"`/`"iptap"` or a
+    /// scoped `"pktap,<if>"`/`"iptap,<if>"` selector).
+    static func isExplicitPktapInterface(_ interface: String) -> Bool {
+        let lower = interface.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return lower == "pktap" || lower.hasPrefix("pktap,") || lower == "iptap" || lower.hasPrefix("iptap,")
+    }
+
+    /// True when `interface` is the all-interfaces `"pktap"` or `"iptap"`
+    /// pseudo-interface without a single-interface suffix.
+    static func isAllInterfacesPktap(_ interface: String) -> Bool {
+        let lower = interface.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return lower == "pktap" || lower == "iptap"
+    }
+
     /// Expected standard inner link type for an interface when `pktap` wraps frames
     /// in `DLT_PKTAP (258)`: BSD Loopback (`0`) for `lo*` and tunnel interfaces,
     /// Ethernet (`1`) otherwise.
@@ -108,7 +123,11 @@ final class PcapCapture: @unchecked Sendable {
             throw Failure(message: error.message)
         }
         let snaplen = Int32(config.snapLength)
-        let promisc: Int32 = config.promiscuous ? 1 : 0
+        // macOS XNU `pktap`/`iptap` pseudo-interfaces do not support promiscuous
+        // mode; always pass `promisc = 0` so explicit `pktap` captures activate
+        // with `DLT_PKTAP (149)` even when Promiscuous Mode is enabled in Settings.
+        let isExplicitPktap = Self.isExplicitPktapInterface(config.interface)
+        let promisc: Int32 = (!isExplicitPktap && config.promiscuous) ? 1 : 0
         let handle: OpaquePointer
         if let pktapHandle = openPktapHandle(interface: config.interface, snaplen: snaplen, promisc: promisc) {
             handle = pktapHandle
@@ -345,8 +364,7 @@ final class PcapCapture: @unchecked Sendable {
         {
             return nil
         }
-        let lower = interface.lowercased()
-        let source = (lower == "pktap" || lower.hasPrefix("pktap,") || lower == "iptap" || lower.hasPrefix("iptap,"))
+        let source = Self.isExplicitPktapInterface(interface)
             ? interface
             : "pktap,\(interface)"
         var errbuf = [CChar](repeating: 0, count: 256)
@@ -441,8 +459,10 @@ final class PcapCapture: @unchecked Sendable {
 
     /// Validates a BPF filter synchronously against a dead handle for the expected
     /// inner DLT so an invalid expression still fails closed before `start()`
-    /// returns. Tunnel interfaces (`0` BSD Loopback) also try Darwin `DLT_RAW (12)`.
-    private func validatePktapFilter(
+    /// returns. All-interfaces `pktap`/`iptap` probes Ethernet (`1`), BSD Loopback
+    /// (`0`), and Darwin `DLT_RAW (12)`, succeeding when any compiles the filter.
+    /// Tunnel interfaces (`0` BSD Loopback) also try Darwin `DLT_RAW (12)`.
+    func validatePktapFilter(
         _ expression: String,
         optimizerFlag: Int32,
         interface: String,
@@ -453,28 +473,31 @@ final class PcapCapture: @unchecked Sendable {
         guard openDead != nil, compileFilter != nil, freeCode != nil, offlineFilter != nil else {
             throw Failure(message: "BPF filtering is unavailable on this system.")
         }
-        let expectedDLT = Self.expectedInnerDLT(for: interface)
-        do {
-            try compileDeadFilterProbe(
-                expression,
-                optimizerFlag: optimizerFlag,
-                dlt: expectedDLT,
-                snaplen: snaplen
-            )
-        } catch let primaryError {
-            if Self.isTunnelInterface(interface) {
-                do {
-                    try compileDeadFilterProbe(
-                        expression,
-                        optimizerFlag: optimizerFlag,
-                        dlt: Self.darwinDLTRawIP,
-                        snaplen: snaplen
-                    )
-                    return
-                } catch {
-                    // Propagate the primary link-type error below.
+        let probeDLTs: [UInt32] = if Self.isAllInterfacesPktap(interface) {
+            [Self.dltEthernet, Self.dltNull, Self.darwinDLTRawIP]
+        } else if Self.isTunnelInterface(interface) {
+            [Self.expectedInnerDLT(for: interface), Self.darwinDLTRawIP]
+        } else {
+            [Self.expectedInnerDLT(for: interface)]
+        }
+
+        var primaryError: Error?
+        for dlt in probeDLTs {
+            do {
+                try compileDeadFilterProbe(
+                    expression,
+                    optimizerFlag: optimizerFlag,
+                    dlt: dlt,
+                    snaplen: snaplen
+                )
+                return
+            } catch {
+                if primaryError == nil {
+                    primaryError = error
                 }
             }
+        }
+        if let primaryError {
             throw primaryError
         }
     }

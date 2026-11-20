@@ -49,6 +49,7 @@ struct CaptureReadinessPresentation: Equatable {
         systemImage = Self.systemImage(for: displayState)
         actionTitle = displayState == .capturing ? "Stop Capture" : "Start Capture"
         isActionEnabled = displayState != .starting
+        let isAllInterfaces = NetworkInterfaces.isAllInterfaces(interfaceID)
         items = [
             Self.interfaceItem(id: interfaceID, interface: interface),
             Self.helperItem(status: helperStatus, isDirectCapture: isDirectCapture, isPipe: isPipe),
@@ -61,7 +62,7 @@ struct CaptureReadinessPresentation: Equatable {
             ),
             CaptureReadinessItem(
                 label: "Packet snapshot",
-                value: configuration.promiscuous
+                value: (configuration.promiscuous && !isAllInterfaces)
                     ? "\(configuration.snapLength.formatted()) bytes, promiscuous mode"
                     : "\(configuration.snapLength.formatted()) bytes",
                 systemImage: "shippingbox",
@@ -127,6 +128,15 @@ struct CaptureReadinessPresentation: Equatable {
                 isMonospaced: true
             )
         }
+        if NetworkInterfaces.isAllInterfaces(id) {
+            return CaptureReadinessItem(
+                label: "Interface",
+                value: "\(interface.menuLabel), \(interface.detail)",
+                systemImage: interface.symbol,
+                level: .ready,
+                isMonospaced: false
+            )
+        }
         if NetworkInterfaces.isSpecialPurposeWiFi(id) {
             return CaptureReadinessItem(
                 label: "Interface",
@@ -135,7 +145,9 @@ struct CaptureReadinessPresentation: Equatable {
                 level: .attention
             )
         }
-        let state = interface.isUp ? interface.ipv4 ?? "" : String(localized: "not connected")
+        let state = interface.isUp
+            ? interface.ipv4 ?? ""
+            : String(localized: "not connected", bundle: AppLanguage.currentLocalizedBundle())
         return CaptureReadinessItem(
             label: "Interface",
             value: state.isEmpty ? interface.menuLabel : "\(interface.menuLabel), \(state)",

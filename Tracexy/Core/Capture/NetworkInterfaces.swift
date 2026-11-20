@@ -5,6 +5,7 @@ import SystemConfiguration
 
 /// Groups interfaces the way macOS's own network UI does.
 enum InterfaceCategory: String, CaseIterable, Identifiable {
+    case all
     case wifi
     case ethernet
     case thunderbolt
@@ -21,14 +22,19 @@ enum InterfaceCategory: String, CaseIterable, Identifiable {
     }
 
     nonisolated var title: String {
+        title(in: AppLanguage.currentLocalizedBundle())
+    }
+
+    nonisolated func title(in bundle: Bundle) -> String {
         switch self {
-        case .wifi: "Wi-Fi"
-        case .ethernet: "Ethernet"
-        case .thunderbolt: "Thunderbolt"
-        case .tunnels: "Tunnels"
-        case .loopback: "Loopback"
-        case .other: "Other"
-        case .pipes: "Pipes"
+        case .all: String(localized: "All Interfaces", bundle: bundle)
+        case .wifi: String(localized: "Wi-Fi", bundle: bundle)
+        case .ethernet: String(localized: "Ethernet", bundle: bundle)
+        case .thunderbolt: String(localized: "Thunderbolt", bundle: bundle)
+        case .tunnels: String(localized: "Tunnels", bundle: bundle)
+        case .loopback: String(localized: "Loopback", bundle: bundle)
+        case .other: String(localized: "Other", bundle: bundle)
+        case .pipes: String(localized: "Pipes", bundle: bundle)
         }
     }
 }
@@ -44,6 +50,19 @@ struct NetworkInterface: Identifiable, Hashable {
     let isUp: Bool
     let isLoopback: Bool
 
+    /// First-class macOS `pktap` virtual source capturing Wi-Fi, Ethernet,
+    /// loopback, and tunnel traffic concurrently with per-packet process metadata.
+    static func allInterfaces(bundle: Bundle = AppLanguage.currentLocalizedBundle()) -> NetworkInterface {
+        NetworkInterface(
+            id: NetworkInterfaces.allInterfacesID,
+            displayName: String(localized: "All Interfaces", bundle: bundle),
+            category: .all,
+            ipv4: nil,
+            isUp: true,
+            isLoopback: false
+        )
+    }
+
     /// Label shown in the toolbar interface menu, e.g. "Wi-Fi (en0)".
     var menuLabel: String {
         "\(displayName) (\(id))"
@@ -52,6 +71,7 @@ struct NetworkInterface: Identifiable, Hashable {
     /// Real SF Symbol best-effort matched to the interface family.
     var symbol: String {
         switch category {
+        case .all: "globe"
         case .wifi: "wifi"
         case .ethernet: "cable.connector"
         case .thunderbolt: "bolt.horizontal"
@@ -65,23 +85,34 @@ struct NetworkInterface: Identifiable, Hashable {
     /// Label for a picker item: the name, then its IPv4 address or that it is not
     /// connected, so the right interface can be chosen without leaving the menu.
     var pickerLabel: String {
+        let bundle = AppLanguage.currentLocalizedBundle()
+        if category == .all {
+            return "\(menuLabel) — \(detail)"
+        }
         if category == .pipes {
-            return isUp ? menuLabel : "\(menuLabel) — missing"
+            return isUp ? menuLabel : "\(menuLabel) — \(String(localized: "missing", bundle: bundle))"
         }
         if let ipv4, isUp {
             return "\(menuLabel) — \(ipv4)"
         }
-        return isUp ? menuLabel : "\(menuLabel) — not connected"
+        return isUp ? menuLabel : "\(menuLabel) — \(String(localized: "not connected", bundle: bundle))"
     }
 
     var detail: String {
+        let bundle = AppLanguage.currentLocalizedBundle()
+        if category == .all {
+            return String(localized: "Wi-Fi, Loopback & Tunnels", bundle: bundle)
+        }
         if category == .pipes {
-            return isUp ? "named pipe" : "missing"
+            return isUp
+                ? String(localized: "named pipe", bundle: bundle)
+                : String(localized: "missing", bundle: bundle)
         }
         guard isUp else {
-            return "not connected"
+            return String(localized: "not connected", bundle: bundle)
         }
-        return ipv4.map { "active at \($0)" } ?? "active"
+        return ipv4.map { String(localized: "active at \($0)", bundle: bundle) }
+            ?? String(localized: "active", bundle: bundle)
     }
 }
 
@@ -104,6 +135,15 @@ struct InterfaceGroup: Identifiable {
 enum NetworkInterfaces {
     // MARK: Internal
 
+    /// macOS XNU `pktap` virtual pseudo-interface that captures across all active
+    /// interfaces (Wi-Fi, Ethernet, Loopback, VPN tunnels) with process metadata.
+    nonisolated static let allInterfacesID = "pktap"
+
+    /// True when `id` refers to the all-interfaces `pktap` capture source.
+    nonisolated static func isAllInterfaces(_ id: String) -> Bool {
+        id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == allInterfacesID
+    }
+
     /// AWDL and low-latency Wi-Fi carry specialized traffic, not the Mac's
     /// ordinary Wi-Fi internet connection even when their flags say RUNNING.
     static func isSpecialPurposeWiFi(_ id: String) -> Bool {
@@ -117,7 +157,7 @@ enum NetworkInterfaces {
 
         var head: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&head) == 0, let first = head else {
-            return []
+            return [NetworkInterface.allInterfaces()]
         }
         defer { freeifaddrs(head) }
 
@@ -126,6 +166,9 @@ enum NetworkInterfaces {
             defer { cursor = entry.pointee.ifa_next }
 
             let name = String(cString: entry.pointee.ifa_name)
+            if Self.isAllInterfaces(name) {
+                continue
+            }
             let flags = Int32(entry.pointee.ifa_flags)
             let isUp = (flags & IFF_UP) == IFF_UP && (flags & IFF_RUNNING) == IFF_RUNNING
             let isLoopback = (flags & IFF_LOOPBACK) == IFF_LOOPBACK
@@ -152,7 +195,7 @@ enum NetworkInterfaces {
             }
         }
 
-        return order.compactMap { name in
+        let discovered: [NetworkInterface] = order.compactMap { name in
             guard let info = byName[name] else {
                 return nil
             }
@@ -166,10 +209,11 @@ enum NetworkInterfaces {
                 isLoopback: info.isLoopback
             )
         }
+        return [NetworkInterface.allInterfaces()] + discovered
     }
 
-    /// Interfaces grouped by category (Wi-Fi, Ethernet, …) in display order,
-    /// matching macOS's own network menus.
+    /// Interfaces grouped by category (All Interfaces, Wi-Fi, Ethernet, …) in
+    /// display order, matching macOS's own network menus.
     static func grouped() -> [InterfaceGroup] {
         let all = available()
         return InterfaceCategory.allCases.compactMap { category in
@@ -180,7 +224,7 @@ enum NetworkInterfaces {
 
     /// The most likely primary IPv4 (first up, non-loopback interface with an address).
     static func primaryIPv4() -> String? {
-        available().first { !$0.isLoopback && $0.isUp && $0.ipv4 != nil }?.ipv4
+        available().first { !isAllInterfaces($0.id) && !$0.isLoopback && $0.isUp && $0.ipv4 != nil }?.ipv4
     }
 
     // MARK: Private

@@ -199,6 +199,11 @@ struct CaptureSettingsView: View {
         }
         .onAppear { interfaceGroups = listedGroups }
         .onChange(of: InterfacePreferences.shared.settings) { interfaceGroups = listedGroups }
+        .onChange(of: language) { _, newValue in
+            AppLanguage.syncCurrentLanguage(newValue)
+            interfaceGroups = listedGroups
+        }
+        .onChange(of: locale) { interfaceGroups = listedGroups }
         .task(id: bpf) {
             // Debounced so validation follows typing without compiling every keystroke.
             try? await Task.sleep(for: .milliseconds(250))
@@ -231,6 +236,10 @@ struct CaptureSettingsView: View {
     @AppStorage(SettingsKeys.fileSetKeep) private var fileSetKeep = 0
 
     @AppStorage(SettingsKeys.savedCaptureFilters) private var savedFiltersData = Data("[]".utf8)
+
+    @AppStorage(SettingsKeys.language, store: TracexyIdentity.applicationDefaults)
+    private var language = AppLanguage.system.rawValue
+    @Environment(\.locale) private var locale
 
     @State private var interfaceGroups: [InterfaceGroup] = []
 

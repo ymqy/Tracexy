@@ -75,8 +75,12 @@ extension MainContentCoordinator {
         if let preferred, !preferred.isEmpty, interfaces.contains(where: { $0.id == preferred }) {
             return preferred
         }
-        let active = interfaces.first { !$0.isLoopback && $0.isUp && $0.ipv4 != nil }
-        let anyReal = interfaces.first { !$0.isLoopback }
+        let active = interfaces.first {
+            !NetworkInterfaces.isAllInterfaces($0.id) && !$0.isLoopback && $0.isUp && $0.ipv4 != nil
+        }
+        let anyReal = interfaces.first {
+            !NetworkInterfaces.isAllInterfaces($0.id) && !$0.isLoopback
+        }
         return active?.id ?? anyReal?.id ?? "en0"
     }
 
