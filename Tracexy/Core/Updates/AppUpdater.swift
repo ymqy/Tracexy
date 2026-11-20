@@ -186,11 +186,13 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
     static let shared = AppUpdater(configuration: .current)
 
     static let changelogURL: URL = {
-        guard let url = URL(string: "https://github.com/RockxyApp/Tracexy/releases") else {
+        guard let url = URL(string: "https://github.com/ymqy/Tracexy/releases") else {
             preconditionFailure("Invalid Tracexy changelog URL")
         }
         return url
     }()
+
+    private(set) var shouldRetireHelperOnTermination = false
 
     @Published private(set) var canCheckForUpdates = false
     @Published private(set) var automaticallyChecksForUpdates = false
@@ -456,6 +458,27 @@ final class AppUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
 
     func updaterDidNotFindUpdate(_ updater: SPUUpdater) {
         clearUpdateStatusSummary()
+    }
+
+    func updaterWillRelaunchApplication(_ updater: SPUUpdater) {
+        shouldRetireHelperOnTermination = true
+        Self.logger.info("Sparkle will relaunch application; scheduling graceful helper retirement.")
+    }
+
+    func updater(
+        _ updater: SPUUpdater,
+        willInstallUpdateOnQuit item: SUAppcastItem,
+        immediateInstallationBlock immediateInstallHandler: @escaping () -> Void
+    )
+        -> Bool
+    {
+        shouldRetireHelperOnTermination = true
+        Self.logger.info("Sparkle scheduled update on quit; scheduling graceful helper retirement.")
+        return false
+    }
+
+    func clearPendingHelperRetirement() {
+        shouldRetireHelperOnTermination = false
     }
 
     func openChangelog() {

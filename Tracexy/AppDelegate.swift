@@ -20,8 +20,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let retireHelperOnQuit = AppUpdater.shared.shouldRetireHelperOnTermination
         guard let coordinator else {
-            return .terminateNow
+            guard retireHelperOnQuit, !isFlushingProjectState else {
+                return isFlushingProjectState ? .terminateLater : .terminateNow
+            }
+            isFlushingProjectState = true
+            Task {
+                await HelperClient.shared.retireRunningHelperForAppUpdate()
+                sender.reply(toApplicationShouldTerminate: true)
+            }
+            return .terminateLater
         }
         guard !isFlushingProjectState else {
             return .terminateLater
@@ -39,6 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert.addButton(withTitle: String(localized: "Quit"))
             alert.addButton(withTitle: String(localized: "Cancel"))
             guard alert.runModal() == .alertFirstButtonReturn else {
+                AppUpdater.shared.clearPendingHelperRetirement()
                 return .terminateCancel
             }
         }
@@ -46,6 +56,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         isFlushingProjectState = true
         Task {
             await coordinator.flushProjectStateForTermination()
+            if retireHelperOnQuit {
+                await coordinator.helper.retireRunningHelperForAppUpdate()
+            }
             sender.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater

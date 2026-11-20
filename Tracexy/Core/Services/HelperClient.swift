@@ -562,6 +562,36 @@ final class HelperClient {
         }
     }
 
+    /// Gracefully retires a running protocol-v5+ helper right before Sparkle
+    /// swaps the app bundle on disk, so launchd starts the updated helper on
+    /// the first connection after relaunch without prompting for authorization.
+    func retireRunningHelperForAppUpdate() async {
+        guard !TracexyIdentity.isRunningTests,
+              let info = installedInfo,
+              HelperCompatibilityPolicy.supportsExecutableRefresh(protocolVersion: info.protocolVersion) else
+        {
+            return
+        }
+        for attempt in 0 ..< 4 {
+            do {
+                try await requestExecutableRefresh(timeoutNanoseconds: 1_500_000_000)
+                disconnect()
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                Self.logger.info("retired running helper cleanly ahead of app update")
+                return
+            } catch HelperRefreshError.captureActive where attempt < 3 {
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            } catch {
+                Self.logger.debug(
+                    "pre-update helper retirement skipped: \(error.localizedDescription, privacy: .public)"
+                )
+                disconnect()
+                return
+            }
+        }
+        disconnect()
+    }
+
     /// Retry the same non-destructive launch reconciliation over a fresh XPC
     /// connection. This never unregisters the approved service.
     func retryAutomaticHelperRefresh() async {
@@ -974,20 +1004,30 @@ final class HelperClient {
     private func performApprovalPreservingRefresh(candidate: HelperRefreshCandidate) async {
         automaticRefreshRecoveryPending = true
         let previousLaunchIdentity = installedIdentity?.launchIdentity
-        do {
-            try await requestExecutableRefresh(timeoutNanoseconds: Self.probeTimeoutNanoseconds)
-        } catch HelperRefreshError.captureActive {
-            automaticRefreshRecoveryPending = false
-            probeFailureDetail = HelperRefreshError.captureActive.localizedDescription
-            status = .installedOutdated
-            Self.logger.warning("helper executable refresh deferred because capture is active")
-            return
-        } catch {
-            probeFailureDetail = error.localizedDescription
-            status = .installedOutdated
-            Self.logger.warning(
-                "helper executable refresh was not accepted: \(error.localizedDescription, privacy: .public)"
-            )
+        var refreshAccepted = false
+        for attempt in 0 ..< 6 {
+            do {
+                try await requestExecutableRefresh(timeoutNanoseconds: Self.probeTimeoutNanoseconds)
+                refreshAccepted = true
+                break
+            } catch HelperRefreshError.captureActive where attempt < 5 {
+                try? await Task.sleep(nanoseconds: 300_000_000)
+            } catch HelperRefreshError.captureActive {
+                automaticRefreshRecoveryPending = false
+                probeFailureDetail = HelperRefreshError.captureActive.localizedDescription
+                status = .installedOutdated
+                Self.logger.warning("helper executable refresh deferred because capture is active")
+                return
+            } catch {
+                probeFailureDetail = error.localizedDescription
+                status = .installedOutdated
+                Self.logger.warning(
+                    "helper executable refresh was not accepted: \(error.localizedDescription, privacy: .public)"
+                )
+                return
+            }
+        }
+        guard refreshAccepted else {
             return
         }
 

@@ -1,0 +1,436 @@
+name: Release (Custom arm64)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Optional release tag (defaults to v<TRACEXY_APP_VERSION> from Configuration/Versions.xcconfig)'
+        required: false
+        default: ''
+      release_notes:
+        description: 'Optional extra release notes (Markdown)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-custom-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  release:
+    name: Build, Sign & Publish (arm64)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select newest Xcode
+        run: |
+          latest="$(ls -1d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -n 1)"
+          if [ -z "$latest" ]; then
+            echo "No Xcode app bundle found on runner."
+            exit 1
+          fi
+          sudo xcode-select -s "$latest/Contents/Developer"
+          xcodebuild -version
+
+      - name: Prepare CI developer config
+        run: |
+          cat > Configuration/Developer.xcconfig <<'EOF'
+          #include "LocalDev.xcconfig"
+
+          TRACEXY_TEAM_ID =
+          CODE_SIGN_IDENTITY =
+          DEVELOPMENT_TEAM =
+          EOF
+
+      - name: Resolve version and release metadata
+        id: meta
+        run: |
+          read_xcconfig() {
+            awk -F= -v k="$1" '$1 ~ "^[[:space:]]*"k"[[:space:]]*$" { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit }' Configuration/Versions.xcconfig
+          }
+          VERSION="$(read_xcconfig TRACEXY_APP_VERSION)"
+          BUILD="$(read_xcconfig TRACEXY_APP_BUILD)"
+          HELPER_VERSION="$(read_xcconfig TRACEXY_HELPER_VERSION)"
+          HELPER_BUILD="$(read_xcconfig TRACEXY_HELPER_BUILD)"
+          if [ -z "$VERSION" ] || [ -z "$BUILD" ]; then
+            echo "Failed to parse TRACEXY_APP_VERSION / TRACEXY_APP_BUILD from Configuration/Versions.xcconfig"
+            exit 1
+          fi
+
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            TAG="$GITHUB_REF_NAME"
+          elif [ -n "${{ inputs.tag }}" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="v${VERSION}"
+          fi
+
+          ZIP_NAME="Tracexy-${VERSION}-${BUILD}-arm64.zip"
+          {
+            echo "version=${VERSION}"
+            echo "build=${BUILD}"
+            echo "helper_version=${HELPER_VERSION}"
+            echo "helper_build=${HELPER_BUILD}"
+            echo "tag=${TAG}"
+            echo "zip_name=${ZIP_NAME}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Resolved release: tag=${TAG}, version=${VERSION} (build ${BUILD}), helper=${HELPER_VERSION} (build ${HELPER_BUILD})"
+
+      - name: Build Release (arm64)
+        run: |
+          xcodebuild -project Tracexy.xcodeproj \
+            -scheme Tracexy \
+            -configuration Release \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath build/release \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            PROVISIONING_PROFILE="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            build
+
+      - name: Ad-hoc sign bundle and verify structure
+        env:
+          EXPECTED_VERSION: ${{ steps.meta.outputs.version }}
+          EXPECTED_BUILD: ${{ steps.meta.outputs.build }}
+        run: |
+          set -euo pipefail
+          APP_PATH="build/release/Build/Products/Release/Tracexy.app"
+          if [ ! -d "$APP_PATH" ]; then
+            echo "Built app not found at $APP_PATH"
+            exit 1
+          fi
+
+          # Hardened Runtime + ad-hoc signing requires disable-library-validation
+          # so dyld permits loading the embedded ad-hoc signed Sparkle.framework.
+          cat > build/adhoc-app.entitlements <<'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>com.apple.security.cs.disable-library-validation</key>
+              <true/>
+          </dict>
+          </plist>
+          EOF
+
+          # 1. Sign nested Sparkle components inside-out
+          SPARKLE_VER="$APP_PATH/Contents/Frameworks/Sparkle.framework/Versions/B"
+          for item in \
+            "$SPARKLE_VER/XPCServices/Downloader.xpc" \
+            "$SPARKLE_VER/XPCServices/Installer.xpc" \
+            "$SPARKLE_VER/Autoupdate" \
+            "$SPARKLE_VER/Updater.app" \
+            "$APP_PATH/Contents/Frameworks/Sparkle.framework"; do
+            if [ -e "$item" ]; then
+              codesign --force --sign - --options runtime "$item"
+            fi
+          done
+
+          # 2. Sign embedded helper, MCP binary, and app extensions
+          codesign --force --sign - --options runtime \
+            --entitlements TracexyCaptureHelper/TracexyCaptureHelper.entitlements \
+            "$APP_PATH/Contents/Library/HelperTools/TracexyCaptureHelper"
+
+          if [ -f "$APP_PATH/Contents/MacOS/TracexyMCP" ]; then
+            codesign --force --sign - --options runtime "$APP_PATH/Contents/MacOS/TracexyMCP"
+          fi
+
+          if [ -d "$APP_PATH/Contents/PlugIns/TracexyQuickLook.appex" ]; then
+            codesign --force --sign - --options runtime \
+              --entitlements TracexyQuickLook/TracexyQuickLook.entitlements \
+              "$APP_PATH/Contents/PlugIns/TracexyQuickLook.appex"
+          fi
+
+          if [ -d "$APP_PATH/Contents/PlugIns/TracexySpotlight.appex" ]; then
+            codesign --force --sign - --options runtime \
+              --entitlements TracexySpotlight/TracexySpotlight.entitlements \
+              "$APP_PATH/Contents/PlugIns/TracexySpotlight.appex"
+          fi
+
+          # 3. Sign main app bundle
+          codesign --force --sign - --options runtime \
+            --entitlements build/adhoc-app.entitlements \
+            "$APP_PATH"
+
+          # 4. Verify signature, architecture, and update configuration
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
+          for bin in \
+            "$APP_PATH/Contents/MacOS/Tracexy" \
+            "$APP_PATH/Contents/Library/HelperTools/TracexyCaptureHelper"; do
+            arch_info="$(lipo -archs "$bin")"
+            echo "$bin -> $arch_info"
+            if [ "$arch_info" != "arm64" ]; then
+              echo "Expected arm64-only binary for $bin, got: $arch_info"
+              exit 1
+            fi
+          done
+
+          PLIST="$APP_PATH/Contents/Info.plist"
+          BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PLIST")"
+          SHORT_VER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PLIST")"
+          BUILD_NUM="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$PLIST")"
+          UPDATES_ENABLED="$(/usr/libexec/PlistBuddy -c 'Print :TracexyUpdatesEnabled' "$PLIST")"
+          FEED_URL="$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$PLIST")"
+          PUB_KEY="$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$PLIST")"
+
+          echo "Bundle ID:       $BUNDLE_ID"
+          echo "Version:         $SHORT_VER ($BUILD_NUM)"
+          echo "Updates enabled: $UPDATES_ENABLED"
+          echo "Feed URL:        $FEED_URL"
+          echo "SUPublicEDKey:   $PUB_KEY"
+
+          [ "$BUNDLE_ID" = "com.amunx.tracexy.community" ]
+          [ "$SHORT_VER" = "$EXPECTED_VERSION" ]
+          [ "$BUILD_NUM" = "$EXPECTED_BUILD" ]
+          [ "$UPDATES_ENABLED" = "YES" ] || [ "$UPDATES_ENABLED" = "true" ]
+          [[ "$FEED_URL" == "https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/appcast.xml" ]]
+          [ -n "$PUB_KEY" ]
+
+      - name: Package archive and sign with Sparkle EdDSA
+        id: package
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          ZIP_NAME: ${{ steps.meta.outputs.zip_name }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SPARKLE_PRIVATE_KEY" ]; then
+            echo "SPARKLE_PRIVATE_KEY secret is not configured."
+            exit 1
+          fi
+
+          APP_PATH="build/release/Build/Products/Release/Tracexy.app"
+          DIST_DIR="build/dist"
+          mkdir -p "$DIST_DIR"
+          ZIP_PATH="${DIST_DIR}/${ZIP_NAME}"
+
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ZIP_PATH"
+          ZIP_LENGTH="$(stat -f%z "$ZIP_PATH")"
+          (cd "$DIST_DIR" && shasum -a 256 "$ZIP_NAME" > SHA256SUMS.txt)
+          cat "${DIST_DIR}/SHA256SUMS.txt"
+
+          PUB_KEY="$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$APP_PATH/Contents/Info.plist")"
+
+          ED_SIGNATURE="$(ZIP_PATH="$ZIP_PATH" EXPECTED_PUB_KEY="$PUB_KEY" swift - <<'SWIFT'
+          import CryptoKit
+          import Foundation
+
+          let env = ProcessInfo.processInfo.environment
+          guard let privB64 = env["SPARKLE_PRIVATE_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+                let seedData = Data(base64Encoded: privB64),
+                seedData.count == 32 else {
+              fputs("Error: SPARKLE_PRIVATE_KEY must be base64-encoded 32-byte Ed25519 seed.\n", stderr)
+              exit(1)
+          }
+          guard let expectedPub = env["EXPECTED_PUB_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+                let zipPath = env["ZIP_PATH"] else {
+              fputs("Error: missing EXPECTED_PUB_KEY or ZIP_PATH.\n", stderr)
+              exit(1)
+          }
+
+          let privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: seedData)
+          let derivedPub = privateKey.publicKey.rawRepresentation.base64EncodedString()
+          guard derivedPub == expectedPub else {
+              fputs("Error: SPARKLE_PRIVATE_KEY public key (\(derivedPub)) does not match Info.plist SUPublicEDKey (\(expectedPub)).\n", stderr)
+              exit(1)
+          }
+
+          let data = try Data(contentsOf: URL(fileURLWithPath: zipPath), options: .mappedIfSafe)
+          let signature = try privateKey.signature(for: data)
+          guard signature.count == 64, privateKey.publicKey.isValidSignature(signature, for: data) else {
+              fputs("Error: generated Ed25519 signature failed self-verification.\n", stderr)
+              exit(1)
+          }
+          print(signature.base64EncodedString())
+          SWIFT
+          )"
+
+          {
+            echo "zip_path=${ZIP_PATH}"
+            echo "zip_length=${ZIP_LENGTH}"
+            echo "ed_signature=${ED_SIGNATURE}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Signed ${ZIP_NAME} (${ZIP_LENGTH} bytes) with verified EdDSA key."
+
+      - name: Generate release notes and appcast.xml
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          BUILD: ${{ steps.meta.outputs.build }}
+          HELPER_VERSION: ${{ steps.meta.outputs.helper_version }}
+          HELPER_BUILD: ${{ steps.meta.outputs.helper_build }}
+          ZIP_NAME: ${{ steps.meta.outputs.zip_name }}
+          ZIP_LENGTH: ${{ steps.package.outputs.zip_length }}
+          ED_SIGNATURE: ${{ steps.package.outputs.ed_signature }}
+          EXTRA_NOTES: ${{ inputs.release_notes }}
+        run: |
+          set -euo pipefail
+          DIST_DIR="build/dist"
+
+          # Collect recent custom commits for concise release notes
+          RECENT_CHANGES="$(git log -n 12 --pretty=format:'- %s (%h)' HEAD)"
+          SHA256_LINE="$(cat "${DIST_DIR}/SHA256SUMS.txt")"
+
+          cat > "${DIST_DIR}/release-notes.md" <<EOF
+          # Tracexy ${VERSION} (build ${BUILD}, arm64 Custom)
+
+          - **Architecture**: Apple Silicon (\`arm64\`), macOS 14.0+
+          - **Helper**: v${HELPER_VERSION} (build ${HELPER_BUILD})
+          - **Auto-update**: Enabled via Sparkle EdDSA (\`${GITHUB_REPOSITORY}\`)
+
+          ## 首次安装（免 Gatekeeper 拦截，推荐）
+
+          \`\`\`bash
+          curl -fsSL https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/install-custom.sh | bash
+          \`\`\`
+
+          *(装好后，后续版本可直接在应用内「检查更新」一键自动更新，Helper 自动无感衔接。如通过浏览器手动下载 \`.zip\`，解压拖入 \`/Applications\` 后需执行 \`xattr -cr /Applications/Tracexy.app\`。)*
+
+          ${EXTRA_NOTES}
+
+          ## Recent Changes
+
+          ${RECENT_CHANGES}
+
+          ## SHA-256
+
+          \`\`\`
+          ${SHA256_LINE}
+          \`\`\`
+          EOF
+
+          # Fetch previous appcast.xml from latest release (if any) to preserve history
+          PREV_APPCAST="${DIST_DIR}/prev-appcast.xml"
+          curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/appcast.xml" \
+            -o "$PREV_APPCAST" || rm -f "$PREV_APPCAST"
+
+          python3 - <<'PY'
+          import email.utils
+          import os
+          import re
+          import xml.etree.ElementTree as ET
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          tag = os.environ["TAG"]
+          version = os.environ["VERSION"]
+          build = os.environ["BUILD"]
+          zip_name = os.environ["ZIP_NAME"]
+          zip_length = os.environ["ZIP_LENGTH"]
+          ed_sig = os.environ["ED_SIGNATURE"]
+          dist_dir = "build/dist"
+
+          with open(os.path.join(dist_dir, "release-notes.md"), "r", encoding="utf-8") as f:
+              notes_md = f.read().strip()
+
+          # Escape any accidental ]]> inside CDATA
+          notes_cdata = notes_md.replace("]]>", "]]]]><![CDATA[>")
+          pub_date = email.utils.formatdate(usegmt=True)
+          download_url = f"https://github.com/{repo}/releases/download/{tag}/{zip_name}"
+          release_url = f"https://github.com/{repo}/releases/tag/{tag}"
+          feed_url = f"https://github.com/{repo}/releases/latest/download/appcast.xml"
+
+          new_item = f"""        <item>
+                      <title>{version}</title>
+                      <pubDate>{pub_date}</pubDate>
+                      <sparkle:fullReleaseNotesLink>{release_url}</sparkle:fullReleaseNotesLink>
+                      <sparkle:version>{build}</sparkle:version>
+                      <sparkle:shortVersionString>{version}</sparkle:shortVersionString>
+                      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+                      <description sparkle:format="markdown"><![CDATA[{notes_cdata}]]></description>
+                      <enclosure url="{download_url}" length="{zip_length}" type="application/octet-stream" sparkle:version="{build}" sparkle:shortVersionString="{version}" sparkle:edSignature="{ed_sig}"/>
+                  </item>"""
+
+          previous_items = []
+          prev_path = os.path.join(dist_dir, "prev-appcast.xml")
+          if os.path.exists(prev_path):
+              with open(prev_path, "r", encoding="utf-8") as f:
+                  prev_xml = f.read()
+              for match in re.finditer(r"<item\b[^>]*>.*?</item>", prev_xml, flags=re.DOTALL):
+                  block = match.group(0)
+                  ver_match = re.search(r"<sparkle:version>([^<]+)</sparkle:version>", block)
+                  if ver_match and ver_match.group(1).strip() == build:
+                      continue
+                  previous_items.append("        " + block.strip())
+              previous_items = previous_items[:15]
+
+          items_xml = "\n".join([new_item] + previous_items)
+          appcast = f"""<?xml version="1.0" standalone="yes"?>
+          <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+              <channel>
+                  <title>Tracexy Custom</title>
+                  <link>{feed_url}</link>
+                  <description>Tracexy Custom arm64 release channel ({repo})</description>
+                  <language>en</language>
+          {items_xml}
+              </channel>
+          </rss>
+          """
+
+          # Validate XML well-formedness
+          ET.fromstring(appcast)
+          out_path = os.path.join(dist_dir, "appcast.xml")
+          with open(out_path, "w", encoding="utf-8") as f:
+              f.write(appcast)
+          print(f"Generated valid {out_path} with {1 + len(previous_items)} item(s).")
+          PY
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          BUILD: ${{ steps.meta.outputs.build }}
+          ZIP_PATH: ${{ steps.package.outputs.zip_path }}
+        run: |
+          set -euo pipefail
+          DIST_DIR="build/dist"
+          TITLE="Tracexy ${VERSION} (build ${BUILD})"
+
+          # Ensure lightweight tag exists on this commit when run via workflow_dispatch
+          if ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            git tag "${TAG}" HEAD
+            git push origin "refs/tags/${TAG}"
+          fi
+
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" \
+              "${ZIP_PATH}" \
+              "${DIST_DIR}/appcast.xml" \
+              "${DIST_DIR}/SHA256SUMS.txt" \
+              ".github/scripts/install-custom.sh" \
+              --clobber
+            gh release edit "${TAG}" \
+              --title "${TITLE}" \
+              --notes-file "${DIST_DIR}/release-notes.md" \
+              --latest
+          else
+            gh release create "${TAG}" \
+              "${ZIP_PATH}" \
+              "${DIST_DIR}/appcast.xml" \
+              "${DIST_DIR}/SHA256SUMS.txt" \
+              ".github/scripts/install-custom.sh" \
+              --title "${TITLE}" \
+              --notes-file "${DIST_DIR}/release-notes.md" \
+              --latest
+          fi
