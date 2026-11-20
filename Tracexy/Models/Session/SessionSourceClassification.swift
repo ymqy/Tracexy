@@ -2507,6 +2507,12 @@ nonisolated enum SessionSourceClassifier {
                 return "\(appTitle) · \(suffix)"
             }
         }
+        if originProcess.hasPrefix("com.apple.") {
+            let suffix = String(originProcess.dropFirst("com.apple.".count)).trimmingCharacters(in: .whitespaces)
+            if !suffix.isEmpty {
+                return "\(appTitle) · \(suffix)"
+            }
+        }
         return "\(appTitle) · \(originProcess)"
     }
 

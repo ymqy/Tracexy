@@ -16,21 +16,27 @@ final class ProcessResolver {
         localIPsProvider: @escaping @Sendable () -> Set<String> = { ProcessResolver.discoverLocalIPs() },
         appNameResolver: (@Sendable (Int32, String) -> String)? = nil,
         provenanceResolver: (@Sendable (Int32, String, String) -> ProcessProvenance)? = nil,
+        attributionResolver customAttributionResolver: (@Sendable (Int32, String) -> (appName: String, provenance: ProcessProvenance))? = nil,
         nowProvider: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.socketTableProvider = socketTableProvider
         self.localIPsProvider = localIPsProvider
         self.nowProvider = nowProvider
-        let combinedResolver: @Sendable (Int32, String) -> (appName: String, provenance: ProcessProvenance) = { pid, command in
-            if appNameResolver == nil, provenanceResolver == nil {
-                return ProcessResolver.resolveProcessAttribution(pid: pid, command: command)
+        let combinedResolver: @Sendable (Int32, String) -> (appName: String, provenance: ProcessProvenance)
+        if let customAttributionResolver {
+            combinedResolver = customAttributionResolver
+        } else {
+            combinedResolver = { pid, command in
+                if appNameResolver == nil, provenanceResolver == nil {
+                    return ProcessResolver.resolveProcessAttribution(pid: pid, command: command)
+                }
+                let defaultAttribution = (appNameResolver == nil || provenanceResolver == nil)
+                    ? ProcessResolver.resolveProcessAttribution(pid: pid, command: command)
+                    : (appName: "", provenance: ProcessProvenance())
+                let appName = appNameResolver?(pid, command) ?? defaultAttribution.appName
+                let provenance = provenanceResolver?(pid, command, appName) ?? defaultAttribution.provenance
+                return (appName: appName, provenance: provenance)
             }
-            let defaultAttribution = (appNameResolver == nil || provenanceResolver == nil)
-                ? ProcessResolver.resolveProcessAttribution(pid: pid, command: command)
-                : (appName: "", provenance: ProcessProvenance())
-            let appName = appNameResolver?(pid, command) ?? defaultAttribution.appName
-            let provenance = provenanceResolver?(pid, command, appName) ?? defaultAttribution.provenance
-            return (appName: appName, provenance: provenance)
         }
         attributionResolver = combinedResolver
         localIPs = ProcessResolver.normalizeLocalIPs(localIPsProvider())
@@ -567,7 +573,8 @@ final class ProcessResolver {
         bundleIdentifierLookup: (String) -> String? = PktapHeader.bundleIdentifier(atBundlePath:),
         outerMainExecutableLookup: (String) -> String? = PktapHeader.bundleExecutableName(atBundlePath:),
         runningAppNameLookup: (Int32) -> String? = runningApplicationName(forPID:),
-        runningAppBundleIdentifierLookup: (Int32) -> String? = runningApplicationBundleIdentifier(forPID:)
+        runningAppBundleIdentifierLookup: (Int32) -> String? = runningApplicationBundleIdentifier(forPID:),
+        safariHostLookup: PktapHeader.SafariHostLookup = .live
     )
         -> (appName: String, provenance: ProcessProvenance)
     {
@@ -594,6 +601,33 @@ final class ProcessResolver {
             resolvedBundleID = runningID
         }
 
+        let bsdInfo = pid > 0 ? bsdProcessInspector(pid) : nil
+        let hasTTY = bsdInfo?.hasTTY ?? false
+        let isRootUser = bsdInfo.map { $0.uid == 0 } ?? false
+        if let promoted = PktapHeader.resolveSafariHostPromotion(
+            processName: appName,
+            executablePath: resolvedExecPath,
+            bundleIdentifier: resolvedBundleID,
+            runningSafariHostLookup: safariHostLookup.runningSafariHostLookup,
+            safariBundleLookup: safariHostLookup.safariBundleLookup
+        ) {
+            let provenance = ProcessProvenance(
+                executablePath: promoted.executablePath,
+                bundleIdentifier: promoted.bundleIdentifier,
+                viaProcessName: promoted.viaProcessName,
+                parentProcessName: nil,
+                originProcessName: promoted.originProcessName,
+                hostAppName: nil,
+                spawnerProcessName: nil,
+                viaShellName: nil,
+                callerKind: promoted.callerKind,
+                hasControllingTTY: hasTTY,
+                isRootUser: isRootUser,
+                isKernelTask: false
+            )
+            return (appName: promoted.processName, provenance: provenance)
+        }
+
         let viaName = resolvedExecPath.flatMap { execPath in
             PktapHeader.nestedHelperViaName(
                 executablePath: execPath,
@@ -607,9 +641,6 @@ final class ProcessResolver {
             outerMainExecutableLookup: outerMainExecutableLookup
         )
 
-        let bsdInfo = pid > 0 ? bsdProcessInspector(pid) : nil
-        let hasTTY = bsdInfo?.hasTTY ?? false
-        let isRootUser = bsdInfo.map { $0.uid == 0 } ?? false
         let ancestry = PktapHeader.resolveAncestorChain(
             primaryPID: pid,
             primaryExecutablePath: resolvedExecPath,

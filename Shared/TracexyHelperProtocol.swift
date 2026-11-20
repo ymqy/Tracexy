@@ -858,6 +858,210 @@ nonisolated enum PktapHeader {
         )
     }
 
+    /// Host app identity for Safari on macOS 14–26 (including Preboot Cryptexes).
+    struct SafariHostAppInfo: Equatable, Hashable, Sendable {
+        let displayName: String
+        let executablePath: String
+        let bundleIdentifier: String
+    }
+
+    /// Injectable running/installed Safari bundle lookups shared across `PktapHeader` and `ProcessResolver`.
+    struct SafariHostLookup: Sendable {
+        let runningSafariHostLookup: @Sendable () -> SafariHostAppInfo?
+        let safariBundleLookup: @Sendable () -> SafariHostAppInfo?
+
+        static let live = SafariHostLookup(
+            runningSafariHostLookup: { PktapHeader.resolveRunningSafariHostApp() },
+            safariBundleLookup: { PktapHeader.resolveSafariBundleOnDisk() }
+        )
+    }
+
+    /// Result of promoting a Safari-exclusive helper or un-delegated WebKit XPC service to Safari.
+    struct SafariHostPromotion: Equatable, Sendable {
+        let processName: String
+        let executablePath: String
+        let bundleIdentifier: String
+        let viaProcessName: String
+        let originProcessName: String
+        let callerKind: ProcessCallerKind
+    }
+
+    /// Monotonic-TTL cache for live running-Safari detection. Re-verifies a cached Safari
+    /// PID via `proc_pidpath` in O(1) before scanning `proc_listallpids` so steady-state
+    /// packets incur zero `proc_listallpids` syscalls.
+    struct RunningSafariLookupCache {
+        static let defaultTTLNanoseconds: UInt64 = 2_000_000_000
+
+        init(
+            nowNanoseconds: @escaping () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
+            ttlNanoseconds: UInt64 = defaultTTLNanoseconds,
+            allPIDsLookup: @escaping () -> [Int32] = PktapHeader.listAllPIDs,
+            executablePathLookup: @escaping (Int32) -> String? = PktapHeader.executablePath(forPID:)
+        ) {
+            self.nowNanoseconds = nowNanoseconds
+            self.ttlNanoseconds = ttlNanoseconds
+            self.allPIDsLookup = allPIDsLookup
+            self.executablePathLookup = executablePathLookup
+        }
+
+        mutating func resolve() -> SafariHostAppInfo? {
+            let now = nowNanoseconds()
+            if hasChecked, now &- lastCheckedAtNanoseconds < ttlNanoseconds { return cachedHost }
+            hasChecked = true
+            lastCheckedAtNanoseconds = now
+            if cachedPID > 0, let path = executablePathLookup(cachedPID), PktapHeader.isSafariMainExecutablePath(path) {
+                cachedHost = PktapHeader.makeSafariHostAppInfo(executablePath: path)
+                return cachedHost
+            }
+            for pid in allPIDsLookup() where pid > 0 {
+                if let path = executablePathLookup(pid), PktapHeader.isSafariMainExecutablePath(path) {
+                    cachedPID = pid
+                    cachedHost = PktapHeader.makeSafariHostAppInfo(executablePath: path)
+                    return cachedHost
+                }
+            }
+            cachedPID = 0
+            cachedHost = nil
+            return nil
+        }
+
+        private let nowNanoseconds: () -> UInt64
+        private let ttlNanoseconds: UInt64
+        private let allPIDsLookup: () -> [Int32]
+        private let executablePathLookup: (Int32) -> String?
+        private var hasChecked = false
+        private var lastCheckedAtNanoseconds: UInt64 = 0
+        private var cachedPID: Int32 = 0
+        private var cachedHost: SafariHostAppInfo?
+    }
+
+    static let standardSafariExecutablePaths = [
+        ["", "System", "Volumes", "Preboot", "Cryptexes", "App", "System", "Applications", "Safari.app", "Contents", "MacOS", "Safari"].joined(separator: "/"),
+        "/Applications/Safari.app/Contents/MacOS/Safari",
+        "/System/Applications/Safari.app/Contents/MacOS/Safari",
+    ]
+
+    static func listAllPIDs() -> [Int32] {
+        let estimatedCount = proc_listallpids(nil, 0)
+        guard estimatedCount > 0 else { return [] }
+        var pids = [pid_t](repeating: 0, count: max(256, Int(estimatedCount) * 2))
+        let pidCount = Int(pids.withUnsafeMutableBytes { buffer in
+            proc_listallpids(buffer.baseAddress, Int32(buffer.count))
+        })
+        guard pidCount > 0 else { return [] }
+        return Array(pids.prefix(min(pidCount, pids.count)))
+    }
+
+    static func isSafariMainExecutablePath(_ path: String) -> Bool {
+        path.hasSuffix("/Safari.app/Contents/MacOS/Safari")
+    }
+
+    static func resolveRunningSafariHostApp() -> SafariHostAppInfo? {
+        sharedRunningSafariCache.resolve()
+    }
+
+    static func resolveSafariBundleOnDisk(
+        fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+    )
+        -> SafariHostAppInfo?
+    {
+        for execPath in standardSafariExecutablePaths where fileExists(execPath) {
+            return makeSafariHostAppInfo(executablePath: execPath)
+        }
+        return nil
+    }
+
+    static func resolveInstalledSafariHostApp(
+        runningSafariLookup: () -> SafariHostAppInfo? = resolveRunningSafariHostApp,
+        fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+    )
+        -> SafariHostAppInfo?
+    {
+        runningSafariLookup() ?? resolveSafariBundleOnDisk(fileExists: fileExists)
+    }
+
+    /// True when the process is a Safari-exclusive helper/agent outside `Safari.app` itself.
+    static func isSafariExclusiveHelper(processName: String, executablePath: String?, bundleIdentifier: String?) -> Bool {
+        if let path = trimmedNonEmpty(executablePath) {
+            if let outerApp = outermostAppBundlePath(fromExecutablePath: path), isHostAppBundlePath(outerApp) {
+                return false
+            }
+            if path.contains("/SafariShared.framework/")
+                || path.contains("/SafariPlatformSupport.framework/")
+                || path.contains("/Cryptexes/App/usr/libexec/Safari")
+                || path.contains("/Cryptexes/App/usr/libexec/com.apple.Safari")
+            {
+                return true
+            }
+            if isSafariExclusiveHelperIdentifier((path as NSString).lastPathComponent) { return true }
+            return trimmedNonEmpty(bundleIdentifier).map(isSafariExclusiveHelperBundleID) ?? false
+        }
+        if let bundleID = trimmedNonEmpty(bundleIdentifier), isSafariExclusiveHelperBundleID(bundleID) { return true }
+        return isSafariExclusiveHelperIdentifier(processName.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// True when the process is a WebKit networking/content/GPU XPC service.
+    static func isWebKitXPCService(processName: String, executablePath: String?, bundleIdentifier: String?) -> Bool {
+        if let path = trimmedNonEmpty(executablePath) {
+            if let outerApp = outermostAppBundlePath(fromExecutablePath: path), isHostAppBundlePath(outerApp) {
+                return false
+            }
+            if isWebKitXPCIdentifier((path as NSString).lastPathComponent) { return true }
+            return trimmedNonEmpty(bundleIdentifier).map(isWebKitXPCIdentifier) ?? false
+        }
+        if let bundleID = trimmedNonEmpty(bundleIdentifier), isWebKitXPCIdentifier(bundleID) { return true }
+        let trimmed = processName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return isWebKitXPCIdentifier(trimmed) || trimmed == "com.apple.WebKit"
+    }
+
+    /// Promotes Safari-exclusive helpers (unconditionally when Safari exists on disk) and
+    /// un-delegated WebKit XPC services (only while Safari is running) to Safari `.app`.
+    static func resolveSafariHostPromotion(
+        processName: String,
+        executablePath: String?,
+        bundleIdentifier: String?,
+        delegatedViaName: String? = nil,
+        runningSafariHostLookup: () -> SafariHostAppInfo? = resolveRunningSafariHostApp,
+        safariBundleLookup: () -> SafariHostAppInfo? = { resolveSafariBundleOnDisk() }
+    )
+        -> SafariHostPromotion?
+    {
+        let helperLeafName: String
+        if let path = trimmedNonEmpty(executablePath) {
+            let basename = (path as NSString).lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+            helperLeafName = basename.isEmpty || basename == "/" ? processName : basename
+        } else {
+            helperLeafName = processName
+        }
+
+        let safariHost: SafariHostAppInfo?
+        if isSafariExclusiveHelper(
+            processName: processName,
+            executablePath: executablePath,
+            bundleIdentifier: bundleIdentifier
+        ) {
+            safariHost = runningSafariHostLookup() ?? safariBundleLookup()
+        } else if isWebKitXPCService(
+            processName: processName,
+            executablePath: executablePath,
+            bundleIdentifier: bundleIdentifier
+        ) {
+            safariHost = runningSafariHostLookup()
+        } else {
+            return nil
+        }
+
+        guard let safari = safariHost else { return nil }
+        return SafariHostPromotion(
+            processName: safari.displayName,
+            executablePath: safari.executablePath,
+            bundleIdentifier: safari.bundleIdentifier,
+            viaProcessName: delegatedViaName ?? helperLeafName,
+            originProcessName: helperLeafName,
+            callerKind: .app
+        )
+    }
+
     /// Resolves both the user-facing `processName` and full `ProcessProvenance`
     /// (`executablePath`, `bundleIdentifier`, `viaProcessName`, `parentProcessName`,
     /// `originProcessName`, `hostAppName`, `spawnerProcessName`, `viaShellName`,
@@ -868,7 +1072,9 @@ nonisolated enum PktapHeader {
         bsdProcessLookup: (Int32) -> (ppid: Int32, uid: UInt32, hasTTY: Bool)? = inspectBSDProcess(pid:),
         displayNameFromPath: (String) -> String? = displayName(fromExecutablePath:),
         bundleIdentifierFromPath: (String) -> String? = { bundleIdentifier(fromExecutablePath: $0) },
-        outerMainExecutableFromAppPath: (String) -> String? = bundleExecutableName(atBundlePath:)
+        outerMainExecutableFromAppPath: (String) -> String? = bundleExecutableName(atBundlePath:),
+        runningSafariHostLookup: () -> SafariHostAppInfo? = resolveRunningSafariHostApp,
+        safariBundleLookup: () -> SafariHostAppInfo? = { resolveSafariBundleOnDisk() }
     )
         -> (processName: String?, provenance: ProcessProvenance?)
     {
@@ -926,6 +1132,39 @@ nonisolated enum PktapHeader {
         }
 
         let resolvedBundleID = primaryExecPath.flatMap { trimmedNonEmpty(bundleIdentifierFromPath($0)) }
+        let bsdInfo = primaryPID > 0 ? bsdProcessLookup(primaryPID) : nil
+        let hasTTY = bsdInfo?.hasTTY ?? false
+        let isRootUser = bsdInfo.map { $0.uid == 0 } ?? false
+        let hasUnresolvedDistinctDelegator = parsed.effectivePID > 0
+            && parsed.effectivePID != parsed.pid
+            && primaryPID == parsed.pid
+        if !hasUnresolvedDistinctDelegator,
+           let promoted = resolveSafariHostPromotion(
+               processName: primaryName,
+               executablePath: primaryExecPath,
+               bundleIdentifier: resolvedBundleID,
+               delegatedViaName: delegatedViaName,
+               runningSafariHostLookup: runningSafariHostLookup,
+               safariBundleLookup: safariBundleLookup
+           )
+        {
+            let provenance = ProcessProvenance(
+                executablePath: promoted.executablePath,
+                bundleIdentifier: promoted.bundleIdentifier,
+                viaProcessName: promoted.viaProcessName,
+                parentProcessName: nil,
+                originProcessName: promoted.originProcessName,
+                hostAppName: nil,
+                spawnerProcessName: nil,
+                viaShellName: nil,
+                callerKind: promoted.callerKind,
+                hasControllingTTY: hasTTY,
+                isRootUser: isRootUser,
+                isKernelTask: false
+            )
+            return (processName: promoted.processName, provenance: provenance)
+        }
+
         let nestedHelperName = primaryExecPath.flatMap {
             nestedHelperViaName(
                 executablePath: $0,
@@ -940,9 +1179,6 @@ nonisolated enum PktapHeader {
             outerMainExecutableLookup: outerMainExecutableFromAppPath
         )
 
-        let bsdInfo = primaryPID > 0 ? bsdProcessLookup(primaryPID) : nil
-        let hasTTY = bsdInfo?.hasTTY ?? false
-        let isRootUser = bsdInfo.map { $0.uid == 0 } ?? false
         let ancestry = resolveAncestorChain(
             primaryPID: primaryPID,
             primaryExecutablePath: primaryExecPath,
@@ -987,7 +1223,9 @@ nonisolated enum PktapHeader {
             bsdSnapshotLookup: @escaping (Int32) -> BSDProcessSnapshot? = PktapHeader.inspectBSDProcessSnapshot(pid:),
             displayNameFromPath: @escaping (String) -> String? = PktapHeader.displayName(fromExecutablePath:),
             bundleIdentifierFromPath: @escaping (String) -> String? = { PktapHeader.bundleIdentifier(fromExecutablePath: $0) },
-            outerMainExecutableFromAppPath: @escaping (String) -> String? = PktapHeader.bundleExecutableName(atBundlePath:)
+            outerMainExecutableFromAppPath: @escaping (String) -> String? = PktapHeader.bundleExecutableName(atBundlePath:),
+            runningSafariHostLookup: @escaping () -> SafariHostAppInfo? = PktapHeader.resolveRunningSafariHostApp,
+            safariBundleLookup: @escaping () -> SafariHostAppInfo? = { PktapHeader.resolveSafariBundleOnDisk() }
         ) {
             self.nowNanoseconds = nowNanoseconds
             self.ttlNanoseconds = ttlNanoseconds
@@ -998,6 +1236,8 @@ nonisolated enum PktapHeader {
             self.displayNameFromPath = displayNameFromPath
             self.bundleIdentifierFromPath = bundleIdentifierFromPath
             self.outerMainExecutableFromAppPath = outerMainExecutableFromAppPath
+            self.runningSafariHostLookup = runningSafariHostLookup
+            self.safariBundleLookup = safariBundleLookup
         }
 
         // MARK: Internal
@@ -1102,7 +1342,9 @@ nonisolated enum PktapHeader {
                         }
                     }
                     return outerMainExecutableFromAppPath(appPath)
-                }
+                },
+                runningSafariHostLookup: runningSafariHostLookup,
+                safariBundleLookup: safariBundleLookup
             )
             let result = Result(processName: resolved.processName, provenance: resolved.provenance)
 
@@ -1167,6 +1409,8 @@ nonisolated enum PktapHeader {
         private let displayNameFromPath: (String) -> String?
         private let bundleIdentifierFromPath: (String) -> String?
         private let outerMainExecutableFromAppPath: (String) -> String?
+        private let runningSafariHostLookup: () -> SafariHostAppInfo?
+        private let safariBundleLookup: () -> SafariHostAppInfo?
 
         private var pidPairCache: [PIDPair: CachedAttributionEntry] = [:]
         private var pidMetadataCache: [Int32: CachedPIDMetadata] = [:]
@@ -1381,15 +1625,8 @@ nonisolated enum PktapHeader {
         var map = InboundSocketPortMap()
         map.localIPs = discoverLocalInboundIPKeys()
 
-        let estimatedCount = proc_listallpids(nil, 0)
-        guard estimatedCount > 0 else {
-            return map
-        }
-        var pids = [pid_t](repeating: 0, count: max(256, Int(estimatedCount) * 2))
-        let pidCount = Int(pids.withUnsafeMutableBytes { buffer in
-            proc_listallpids(buffer.baseAddress, Int32(buffer.count))
-        })
-        guard pidCount > 0 else {
+        let pids = listAllPIDs()
+        guard !pids.isEmpty else {
             return map
         }
 
@@ -1397,11 +1634,7 @@ nonisolated enum PktapHeader {
         let socketInfoSize = Int32(MemoryLayout<socket_fdinfo>.size)
         var timeWaitKeys: Set<InboundSocketPortMap.SpecificKey> = []
 
-        for pidIndex in 0 ..< min(pidCount, pids.count) {
-            let pid = pids[pidIndex]
-            guard pid > 0 else {
-                continue
-            }
+        for pid in pids where pid > 0 {
             let byteCapacity = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
             guard byteCapacity > 0 else {
                 continue
@@ -1538,6 +1771,47 @@ nonisolated enum PktapHeader {
     private static let skippedLauncherNames: Set<String> = [
         "launchd", "login", "sudo", "su", "xpcproxy", "env", "nohup", "nice", "arch", "caffeinate", "timeout",
     ]
+
+    private final class SharedRunningSafariCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private var cache = RunningSafariLookupCache()
+        func resolve() -> SafariHostAppInfo? {
+            lock.lock()
+            defer { lock.unlock() }
+            return cache.resolve()
+        }
+    }
+
+    private static let sharedRunningSafariCache = SharedRunningSafariCache()
+
+    private static func makeSafariHostAppInfo(executablePath: String) -> SafariHostAppInfo {
+        SafariHostAppInfo(displayName: "Safari", executablePath: executablePath, bundleIdentifier: "com.apple.Safari")
+    }
+
+    private static func isSafariExclusiveHelperIdentifier(_ identifier: String) -> Bool {
+        identifier.hasPrefix("com.apple.Safari.")
+            || identifier.hasPrefix("com.apple.SafariPlatformSupport.")
+            || identifier == "SafariBookmarksSyncAgent"
+            || identifier == "SafariHistoryServiceAgent"
+            || identifier == "SafariSafeBrowsing"
+    }
+
+    private static func isSafariExclusiveHelperBundleID(_ bundleID: String) -> Bool {
+        bundleID.hasPrefix("com.apple.Safari.")
+            || bundleID == "com.apple.SafariPlatformSupport"
+            || bundleID.hasPrefix("com.apple.SafariPlatformSupport.")
+            || bundleID == "com.apple.SafariShared"
+            || bundleID.hasPrefix("com.apple.SafariShared.")
+    }
+
+    private static func isWebKitXPCIdentifier(_ identifier: String) -> Bool {
+        identifier == "com.apple.WebKit.Networking"
+            || identifier == "com.apple.WebKit.WebContent"
+            || identifier == "com.apple.WebKit.GPU"
+            || identifier.hasPrefix("com.apple.WebKit.Networking.")
+            || identifier.hasPrefix("com.apple.WebKit.WebContent.")
+            || identifier.hasPrefix("com.apple.WebKit.GPU.")
+    }
 
     private static func isSystemDaemonPath(_ path: String, bundleID: String?) -> Bool {
         if path.hasPrefix("/Library/Developer/") || path.contains(".xctoolchain/") {
